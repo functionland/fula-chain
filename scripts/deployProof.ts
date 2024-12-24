@@ -3,10 +3,10 @@ import { NetworkArguments } from "@chainsafe/hardhat-plugin-multichain-deploy";
 
 async function main(): Promise<void> {
     // Get command line arguments
-    const tokenAddress = process.argv[2]?.split('=')[1];
+    const tokenAddress = process.env.TOKEN_ADDRESS?.trim();
 
     if (!tokenAddress) {
-        throw new Error("Token address not provided. Use --tokenAddress=<address>");
+        throw new Error("TOKEN_ADDRESS environment variable not set");
     }
 
     const [deployer] = await web3.eth.getAccounts();
@@ -46,4 +46,4 @@ main().catch((error) => {
     process.exitCode = 1;
 });
 
-// yarn hardhat run scripts/deployProof.ts --network sepolia --tokenAddress=0x123...
+// set TOKEN_ADDRESS=0x02b8492107b55941eccfd6d1e9c966210206b641 && yarn hardhat run scripts/deployProof.ts --network sepolia

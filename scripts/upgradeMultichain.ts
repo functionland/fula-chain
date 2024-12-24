@@ -18,19 +18,11 @@ async function main(): Promise<void> {
                 initMethodName: "initialize",
                 initMethodArgs: [],
             },
-        },
-        holesky: {
-            args: [],
-            initData: {
-                initMethodName: "initialize",
-                initMethodArgs: [],
-            },
         }
     };
 
-    // Deploy the new implementation
     const { transactionHash, domainIDs } = await multichain.deployMultichain(
-        "StorageTokenV1",  // Note the V1 version
+        "StorageTokenV1",
         networkArguments,
         {
             customNonPayableTxOptions: {
