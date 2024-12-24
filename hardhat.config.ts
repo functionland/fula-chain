@@ -1,4 +1,4 @@
-import { HardhatUserConfig } from "hardhat/config";
+import { HardhatUserConfig, vars } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
 import "@chainsafe/hardhat-ts-artifact-plugin";
 import "@nomicfoundation/hardhat-web3-v4";
@@ -20,7 +20,7 @@ const config: HardhatUserConfig = {
             url: "https://ethereum-sepolia.publicnode.com",
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 11155111,
-            gas: 199170,
+            gas: 399170,
             gasPrice: "auto"
         },
         "base-sepolia": {
@@ -29,9 +29,19 @@ const config: HardhatUserConfig = {
             chainId: 84532
         },
         amoy: {
-            url: "https://amoy.infura.io/v3/YOUR-PROJECT-ID",
+            url: "https://polygon-amoy-bor-rpc.publicnode.com",
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 80002
+        },
+        iotex: {
+            url: "https://babel-api.testnet.iotex.io",
+            accounts: vars.has("PK") ? [vars.get("PK")] : [],
+            chainId: 4690
+        },
+        skale: {
+            url: "https://testnet.skalenodes.com/v1/giant-half-dual-testnet",
+            accounts: vars.has("PK") ? [vars.get("PK")] : [],
+            chainId: 974399131
         }
     },
     multichain: {

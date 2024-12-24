@@ -41,6 +41,7 @@
   },
   "packageManager": "yarn@3.8.0",
   "dependencies": {
+    "@nomicfoundation/hardhat-ignition": "^0.15.9",
     "@openzeppelin/contracts": "4.9.3",
     "@openzeppelin/contracts-upgradeable": "4.9.3",
     "@polkadot/api": "^15.0.2",

@@ -25,10 +25,4 @@ contract StorageTokenV1 is ERC20Upgradeable, OwnableUpgradeable, UUPSUpgradeable
         _burn(msg.sender, amount);
         emit BridgeTransfer(msg.sender, amount, targetChain);
     }
-
-    // - Withdraw tokens implementation
-    function withdraw(uint256 amount) external {
-        require(balanceOf(msg.sender) >= amount, "Insufficient balance");
-        _transfer(msg.sender, address(this), amount);
-    }
 }
