@@ -44,4 +44,4 @@ main().catch((error) => {
     process.exitCode = 1;
 });
 
-// yarn hardhat run scripts/deployPool.ts --network sepolia --tokenAddress=0x123...
+// yarn hardhat run scripts/deployPool.ts --network sepolia --tokenAddress=0x123... --show-stack-traces

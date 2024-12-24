@@ -39,4 +39,4 @@ main().catch((error) => {
     process.exitCode = 1;
 });
 
-// yarn hardhat run scripts/deployToken.ts --network sepolia
+// yarn hardhat run scripts/deployToken.ts --network sepolia --show-stack-traces
