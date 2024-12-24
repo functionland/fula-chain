@@ -6,6 +6,8 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
 contract StorageToken is ERC20Upgradeable, UUPSUpgradeable {
     uint256 private constant TOTAL_SUPPLY = 1_000_000 * 10**18; // 1M tokens
+
+    constructor() {}
     
     function initialize() public initializer {
         __ERC20_init("Test Token", "TT");

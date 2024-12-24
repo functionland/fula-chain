@@ -1,49 +1,77 @@
-import { multichain, web3 } from "hardhat";
+import { multichain } from "hardhat";
 import { NetworkArguments } from "@chainsafe/hardhat-plugin-multichain-deploy";
-import artifact from "../artifacts/contracts/Lock.sol/Lock";
+import tokenArtifact from "../artifacts/contracts/StorageToken.sol/StorageToken.json";
+import poolArtifact from "../artifacts/contracts/StoragePool.sol/StoragePool.json";
 
 async function main(): Promise<void> {
-  const currentTimestampInSeconds = Math.round(Date.now() / 1000);
-  const unlockTime = BigInt(currentTimestampInSeconds + 1200);
-  const [deployer] = await web3.eth.getAccounts();
+    // Deploy StorageToken
+    const tokenNetworkArguments: NetworkArguments = {
+        sepolia: {
+            args: [],
+            initData: {
+                initMethodName: "initialize",
+                initMethodArgs: ["Test Token", "TT"],
+            },
+        },
+        amoy: {
+            args: [],
+            initData: {
+                initMethodName: "initialize",
+                initMethodArgs: ["Test Token", "TT"],
+            },
+        },
+        holesky: {
+            args: [],
+            initData: {
+                initMethodName: "initialize",
+                initMethodArgs: ["Test Token", "TT"],
+            },
+        }
+    };
 
-  const networkArguments: NetworkArguments = {
-    sepolia: {
-      args: [deployer, unlockTime],
-      initData: {
-        initMethodName: "setName",
-        initMethodArgs: ["sepolia"],
-      },
-    },
-    amoy: {
-      args: [deployer, unlockTime],
-      initData: {
-        initMethodName: "setName",
-        initMethodArgs: ["amoy"],
-      },
-    },
-    holesky: {
-      args: [deployer, unlockTime],
-      initData: {
-        initMethodName: "setName",
-        initMethodArgs: ["holesky"],
-      },
-    },
-  };
-
-  const { transactionHash, domainIDs } =
-    await multichain.deployMultichainBytecode(
-      artifact.bytecode,
-      artifact.abi,
-      networkArguments
+    const tokenDeployment = await multichain.deployMultichainBytecode(
+        tokenArtifact.bytecode,
+        tokenArtifact.abi,
+        tokenNetworkArguments
     );
 
-  await multichain.getDeploymentInfo(transactionHash, domainIDs);
+    await multichain.getDeploymentInfo(tokenDeployment.transactionHash, tokenDeployment.domainIDs);
+
+    // Deploy StoragePool
+    const poolNetworkArguments: NetworkArguments = {
+        sepolia: {
+            args: [],
+            initData: {
+                initMethodName: "initialize",
+                initMethodArgs: [],
+            },
+        },
+        amoy: {
+            args: [],
+            initData: {
+                initMethodName: "initialize",
+                initMethodArgs: [],
+            },
+        },
+        holesky: {
+            args: [],
+            initData: {
+                initMethodName: "initialize",
+                initMethodArgs: [],
+            },
+        }
+    };
+
+    const poolDeployment = await multichain.deployMultichainBytecode(
+        poolArtifact.bytecode,
+        poolArtifact.abi,
+        poolNetworkArguments
+    );
+
+    await multichain.getDeploymentInfo(poolDeployment.transactionHash, poolDeployment.domainIDs);
 }
 
-// We recommend this pattern to be able to use async/await everywhere
-// and properly handle errors.
 main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
+    console.error(error);
+    process.exitCode = 1;
 });

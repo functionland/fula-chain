@@ -18,17 +18,19 @@ const config: HardhatUserConfig = {
     networks: {
         sepolia: {
             url: "https://ethereum-sepolia.publicnode.com",
-            accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
-            chainId: 11155111
+            accounts: vars.has("PK") ? [vars.get("PK")] : [],
+            chainId: 11155111,
+            gas: 199170,
+            gasPrice: "auto"
         },
         "base-sepolia": {
             url: "https://sepolia.base.org",
-            accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+            accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 84532
         },
         amoy: {
             url: "https://amoy.infura.io/v3/YOUR-PROJECT-ID",
-            accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+            accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 80002
         }
     },

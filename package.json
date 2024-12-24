@@ -5,9 +5,10 @@
   "scripts": {
     "lint": "eslint --color --ext .ts scripts/",
     "lint:fix": "yarn run lint --fix",
-    "build": "hardhat compile",
     "hardhat": "hardhat",
-    "deploy:deployMultichain": "yarn hardhat run scripts/deployMultichain.ts --network sepolia",
+    "build": "hardhat compile",
+    "hardhat:setvar": "yarn hardhat vars set PK",
+    "deploy:deployMultichain": "yarn hardhat run scripts/deployMultichain.ts --network sepolia --show-stack-traces",
     "deploy:deployMultichainBytecode": "yarn hardhat run scripts/deployMultichainBytecode.ts --network sepolia",
     "deploy:localhost": "yarn hardhat run scripts/localhost.ts"
   },
@@ -38,7 +39,7 @@
     "typescript": ">=4.5.0",
     "web3": "^4.5.0"
   },
-  "packageManager": "yarn@3.8.0+sha512.e1261f49ba7bb7f2f33aae452e5234e4a95c738f2aece917152019950ef64e52b542f3e503ffa0f0b3cf41b3d185ac1d7721dc501908e7c6cfa67ba06a082745",
+  "packageManager": "yarn@3.8.0",
   "dependencies": {
     "@openzeppelin/contracts": "4.9.3",
     "@openzeppelin/contracts-upgradeable": "4.9.3",
