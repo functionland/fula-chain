@@ -1,0 +1,30 @@
+I have the below requirements for my upgradeable smart contract. read my requirements and use hardhat and sygma information I shared to give me the full code and steps needed to implement a smart contract based on my requirements.
+token name "test token"
+Symbol "TT"
+total tokens fixed cap: 1M
+
+1- I need to implement the smart contract on Amoy, Sepolia, Base testnet
+2- the smart contract should perform the below on all chains where the sygma listener tries to listen to event and perform the correct action on the other chains
+ - Transfer of Token from one chain to another by burning in one and minting on another
+ - Withdraw tokens from chain
+3- the smart contract should perform the below action on each chain but no need to replicate them on other chains
+ - pool creation (pool is a shard of group of members that I explain later): any one can call this. pool is a group of people that one pool creator can create the pool with pool name: string, id: number and region: string values and then criteria: Object{pingTime{min:number}, other values}, pool creator account id and pool members []
+each member of pool has join date, peer ID, account ID and reputation score properties
+ - pool query: anyone can call this. query the created pools, members of the pools, criteria and can filter by region and id
+ - pool join: anyone can call this. it submits detail of join request which is peerID: libp2p peer id, account: user account id which is the wallet of user tokens, pool id
+ - vote on pool join request: current members of a specific can call this endpoint on their pool to allow a join request be approved to rejected. it needs pool id and user peer Id and status: approve, reject. if minimum of 33% of current pool members or 10 members or pool creator vote on approval the new user will become a pool member and if 50% of current members reject the request the request will be removed and rejected
+ - setStorageCost: which the smart contract owner or each pool creator only for their own pool can set and defines the number of tokens needed to store 1TB of data for 1 year. note that if it is called it updates the previously set value if any
+ - getStorage: which is called by users to pay tokens for the amount of storage they want to use. the user locks specific amount of tokens in the smart contract which will be used toward the quote user uses for storage
+ - upload requests which is the requests for uploading specific cids into ipfs: upload request is sent by a user, and then the chain needs to check the total amount of tokens that user has paid so far and check if user has remaining quote and return the low balance if not and if user has already paid enough tokens submit the request. upload request has replication factor: number, cids (can be multiple in an array of cids), pool id(which is the pool uploader wants the cids to be stored by) and uploader account id
+ - proof engine which is to submit proofs of stored cids: as storers submit proofs to the smart contract, the locked tokens from uploaded will be released to them. when proof is submitted based on the period of proof which is default to 1 day, the amount of tokens is calculated and released from locked tokens of uploader.
+ - removeUpload: which can be called by the uploader to request removal of uploaded cid by storers. when it is called, it stores data on chain for cids:[], uploader account, pool id, date. when a cid is sent for removal, any proof request submitted by storers will be returned by the error that cid is removed and no token will be released to them
+ - query removed uploads: which anyone can call to query removal requests an can filter by time, pool id and uploader and cid
+ - setReputation: which can be called by pool creator only and sets the members reputation score for each called member. if it is possible that smart contract itself sets the reputation, Reputation of a node is identified and increases by number of days that node stays online without going offline, number of successful verified proofs of stored cids but if it is not possible then ok to be called manually
+ - query uploads: this is a method that anyone can all to see the upload requests and can filter by pool, uploader and storers
+you should also find the best approach to ensure that storers who store a cid after the cid is already stored by requested replication factor, will not get rewarded and receive error when they want to submit proof
+ - setMiningReward: It sets the number of mining reward tokens per day and can only be called by smart contract owner
+ - distribute rewards: which can be called by smart contract itself only based on criteria set and by smart contract owner. it distributes the mining rewards based on number set per day and can only be called once a day
+
+Note that this is a very complex and important task, the code needs to be production level and upgrade-able using sygma and hardhat documentation and examples I shared and you should pay attention to create a high quality code. I cannot accept any incomplete response, any placeholders that asks me to complete it, or excuse to not provide a production level code
+make sure you keep the structure of sygma structure I shared and also give me the name of each needed file and the content one by one without skipping anything.
+re-read my requirements and ensure that all endpoints I mentioned are implemented. I have noted them by dash, "-", in the above and you should in the code specify by comments exactly where each is implemented

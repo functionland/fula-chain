@@ -20,7 +20,7 @@ const config: HardhatUserConfig = {
             url: "https://ethereum-sepolia.publicnode.com",
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 11155111,
-            gas: 399170,
+            gas: 1099170,
             gasPrice: "auto"
         },
         "base-sepolia": {

@@ -8,7 +8,7 @@
     "hardhat": "hardhat",
     "build": "hardhat compile",
     "hardhat:setvar": "yarn hardhat vars set PK",
-    "deploy:deployMultichain": "yarn hardhat run scripts/deployMultichain.ts --network sepolia --show-stack-traces",
+    "deploy:deployMultichain": "yarn hardhat run scripts/deployToken.ts --network sepolia --show-stack-traces",
     "deploy:deployMultichainBytecode": "yarn hardhat run scripts/deployMultichainBytecode.ts --network sepolia",
     "deploy:localhost": "yarn hardhat run scripts/localhost.ts"
   },
@@ -42,8 +42,8 @@
   "packageManager": "yarn@3.8.0",
   "dependencies": {
     "@nomicfoundation/hardhat-ignition": "^0.15.9",
-    "@openzeppelin/contracts": "4.9.3",
-    "@openzeppelin/contracts-upgradeable": "4.9.3",
+    "@openzeppelin/contracts": "^4.9.3",
+    "@openzeppelin/contracts-upgradeable": "^4.9.3",
     "@polkadot/api": "^15.0.2",
     "@polkadot/keyring": "^13.2.3",
     "@polkadot/types": "^15.0.2",
