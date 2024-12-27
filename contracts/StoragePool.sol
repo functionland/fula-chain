@@ -14,9 +14,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable {
     uint256 public poolCounter;
     uint256 public poolCreationTokens; // Amount needed to create a pool
 
-    constructor() {}
-
-    function initialize(address _token) public initializer {
+    function initialize(address _token) public reinitializer(1) {
         __Ownable_init();
         __UUPSUpgradeable_init();
         token = StorageToken(_token);

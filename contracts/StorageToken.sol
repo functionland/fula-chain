@@ -4,8 +4,10 @@ pragma solidity ^0.8.19;
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
 
-contract StorageToken is ERC20Upgradeable, UUPSUpgradeable, OwnableUpgradeable {
+contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable {
     uint256 private constant TOTAL_SUPPLY = 1_000_000 * 10**18; // 1M tokens
     mapping(address => bool) public bridgeOperators;
     mapping(address => bool) public poolContracts;
@@ -18,14 +20,16 @@ contract StorageToken is ERC20Upgradeable, UUPSUpgradeable, OwnableUpgradeable {
     event PoolContractRemoved(address poolContract);
     event ProofContractAdded(address proofContract);
     event ProofContractRemoved(address proofContract);
-
-    constructor() {}
     
-    function initialize() public initializer {
+    function initialize() public reinitializer(1) {  // Increment version number for each upgrade
         __ERC20_init("Test Token", "TT");
         __UUPSUpgradeable_init();
         __Ownable_init();
         _mint(msg.sender, TOTAL_SUPPLY);
+    }
+
+    function version() public pure returns (string memory) {
+        return "1.0.0";
     }
 
     modifier onlyBridgeOperator() {
@@ -96,3 +100,5 @@ contract StorageToken is ERC20Upgradeable, UUPSUpgradeable, OwnableUpgradeable {
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 }
+
+// yarn hardhat verify --network sepolia 0x...

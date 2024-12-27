@@ -1,42 +1,29 @@
-import { multichain, web3 } from "hardhat";
-import { NetworkArguments } from "@chainsafe/hardhat-plugin-multichain-deploy";
+import { ethers, upgrades } from "hardhat";
 
-async function main(): Promise<void> {
-    const [deployer] = await web3.eth.getAccounts();
+async function main() {
     const tokenAddress = process.env.TOKEN_ADDRESS?.trim();
-
     if (!tokenAddress) {
         throw new Error("TOKEN_ADDRESS environment variable not set");
     }
 
-    const networkArguments: NetworkArguments = {
-        sepolia: {
-            args: [],
-            initData: {
-                initMethodName: "initialize",
-                initMethodArgs: [tokenAddress],
-            },
-        },
-        amoy: {
-            args: [],
-            initData: {
-                initMethodName: "initialize",
-                initMethodArgs: [tokenAddress],
-            },
-        }
-    };
+    const StoragePool = await ethers.getContractFactory("StoragePool");
+    console.log("Deploying StoragePool...");
+    
+    const storagePool = await upgrades.deployProxy(StoragePool, [tokenAddress], {
+        initializer: "initialize",
+        kind: "uups"
+    });
+    
+    await storagePool.waitForDeployment();
+    const poolAddress = await storagePool.getAddress();
+    console.log("StoragePool deployed to:", poolAddress);
 
-    const { transactionHash, domainIDs } = await multichain.deployMultichain(
-        "StoragePool",
-        networkArguments,
-        {
-            customNonPayableTxOptions: {
-                from: deployer
-            }
-        }
-    );
-
-    await multichain.getDeploymentInfo(transactionHash, domainIDs);
+    // Get token contract instance and add pool as authorized contract
+    const StorageToken = await ethers.getContractFactory("StorageToken");
+    const token = StorageToken.attach(tokenAddress);
+    const addPoolTx = await token.addPoolContract(poolAddress);
+    await addPoolTx.wait();
+    console.log("Pool contract authorized in token contract");
 }
 
 main().catch((error) => {
@@ -44,4 +31,6 @@ main().catch((error) => {
     process.exitCode = 1;
 });
 
-// set TOKEN_ADDRESS=0x02b8492107b55941eccfd6d1e9c966210206b641 && yarn hardhat run scripts/deployPool.ts --network sepolia --show-stack-traces
+
+// set TOKEN_ADDRESS=0xFd3F71338f422B518e9eb6A76fF0D32093cD5fc8 && yarn hardhat run scripts/deployPool.ts --network sepolia --show-stack-traces
+// yarn hardhat verify --network sepolia 0xe91214431dbf3279c27062611df162c16fd35230

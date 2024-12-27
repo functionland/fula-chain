@@ -4,6 +4,7 @@ import "@chainsafe/hardhat-ts-artifact-plugin";
 import "@nomicfoundation/hardhat-web3-v4";
 import "@chainsafe/hardhat-plugin-multichain-deploy";
 import { Environment } from "@buildwithsygma/sygma-sdk-core";
+import '@openzeppelin/hardhat-upgrades';
 
 const config: HardhatUserConfig = {
     solidity: {
@@ -44,6 +45,11 @@ const config: HardhatUserConfig = {
     },
     multichain: {
         environment: Environment.TESTNET
+    },
+    etherscan: {
+      apiKey: {
+        sepolia: 'R9XBFPYRFBARE9C79SDJAVGNJ3HEQ7XJRZ'
+      }
     }
 };
 

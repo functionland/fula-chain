@@ -15,9 +15,7 @@ contract StorageProof is IStorageProof, OwnableUpgradeable, UUPSUpgradeable {
     uint256 public miningRewardPerDay;
     uint256 public lastRewardDistribution;
 
-    constructor() {}
-
-    function initialize(address _token) public initializer {
+    function initialize(address _token) public reinitializer(1) {
         __Ownable_init();
         __UUPSUpgradeable_init();
         token = StorageToken(_token);

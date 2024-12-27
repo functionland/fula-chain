@@ -1,44 +1,29 @@
-import { multichain, web3 } from "hardhat";
-import { NetworkArguments } from "@chainsafe/hardhat-plugin-multichain-deploy";
+import { ethers, upgrades } from "hardhat";
 
-async function main(): Promise<void> {
-    // Get command line arguments
+async function main() {
     const tokenAddress = process.env.TOKEN_ADDRESS?.trim();
-
     if (!tokenAddress) {
         throw new Error("TOKEN_ADDRESS environment variable not set");
     }
 
-    const [deployer] = await web3.eth.getAccounts();
+    const StorageProof = await ethers.getContractFactory("StorageProof");
+    console.log("Deploying StorageProof...");
+    
+    const storageProof = await upgrades.deployProxy(StorageProof, [tokenAddress], {
+        initializer: "initialize",
+        kind: "uups"
+    });
+    
+    await storageProof.waitForDeployment();
+    const proofAddress = await storageProof.getAddress();
+    console.log("StorageProof deployed to:", proofAddress);
 
-    const networkArguments: NetworkArguments = {
-        sepolia: {
-            args: [],
-            initData: {
-                initMethodName: "initialize",
-                initMethodArgs: [tokenAddress],
-            },
-        },
-        amoy: {
-            args: [],
-            initData: {
-                initMethodName: "initialize",
-                initMethodArgs: [tokenAddress],
-            },
-        }
-    };
-
-    const { transactionHash, domainIDs } = await multichain.deployMultichain(
-        "StorageProof",
-        networkArguments,
-        {
-            customNonPayableTxOptions: {
-                from: deployer
-            }
-        }
-    );
-
-    await multichain.getDeploymentInfo(transactionHash, domainIDs);
+    // Get token contract instance and add proof as authorized contract
+    const StorageToken = await ethers.getContractFactory("StorageToken");
+    const token = StorageToken.attach(tokenAddress);
+    const addProofTx = await token.addProofContract(proofAddress);
+    await addProofTx.wait();
+    console.log("Proof contract authorized in token contract");
 }
 
 main().catch((error) => {
@@ -46,4 +31,5 @@ main().catch((error) => {
     process.exitCode = 1;
 });
 
-// set TOKEN_ADDRESS=0x02b8492107b55941eccfd6d1e9c966210206b641 && yarn hardhat run scripts/deployProof.ts --network sepolia
+
+// set TOKEN_ADDRESS=0xFd3F71338f422B518e9eb6A76fF0D32093cD5fc8 && yarn hardhat run scripts/deployProof.ts --network sepolia
