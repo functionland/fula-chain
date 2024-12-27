@@ -39,4 +39,5 @@ interface IStorageProof {
         uint256 timestamp,
         uint8 replicationCount
     );
+    event EmergencyAction(string action, uint256 timestamp);
 }

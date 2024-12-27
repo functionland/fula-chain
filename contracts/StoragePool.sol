@@ -5,15 +5,18 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "./interfaces/IStoragePool.sol";
 import "./StorageToken.sol";
 
-contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, PausableUpgradeable, ReentrancyGuardUpgradeable {
+contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, PausableUpgradeable, ReentrancyGuardUpgradeable, AccessControlUpgradeable {
     uint256 public constant IMPLEMENTATION_VERSION = 1;
+    bytes32 public constant POOL_CREATOR_ROLE = keccak256("POOL_CREATOR_ROLE");
     StorageToken public token;
     mapping(uint256 => Pool) public pools;
     mapping(uint256 => JoinRequest[]) public joinRequests;
     mapping(address => uint256) public lockedTokens;
+    mapping(address => uint256) public requestIndex;
     uint256 public poolCounter;
     uint256 public poolCreationTokens; // Amount needed to create a pool
     uint256 private constant MAX_MEMBERS = 1000;
@@ -23,16 +26,22 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         __Ownable_init();
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
+        __Pausable_init();
+        __AccessControl_init();
+        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender); // Owner has admin role
+        _setupRole(POOL_CREATOR_ROLE, msg.sender); // Assign initial roles
         token = StorageToken(_token);
         poolCreationTokens = 500_000 * 10**18; // 500K tokens with 18 decimals
     }
 
     function emergencyPause() external onlyOwner {
         _pause();
+        emit EmergencyAction("Contract paused", block.timestamp);
     }
 
     function emergencyUnpause() external onlyOwner {
         _unpause();
+        emit EmergencyAction("Contract unpaused", block.timestamp);
     }
 
     modifier validatePoolId(uint32 poolId) {
@@ -83,21 +92,18 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         requests[newIndex].rejections = 0;
     }
 
-    function cancelJoinRequest(uint32 poolId) external {
-        JoinRequest[] storage requests = joinRequests[poolId];
+    function cancelJoinRequest(uint32 poolId) external nonReentrant {
+        uint256 index = requestIndex[msg.sender];
+        require(index < joinRequests[poolId].length, "Invalid request");
         
-        for (uint i = 0; i < requests.length; i++) {
-            if (requests[i].accountId == msg.sender) {
-                // Unlock tokens
-                token.transfer(msg.sender, lockedTokens[msg.sender]);
-                lockedTokens[msg.sender] = 0;
-                _removeJoinRequest(poolId, i);
-                break;
-            }
-        }
+        // Unlock tokens and remove request efficiently
+        token.transfer(msg.sender, lockedTokens[msg.sender]);
+        lockedTokens[msg.sender] = 0;
+        
+        _removeJoinRequest(poolId, index);
     }
 
-    function leavePool(uint32 poolId) external {
+    function leavePool(uint32 poolId) external nonReentrant {
         Pool storage pool = pools[poolId];
         require(pool.members[msg.sender].joinDate > 0, "Not a member");
         
@@ -123,6 +129,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         string memory peerId,
         address accountId
     ) internal {
+        require(accountId != address(0), "Invalid account ID");
         Pool storage pool = pools[poolId];
         require(pool.memberList.length < MAX_MEMBERS, "Pool is full");
         Member storage newMember = pool.members[accountId];
@@ -150,7 +157,8 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         uint32 poolId,
         string memory peerIdToVote,
         bool approve
-    ) external {
+    ) external nonReentrant {
+        require(bytes(peerIdToVote).length > 0, "Invalid peer ID");
         Pool storage pool = pools[poolId];
         require(pool.members[msg.sender].joinDate > 0, "Not a pool member");
         
@@ -183,7 +191,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         uint32 poolId,
         address member,
         uint8 score
-    ) external {
+    ) external onlyRole(POOL_CREATOR_ROLE) {
         require(score <= 100, "Score exceeds maximum");
         Pool storage pool = pools[poolId];
         require(msg.sender == pool.creator, "Only pool creator");

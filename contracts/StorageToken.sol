@@ -8,10 +8,12 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "./DAMMModule.sol";
 
-contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, PausableUpgradeable, DAMMModule {
+contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, PausableUpgradeable, AccessControlUpgradeable, DAMMModule {
     uint256 private constant TOTAL_SUPPLY = 1_000_000 * 10**18; // 1M tokens
+    bytes32 public constant BRIDGE_OPERATOR_ROLE = keccak256("BRIDGE_OPERATOR_ROLE");
     mapping(address => bool) public bridgeOperators;
     mapping(address => bool) public poolContracts;
     mapping(address => bool) public proofContracts;
@@ -24,6 +26,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     event PoolContractRemoved(address poolContract);
     event ProofContractAdded(address proofContract);
     event ProofContractRemoved(address proofContract);
+    event EmergencyAction(string action, uint256 timestamp);
 
     //DAMM
     event DAMMPoolCreated(address indexed quoteToken, uint256 initialLiquidity);
@@ -35,10 +38,14 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     );
     
     function initialize() public reinitializer(1) {  // Increment version number for each upgrade
+        __AccessControl_init();
         __ERC20_init("Test Token", "TT");
         __UUPSUpgradeable_init();
         __Ownable_init();
         __DAMMModule_init();
+        __Pausable_init();
+        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender); // Owner has admin role
+        _setupRole(BRIDGE_OPERATOR_ROLE, msg.sender); // Assign initial roles
         _mint(msg.sender, TOTAL_SUPPLY);
     }
 
@@ -48,10 +55,12 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     function emergencyPause() external onlyOwner {
         _pause();
+        emit EmergencyAction("Contract paused", block.timestamp);
     }
 
     function emergencyUnpause() external onlyOwner {
         _unpause();
+        emit EmergencyAction("Contract unpaused", block.timestamp);
     }
 
     modifier onlyBridgeOperator() {
@@ -60,13 +69,17 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     }
 
     // Bridge operator management
-    function addBridgeOperator(address operator) external onlyOwner validateAddress(operator) {
+    function addBridgeOperator(address operator) external onlyRole(DEFAULT_ADMIN_ROLE) validateAddress(operator) {
         require(operator != address(0), "Invalid operator address");
+        require(!bridgeOperators[operator], "Operator already exists");
+        grantRole(BRIDGE_OPERATOR_ROLE, operator);
         bridgeOperators[operator] = true;
         emit BridgeOperatorAdded(operator);
     }
 
-    function removeBridgeOperator(address operator) external onlyOwner {
+    function removeBridgeOperator(address operator) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(operator != address(0), "Invalid operator address");
+        revokeRole(BRIDGE_OPERATOR_ROLE, operator);
         bridgeOperators[operator] = false;
         emit BridgeOperatorRemoved(operator);
     }
@@ -94,7 +107,10 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     }
 
     // Bridge-specific functions with access control
-    function bridgeMint(address to, uint256 amount) external onlyBridgeOperator {
+    function bridgeMint(address to, uint256 amount, uint256 sourceChain) 
+        external onlyBridgeOperator {
+        require(totalSupply() + amount <= TOTAL_SUPPLY, "Exceeds maximum supply");
+        require(supportedChains[sourceChain], "Unsupported source chain");
         _mint(to, amount);
     }
 
@@ -133,20 +149,13 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         emit BridgeTransfer(msg.sender, amount, targetChain);
     }
 
-    // Modify bridgeMint for receiving chain
-    function bridgeMint(address to, uint256 amount, uint256 sourceChain) 
-        external onlyBridgeOperator {
-        require(supportedChains[sourceChain], "Unsupported source chain");
-        _mint(to, amount);
-    }
-
     //DAMM
     function executeDAMMSwap(
         address quoteToken,
         uint256 amountIn,
         uint256 minAmountOut,
         bool isBaseToQuote
-    ) external returns (uint256) {
+    ) external nonReentrant returns (uint256) {
         // Check
         require(quoteToken != address(0), "Invalid quote token");
         require(amountIn > 0, "Invalid amount");
@@ -157,7 +166,8 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
             _transfer(msg.sender, address(this), amountIn);
             amountOut = super.swap(quoteToken, amountIn, minAmountOut, true);
             // Interaction
-            require(IERC20(quoteToken).transfer(msg.sender, amountOut), "Quote transfer failed");
+            bool success = IERC20(quoteToken).transfer(msg.sender, amountOut);
+            require(success, "Quote transfer failed");
         } else {
             require(IERC20(quoteToken).transferFrom(msg.sender, address(this), amountIn), "Quote transfer failed");
             amountOut = super.swap(quoteToken, amountIn, minAmountOut, false);

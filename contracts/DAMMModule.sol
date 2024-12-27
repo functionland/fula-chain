@@ -37,7 +37,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
     event LiquidityRemoved(address indexed quoteToken, uint256 baseAmount, uint256 quoteAmount);
     event Swap(address indexed quoteToken, address indexed trader, uint256 amountIn, uint256 amountOut, bool isBaseToQuote);
     event DAMMPoolParametersUpdated(address indexed quoteToken, uint256 concentrationFactor, uint256 volatility);
-    event EmergencyAction(string action, address indexed pool);
+    event EmergencyActionDAMM(string action, address indexed pool);
     event DAMMPoolStateUpdated(
         address indexed quoteToken,
         uint256 baseReserve,
@@ -102,6 +102,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         (, int256 currentPrice,,uint256 updatedAt,) = AggregatorV3Interface(pool.priceFeed).latestRoundData();
         require(currentPrice > 0, "Invalid price feed data");
         require(block.timestamp - updatedAt <= 3600, "Stale price data");
+        require(updatedAt > 0, "Round not complete");
 
         // Calculate price volatility using EMA
         uint256 priceChange = abs(uint256(currentPrice) - pool.lastPrice);
@@ -127,6 +128,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         uint256 minAmountOut,
         bool isBaseToQuote
     ) public virtual nonReentrant whenNotPaused onlyActivePool(quoteToken) returns (uint256 amountOut) {
+        require(minAmountOut > 0, "Invalid minimum output");
         updateDAMMPoolDynamics(quoteToken);
         
         LiquidityPool memory pool = pools[quoteToken];
@@ -142,9 +144,13 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
 
         // Update reserves
         if (isBaseToQuote) {
+            require(pool.baseReserve + amountIn >= pool.baseReserve, "Overflow check");
+            require(pool.quoteReserve >= amountOut, "Insufficient quote reserve");
             pool.baseReserve += amountIn;
             pool.quoteReserve -= amountOut;
         } else {
+            require(pool.quoteReserve + amountIn >= pool.quoteReserve, "Overflow check");
+            require(pool.baseReserve >= amountOut, "Insufficient base reserve");
             pool.quoteReserve += amountIn;
             pool.baseReserve -= amountOut;
         }
@@ -174,12 +180,12 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
     // Emergency functions
     function pauseDAMMPool(address quoteToken) public virtual {
         pools[quoteToken].isActive = false;
-        emit EmergencyAction("Pool paused", quoteToken);
+        emit EmergencyActionDAMM("Pool paused", quoteToken);
     }
 
     function resumeDAMMPool(address quoteToken) public virtual {
         pools[quoteToken].isActive = true;
-        emit EmergencyAction("Pool resumed", quoteToken);
+        emit EmergencyActionDAMM("Pool resumed", quoteToken);
     }
 
     function abs(uint256 a) internal pure returns (uint256) {

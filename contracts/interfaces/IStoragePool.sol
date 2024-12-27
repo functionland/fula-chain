@@ -56,4 +56,5 @@ interface IStoragePool {
         uint256 requiredTokens,
         uint256 memberCount
     );
+    event EmergencyAction(string action, uint256 timestamp);
 }
