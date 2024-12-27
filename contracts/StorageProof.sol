@@ -17,6 +17,7 @@ contract StorageProof is IStorageProof, OwnableUpgradeable, UUPSUpgradeable, Ree
     uint256 public storageCostPerTBYear;
     uint256 public miningRewardPerDay;
     uint256 public lastRewardDistribution;
+    uint256 private constant MAX_TIME_DRIFT = 1 hours;
 
     function initialize(address _token) public reinitializer(1) {
         __Ownable_init();
@@ -52,6 +53,10 @@ contract StorageProof is IStorageProof, OwnableUpgradeable, UUPSUpgradeable, Ree
         require(bytes(_cid).length > 0, "Invalid CID");
         require(bytes(_cid).length <= 512, "CID too long"); // Set appropriate max length
         _;
+    }
+
+    function isValidTimestamp(uint256 timestamp) internal view returns (bool) {
+        return timestamp <= block.timestamp + MAX_TIME_DRIFT;
     }
 
     // - Set storage cost implementation
@@ -91,7 +96,7 @@ contract StorageProof is IStorageProof, OwnableUpgradeable, UUPSUpgradeable, Ree
     // - Proof engine implementation
     function submitProof(
         string memory cid,
-        uint256 poolId
+        uint32 poolId
     ) external nonReentrant whenNotPaused validateCID(cid) {
         require(!isRemoved(cid), "CID marked for removal");
         require(isValidTimestamp(block.timestamp), "Invalid timestamp");

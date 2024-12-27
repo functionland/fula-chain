@@ -16,7 +16,7 @@ interface IStorageProof {
         uint32 poolId;
         address uploader;
         uint256 timestamp;
-        uint256 currentReplications;
+        uint8 currentReplications;
     }
 
     struct RemovalRequest {
