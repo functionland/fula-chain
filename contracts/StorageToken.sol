@@ -12,6 +12,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     mapping(address => bool) public bridgeOperators;
     mapping(address => bool) public poolContracts;
     mapping(address => bool) public proofContracts;
+    mapping(uint256 => bool) public supportedChains;
 
     event BridgeTransfer(address indexed from, uint256 amount, uint256 targetChain);
     event BridgeOperatorAdded(address operator);
@@ -79,12 +80,6 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         _burn(from, amount);
     }
 
-    function bridgeTransfer(uint256 targetChain, uint256 amount) external {
-        require(balanceOf(msg.sender) >= amount, "Insufficient balance");
-        _burn(msg.sender, amount);
-        emit BridgeTransfer(msg.sender, amount, targetChain);
-    }
-
     // Override transfer functions to handle pool and proof contracts
     function transferFrom(
         address sender,
@@ -96,6 +91,31 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
             return true;
         }
         return super.transferFrom(sender, recipient, amount);
+    }
+
+    // multi-chain token transfer
+    // Add function to manage supported chains
+    function setSupportedChain(uint256 chainId, bool supported) external onlyOwner {
+        supportedChains[chainId] = supported;
+    }
+
+    // Modify bridgeTransfer function
+    function bridgeTransfer(uint256 targetChain, uint256 amount) external {
+        require(supportedChains[targetChain], "Unsupported chain");
+        require(balanceOf(msg.sender) >= amount, "Insufficient balance");
+        
+        // Lock tokens on source chain
+        _burn(msg.sender, amount);
+        
+        // Emit event for bridge operators
+        emit BridgeTransfer(msg.sender, amount, targetChain);
+    }
+
+    // Modify bridgeMint for receiving chain
+    function bridgeMint(address to, uint256 amount, uint256 sourceChain) 
+        external onlyBridgeOperator {
+        require(supportedChains[sourceChain], "Unsupported source chain");
+        _mint(to, amount);
     }
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
