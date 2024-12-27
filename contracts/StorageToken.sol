@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
@@ -7,7 +7,7 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "./DAMMModule.sol";
 
@@ -37,28 +37,29 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         uint256 amountOut
     );
     
-    function initialize() public reinitializer(1) {  // Increment version number for each upgrade
-        __AccessControl_init();
+    function initialize(address initialOwner) public reinitializer(1) {  // Increment version number for each upgrade
+        require(initialOwner != address(0), "Invalid owner address");
         __ERC20_init("Test Token", "TT");
         __UUPSUpgradeable_init();
-        __Ownable_init();
+        __Ownable_init(initialOwner);
         __DAMMModule_init();
         __Pausable_init();
-        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender); // Owner has admin role
-        _setupRole(BRIDGE_OPERATOR_ROLE, msg.sender); // Assign initial roles
-        _mint(msg.sender, TOTAL_SUPPLY);
+        __AccessControl_init();
+        _grantRole(DEFAULT_ADMIN_ROLE, initialOwner); // Assign admin role to deployer
+        _grantRole(BRIDGE_OPERATOR_ROLE, initialOwner); // Assign bridge operator role to deployer
+        _mint(initialOwner, TOTAL_SUPPLY);
     }
 
     function version() public pure returns (string memory) {
         return "1.0.0";
     }
 
-    function emergencyPause() external onlyOwner {
+    function emergencyPauseToken() external onlyOwner {
         _pause();
         emit EmergencyAction("Contract paused", block.timestamp);
     }
 
-    function emergencyUnpause() external onlyOwner {
+    function emergencyUnpauseToken() external onlyOwner {
         _unpause();
         emit EmergencyAction("Contract unpaused", block.timestamp);
     }

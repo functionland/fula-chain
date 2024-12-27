@@ -8,13 +8,16 @@ import '@openzeppelin/hardhat-upgrades';
 
 const config: HardhatUserConfig = {
     solidity: {
-        version: "0.8.19",  // Updated from 0.8.20
+        version: "0.8.28",  // Updated from 0.8.19
         settings: {
             optimizer: {
                 enabled: true,
                 runs: 200
             }
         }
+    },
+    sourcify: {
+        enabled: true
     },
     networks: {
         sepolia: {

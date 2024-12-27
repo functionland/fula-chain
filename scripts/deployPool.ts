@@ -6,14 +6,21 @@ async function main() {
         throw new Error("TOKEN_ADDRESS environment variable not set");
     }
 
+    // Specify the initial owner address
+    const initialOwner = process.env.INITIAL_OWNER?.trim();
+    if (!initialOwner) {
+        throw new Error("INITIAL_OWNER environment variable not set");
+    }
+
     const StoragePool = await ethers.getContractFactory("StoragePool");
     console.log("Deploying StoragePool...");
-    
-    const storagePool = await upgrades.deployProxy(StoragePool, [tokenAddress], {
+
+    // Pass both tokenAddress and initialOwner to the initializer
+    const storagePool = await upgrades.deployProxy(StoragePool, [tokenAddress, initialOwner], {
         initializer: "initialize",
         kind: "uups"
     });
-    
+
     await storagePool.waitForDeployment();
     const poolAddress = await storagePool.getAddress();
     console.log("StoragePool deployed to:", poolAddress);
@@ -32,5 +39,6 @@ main().catch((error) => {
 });
 
 
-// set TOKEN_ADDRESS=0xFd3F71338f422B518e9eb6A76fF0D32093cD5fc8 && yarn hardhat run scripts/deployPool.ts --network sepolia --show-stack-traces
-// yarn hardhat verify --network sepolia 0xe91214431dbf3279c27062611df162c16fd35230
+
+// set TOKEN_ADDRESS=0xed1211C59554c301FBaA2F4ebBD9DF91a21F7E47 && yarn hardhat run scripts/deployPool.ts --network sepolia --show-stack-traces
+// yarn hardhat verify --network sepolia 0x...

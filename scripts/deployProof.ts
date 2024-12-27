@@ -6,14 +6,21 @@ async function main() {
         throw new Error("TOKEN_ADDRESS environment variable not set");
     }
 
+    // Specify the initial owner address
+    const initialOwner = process.env.INITIAL_OWNER?.trim();
+    if (!initialOwner) {
+        throw new Error("INITIAL_OWNER environment variable not set");
+    }
+
     const StorageProof = await ethers.getContractFactory("StorageProof");
     console.log("Deploying StorageProof...");
-    
-    const storageProof = await upgrades.deployProxy(StorageProof, [tokenAddress], {
+
+    // Pass both tokenAddress and initialOwner to the initializer
+    const storageProof = await upgrades.deployProxy(StorageProof, [tokenAddress, initialOwner], {
         initializer: "initialize",
         kind: "uups"
     });
-    
+
     await storageProof.waitForDeployment();
     const proofAddress = await storageProof.getAddress();
     console.log("StorageProof deployed to:", proofAddress);
@@ -32,4 +39,5 @@ main().catch((error) => {
 });
 
 
-// set TOKEN_ADDRESS=0xFd3F71338f422B518e9eb6A76fF0D32093cD5fc8 && yarn hardhat run scripts/deployProof.ts --network sepolia
+// set TOKEN_ADDRESS=0xed1211C59554c301FBaA2F4ebBD9DF91a21F7E47 && yarn hardhat run scripts/deployProof.ts --network sepolia
+// yarn hardhat verify --network sepolia 0x...

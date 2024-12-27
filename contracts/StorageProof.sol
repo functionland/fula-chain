@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "./interfaces/IStorageProof.sol";
 import "./StorageToken.sol";
@@ -21,24 +21,25 @@ contract StorageProof is IStorageProof, OwnableUpgradeable, UUPSUpgradeable, Ree
     uint256 public lastRewardDistribution;
     uint256 private constant MAX_TIME_DRIFT = 1 hours;
 
-    function initialize(address _token) public reinitializer(1) {
-        __Ownable_init();
+    function initialize(address _token, address initialOwner) public reinitializer(1) {
+        require(initialOwner != address(0), "Invalid owner address");
+        __Ownable_init(initialOwner);
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
         __Pausable_init();
         __AccessControl_init();
-        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender); // Owner has admin role
-        _setupRole(PROOF_MANAGER_ROLE, msg.sender); // Assign initial roles
+        _grantRole(DEFAULT_ADMIN_ROLE, initialOwner); // Owner has admin role
+        _grantRole(PROOF_MANAGER_ROLE, initialOwner); // Assign initial roles
         token = StorageToken(_token);
         lastRewardDistribution = block.timestamp;
     }
 
-    function emergencyPause() external onlyOwner {
+    function emergencyPauseProof() external onlyOwner {
         _pause();
         emit EmergencyAction("Contract paused", block.timestamp);
     }
 
-    function emergencyUnpause() external onlyOwner {
+    function emergencyUnpauseProof() external onlyOwner {
         _unpause();
         emit EmergencyAction("Contract unpaused", block.timestamp);
     }

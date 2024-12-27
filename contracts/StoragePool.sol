@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "./interfaces/IStoragePool.sol";
 import "./StorageToken.sol";
@@ -21,25 +21,26 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     uint256 public poolCreationTokens; // Amount needed to create a pool
     uint256 private constant MAX_MEMBERS = 1000;
 
-    function initialize(address _token) public reinitializer(1) {
+    function initialize(address _token, address initialOwner) public reinitializer(1) {
         require(_token != address(0), "Invalid token address");
-        __Ownable_init();
+        require(initialOwner != address(0), "Invalid owner address");
+        __Ownable_init(initialOwner);
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
         __Pausable_init();
         __AccessControl_init();
-        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender); // Owner has admin role
-        _setupRole(POOL_CREATOR_ROLE, msg.sender); // Assign initial roles
+        _grantRole(DEFAULT_ADMIN_ROLE, initialOwner); // Owner has admin role
+        _grantRole(POOL_CREATOR_ROLE, initialOwner); // Assign initial roles
         token = StorageToken(_token);
         poolCreationTokens = 500_000 * 10**18; // 500K tokens with 18 decimals
     }
 
-    function emergencyPause() external onlyOwner {
+    function emergencyPausePool() external onlyOwner {
         _pause();
         emit EmergencyAction("Contract paused", block.timestamp);
     }
 
-    function emergencyUnpause() external onlyOwner {
+    function emergencyUnpausePool() external onlyOwner {
         _unpause();
         emit EmergencyAction("Contract unpaused", block.timestamp);
     }
