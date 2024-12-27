@@ -6,14 +6,14 @@ interface IStorageProof {
         string cid;
         uint256 timestamp;
         address storer;
-        uint256 poolId;
-        uint256 replicationCount;
+        uint32 poolId;
+        uint8 replicationCount;
     }
 
     struct UploadRequest {
         string[] cids;
-        uint256 replicationFactor;
-        uint256 poolId;
+        uint8 replicationFactor;
+        uint32 poolId;
         address uploader;
         uint256 timestamp;
         uint256 currentReplications;
@@ -22,14 +22,21 @@ interface IStorageProof {
     struct RemovalRequest {
         string[] cids;
         address uploader;
-        uint256 poolId;
+        uint32 poolId;
         uint256 timestamp;
     }
 
-    event ProofSubmitted(string cid, address storer, uint256 poolId);
-    event UploadRequested(string[] cids, address uploader, uint256 poolId);
-    event RemovalRequested(string[] cids, address uploader, uint256 poolId);
+    event ProofSubmitted(string cid, address storer, uint32 poolId);
+    event UploadRequested(string[] cids, address uploader, uint32 poolId);
+    event RemovalRequested(string[] cids, address uploader, uint32 poolId);
     event StorageCostSet(uint256 costPerTBYear);
     event MiningRewardSet(uint256 rewardPerDay);
     event RewardsDistributed(uint256 amount, uint256 timestamp);
+    event ProofStateUpdated(
+        string indexed cid,
+        address indexed storer,
+        uint32 poolId,
+        uint256 timestamp,
+        uint8 replicationCount
+    );
 }

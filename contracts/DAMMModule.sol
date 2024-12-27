@@ -6,6 +6,7 @@ import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable {
+    uint256 public constant IMPLEMENTATION_VERSION = 1;
     struct LiquidityPool {
         uint256 baseReserve;
         uint256 quoteReserve;
@@ -31,12 +32,19 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
     mapping(address => uint256[]) public priceHistory;
     
     // Events
-    event PoolCreated(address indexed quoteToken, address priceFeed);
+    event DAMMPoolCreated(address indexed quoteToken, address priceFeed);
     event LiquidityAdded(address indexed quoteToken, uint256 baseAmount, uint256 quoteAmount);
     event LiquidityRemoved(address indexed quoteToken, uint256 baseAmount, uint256 quoteAmount);
     event Swap(address indexed quoteToken, address indexed trader, uint256 amountIn, uint256 amountOut, bool isBaseToQuote);
-    event PoolParametersUpdated(address indexed quoteToken, uint256 concentrationFactor, uint256 volatility);
+    event DAMMPoolParametersUpdated(address indexed quoteToken, uint256 concentrationFactor, uint256 volatility);
     event EmergencyAction(string action, address indexed pool);
+    event DAMMPoolStateUpdated(
+        address indexed quoteToken,
+        uint256 baseReserve,
+        uint256 quoteReserve,
+        uint256 price,
+        uint256 timestamp
+    );
 
     // Modifiers
     modifier onlyActivePool(address quoteToken) {
@@ -51,12 +59,17 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         _;
     }
 
+    modifier validateAddress(address _address) {
+        require(_address != address(0), "Invalid address");
+        _;
+    }
+
     function __DAMMModule_init() internal onlyInitializing {
         __Pausable_init();
         __ReentrancyGuard_init();
     }
 
-    function createPool(
+    function createPoolDAMM(
         address quoteToken,
         address priceFeed,
         uint256 initialBaseAmount,
@@ -80,14 +93,15 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
             isActive: true
         });
 
-        emit PoolCreated(quoteToken, priceFeed);
+        emit DAMMPoolCreated(quoteToken, priceFeed);
     }
 
-    function updatePoolDynamics(address quoteToken) public whenNotPaused onlyActivePool(quoteToken) {
+    function updateDAMMPoolDynamics(address quoteToken) public whenNotPaused onlyActivePool(quoteToken) {
         LiquidityPool storage pool = pools[quoteToken];
         
-        (, int256 currentPrice,,,) = AggregatorV3Interface(pool.priceFeed).latestRoundData();
+        (, int256 currentPrice,,uint256 updatedAt,) = AggregatorV3Interface(pool.priceFeed).latestRoundData();
         require(currentPrice > 0, "Invalid price feed data");
+        require(block.timestamp - updatedAt <= 3600, "Stale price data");
 
         // Calculate price volatility using EMA
         uint256 priceChange = abs(uint256(currentPrice) - pool.lastPrice);
@@ -104,7 +118,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         pool.lastPrice = uint256(currentPrice);
         pool.lastUpdateTime = block.timestamp;
 
-        emit PoolParametersUpdated(quoteToken, pool.concentrationFactor, pool.volatility);
+        emit DAMMPoolParametersUpdated(quoteToken, pool.concentrationFactor, pool.volatility);
     }
 
     function swap(
@@ -113,9 +127,9 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         uint256 minAmountOut,
         bool isBaseToQuote
     ) public virtual nonReentrant whenNotPaused onlyActivePool(quoteToken) returns (uint256 amountOut) {
-        updatePoolDynamics(quoteToken);
+        updateDAMMPoolDynamics(quoteToken);
         
-        LiquidityPool storage pool = pools[quoteToken];
+        LiquidityPool memory pool = pools[quoteToken];
         
         amountOut = calculateSwapAmount(
             amountIn,
@@ -137,6 +151,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
 
         // Update 24h volume
         pool.baseVolume24h += isBaseToQuote ? amountIn : amountOut;
+        pools[quoteToken] = pool;
 
         emit Swap(quoteToken, msg.sender, amountIn, amountOut, isBaseToQuote);
     }
@@ -157,12 +172,12 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
     }
 
     // Emergency functions
-    function pausePool(address quoteToken) public virtual {
+    function pauseDAMMPool(address quoteToken) public virtual {
         pools[quoteToken].isActive = false;
         emit EmergencyAction("Pool paused", quoteToken);
     }
 
-    function resumePool(address quoteToken) public virtual {
+    function resumeDAMMPool(address quoteToken) public virtual {
         pools[quoteToken].isActive = true;
         emit EmergencyAction("Pool resumed", quoteToken);
     }
@@ -170,4 +185,6 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
     function abs(uint256 a) internal pure returns (uint256) {
         return a;
     }
+
+    uint256[50] private __gap;
 }

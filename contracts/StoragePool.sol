@@ -3,29 +3,49 @@ pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 import "./interfaces/IStoragePool.sol";
 import "./StorageToken.sol";
 
-contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable {
+contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, PausableUpgradeable, ReentrancyGuardUpgradeable {
+    uint256 public constant IMPLEMENTATION_VERSION = 1;
     StorageToken public token;
     mapping(uint256 => Pool) public pools;
     mapping(uint256 => JoinRequest[]) public joinRequests;
     mapping(address => uint256) public lockedTokens;
     uint256 public poolCounter;
     uint256 public poolCreationTokens; // Amount needed to create a pool
+    uint256 private constant MAX_MEMBERS = 1000;
 
     function initialize(address _token) public reinitializer(1) {
+        require(_token != address(0), "Invalid token address");
         __Ownable_init();
         __UUPSUpgradeable_init();
+        __ReentrancyGuard_init();
         token = StorageToken(_token);
         poolCreationTokens = 500_000 * 10**18; // 500K tokens with 18 decimals
+    }
+
+    function emergencyPause() external onlyOwner {
+        _pause();
+    }
+
+    function emergencyUnpause() external onlyOwner {
+        _unpause();
+    }
+
+    modifier validatePoolId(uint32 poolId) {
+        require(poolId < poolCounter, "Invalid pool ID");
+        require(pools[poolId].creator != address(0), "Pool does not exist");
+        _;
     }
 
     function setPoolCreationTokens(uint256 _amount) external onlyOwner {
         poolCreationTokens = _amount;
     }
 
-    function createPool(uint256 requiredTokens) external {
+    function createPool(uint256 requiredTokens) external nonReentrant {
         require(requiredTokens <= poolCreationTokens, "Required tokens exceed limit");
         require(token.balanceOf(msg.sender) >= poolCreationTokens, "Insufficient tokens for pool creation");
         
@@ -39,7 +59,8 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable {
         poolCounter++;
     }
 
-    function submitJoinRequest(uint256 poolId, string memory peerId) external {
+    function submitJoinRequest(uint32 poolId, string memory peerId) external nonReentrant validatePoolId(poolId) {
+        require(lockedTokens[msg.sender] == 0, "Tokens already locked");
         Pool storage pool = pools[poolId];
         require(pool.creator != address(0), "Pool does not exist");
         require(pool.members[msg.sender].joinDate == 0, "Already a member");
@@ -62,7 +83,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable {
         requests[newIndex].rejections = 0;
     }
 
-    function cancelJoinRequest(uint256 poolId) external {
+    function cancelJoinRequest(uint32 poolId) external {
         JoinRequest[] storage requests = joinRequests[poolId];
         
         for (uint i = 0; i < requests.length; i++) {
@@ -76,7 +97,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable {
         }
     }
 
-    function leavePool(uint256 poolId) external {
+    function leavePool(uint32 poolId) external {
         Pool storage pool = pools[poolId];
         require(pool.members[msg.sender].joinDate > 0, "Not a member");
         
@@ -98,11 +119,12 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     function _addMember(
-        uint256 poolId,
+        uint32 poolId,
         string memory peerId,
         address accountId
     ) internal {
         Pool storage pool = pools[poolId];
+        require(pool.memberList.length < MAX_MEMBERS, "Pool is full");
         Member storage newMember = pool.members[accountId];
         newMember.joinDate = block.timestamp;
         newMember.peerId = peerId;
@@ -113,7 +135,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable {
         emit MemberJoined(poolId, accountId);
     }
 
-    function _removeJoinRequest(uint256 poolId, uint256 index) internal {
+    function _removeJoinRequest(uint32 poolId, uint256 index) internal {
         uint256 lastIndex = joinRequests[poolId].length - 1;
         joinRequests[poolId][index].peerId = joinRequests[poolId][lastIndex].peerId;
         joinRequests[poolId][index].accountId = joinRequests[poolId][lastIndex].accountId;
@@ -125,7 +147,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable {
 
     // Vote on pool join request implementation
     function voteOnJoinRequest(
-        uint256 poolId,
+        uint32 poolId,
         string memory peerIdToVote,
         bool approve
     ) external {
@@ -133,7 +155,8 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable {
         require(pool.members[msg.sender].joinDate > 0, "Not a pool member");
         
         JoinRequest[] storage requests = joinRequests[poolId];
-        for (uint i = 0; i < requests.length; i++) {
+        uint256 requestsLength = requests.length;
+        for (uint i = 0; i < requestsLength; i++) {
             if (keccak256(bytes(requests[i].peerId)) == keccak256(bytes(peerIdToVote))) {
                 if (!requests[i].votes[msg.sender]) {
                     if (approve) {
@@ -157,10 +180,11 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable {
 
     // Set reputation implementation
     function setReputation(
-        uint256 poolId,
+        uint32 poolId,
         address member,
-        uint256 score
+        uint8 score
     ) external {
+        require(score <= 100, "Score exceeds maximum");
         Pool storage pool = pools[poolId];
         require(msg.sender == pool.creator, "Only pool creator");
         require(pool.members[member].joinDate > 0, "Not a member");
@@ -168,4 +192,6 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     function _authorizeUpgrade(address) internal override onlyOwner {}
+
+    uint256[50] private __gap;
 }

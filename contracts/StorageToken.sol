@@ -7,9 +7,10 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 import "./DAMMModule.sol";
 
-contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, DAMMModule {
+contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, PausableUpgradeable, DAMMModule {
     uint256 private constant TOTAL_SUPPLY = 1_000_000 * 10**18; // 1M tokens
     mapping(address => bool) public bridgeOperators;
     mapping(address => bool) public poolContracts;
@@ -26,7 +27,12 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     //DAMM
     event DAMMPoolCreated(address indexed quoteToken, uint256 initialLiquidity);
-    event DAMMSwapExecuted(address indexed user, uint256 amountIn, uint256 amountOut);
+    event DAMMSwapExecuted(
+        address indexed user,
+        address indexed quoteToken,
+        uint256 indexed amountIn,
+        uint256 amountOut
+    );
     
     function initialize() public reinitializer(1) {  // Increment version number for each upgrade
         __ERC20_init("Test Token", "TT");
@@ -40,13 +46,22 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         return "1.0.0";
     }
 
+    function emergencyPause() external onlyOwner {
+        _pause();
+    }
+
+    function emergencyUnpause() external onlyOwner {
+        _unpause();
+    }
+
     modifier onlyBridgeOperator() {
         require(bridgeOperators[msg.sender], "Not a bridge operator");
         _;
     }
 
     // Bridge operator management
-    function addBridgeOperator(address operator) external onlyOwner {
+    function addBridgeOperator(address operator) external onlyOwner validateAddress(operator) {
+        require(operator != address(0), "Invalid operator address");
         bridgeOperators[operator] = true;
         emit BridgeOperatorAdded(operator);
     }
@@ -132,17 +147,23 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         uint256 minAmountOut,
         bool isBaseToQuote
     ) external returns (uint256) {
+        // Check
+        require(quoteToken != address(0), "Invalid quote token");
+        require(amountIn > 0, "Invalid amount");
+        
+        // Effect
+        uint256 amountOut;
         if (isBaseToQuote) {
             _transfer(msg.sender, address(this), amountIn);
-            uint256 amountOut = super.swap(quoteToken, amountIn, minAmountOut, true);
+            amountOut = super.swap(quoteToken, amountIn, minAmountOut, true);
+            // Interaction
             require(IERC20(quoteToken).transfer(msg.sender, amountOut), "Quote transfer failed");
-            return amountOut;
         } else {
             require(IERC20(quoteToken).transferFrom(msg.sender, address(this), amountIn), "Quote transfer failed");
-            uint256 amountOut = super.swap(quoteToken, amountIn, minAmountOut, false);
+            amountOut = super.swap(quoteToken, amountIn, minAmountOut, false);
             _transfer(address(this), msg.sender, amountOut);
-            return amountOut;
         }
+        return amountOut;
     }
 
     function createDAMMPool(
@@ -150,27 +171,29 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         address priceFeed,
         uint256 initialBaseAmount,
         uint256 initialQuoteAmount
-    ) external onlyOwner {
+    ) external onlyOwner validateAddress(quoteToken) validateAddress(priceFeed) {
         require(IERC20(quoteToken).transferFrom(msg.sender, address(this), initialQuoteAmount), "Quote transfer failed");
         _transfer(msg.sender, address(this), initialBaseAmount);
         
-        super.createPool(quoteToken, priceFeed, initialBaseAmount, initialQuoteAmount);
+        super.createPoolDAMM(quoteToken, priceFeed, initialBaseAmount, initialQuoteAmount);
         emit DAMMPoolCreated(quoteToken, initialBaseAmount);
     }
 
-    function emergencyPausePool(address quoteToken) external onlyOwner {
-        super.pausePool(quoteToken);
+    function emergencyPauseDAMMPool(address quoteToken) external onlyOwner {
+        super.pauseDAMMPool(quoteToken);
     }
 
-    function emergencyResumePool(address quoteToken) external onlyOwner {
-        super.resumePool(quoteToken);
+    function emergencyResumeDAMMPool(address quoteToken) external onlyOwner {
+        super.resumeDAMMPool(quoteToken);
     }
 
-    function updatePoolParameters(address quoteToken) external {
-        updatePoolDynamics(quoteToken);
+    function updateDAMMPoolParameters(address quoteToken) external onlyOwner {
+        updateDAMMPoolDynamics(quoteToken);
     }
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
+
+    uint256[50] private __gap;
 }
 
 // yarn hardhat verify --network sepolia 0x...
