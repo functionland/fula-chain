@@ -414,7 +414,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         address member,
         uint8 score
     ) external onlyRole(POOL_CREATOR_ROLE) {
-        require(score <= 100, "Score exceeds maximum");
+        require(score <= 1000, "Score exceeds maximum");
         Pool storage pool = pools[poolId];
         require(msg.sender == pool.creator, "Only pool creator");
         require(pool.members[member].joinDate > 0, "Not a member");
