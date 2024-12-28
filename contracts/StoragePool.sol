@@ -63,6 +63,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         string memory region,
         uint256 requiredTokens,
         uint256 minPingTime,
+        uint256 maxChallengeResponsePeriod,
         string memory creatorPeerId
     ) external nonReentrant {
         // Ensure the required tokens to join a pool do not exceed the pool creation tokens
@@ -78,6 +79,11 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         require(bytes(name).length > 0, "Pool name cannot be empty");
         require(bytes(region).length > 0, "Region cannot be empty");
         require(minPingTime > 0, "Minimum ping time must be greater than zero");
+
+        // Set maxChallengeResponsePeriod: use provided value or default to 7 days if input is empty or zero
+        if (maxChallengeResponsePeriod == 0) {
+            maxChallengeResponsePeriod = 7 days; // Default value
+        }
 
         // If poolCounter does not exist (uninitialized), default it to 0
         if (poolCounter == 0) {
@@ -98,6 +104,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         pool.creator = msg.sender; // Address of the creator
         pool.requiredTokens = requiredTokens; // Minimum tokens required to join
         pool.criteria.minPingTime = minPingTime; // Criteria for minimum ping time
+        pool.maxChallengeResponsePeriod = maxChallengeResponsePeriod; // Maximum period a storer can submit store claims without providing a challenge response
 
         // Add the creator as a member of the newly created pool using _addMember
         _addMember(uint32(poolCounter), creatorPeerId, msg.sender);

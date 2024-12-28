@@ -10,7 +10,8 @@ interface IStoragePool {
         mapping(address => Member) members;
         address[] memberList;
         Criteria criteria;
-        uint256 requiredTokens;
+        uint256 requiredTokens; // Required tokens locked to join a pool
+        uint256 maxChallengeResponsePeriod; // Maximum time allowed for challenge response (in seconds)
     }
 
     struct Member {
