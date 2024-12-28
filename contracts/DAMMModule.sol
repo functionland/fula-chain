@@ -99,7 +99,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
     function updateDAMMPoolDynamics(address quoteToken) public whenNotPaused onlyActivePool(quoteToken) {
         LiquidityPool storage pool = pools[quoteToken];
         
-        (, int256 currentPrice,,uint256 updatedAt,) = AggregatorV3Interface(pool.priceFeed).latestRoundData();
+        (, int256 currentPrice,, uint256 updatedAt,) = AggregatorV3Interface(pool.priceFeed).latestRoundData();
         require(currentPrice > 0, "Invalid price feed data");
         require(block.timestamp - updatedAt <= 3600, "Stale price data");
         require(updatedAt > 0, "Round not complete");
@@ -119,6 +119,9 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         pool.lastPrice = uint256(currentPrice);
         pool.lastUpdateTime = block.timestamp;
 
+        // Adjust curve parameters dynamically
+        adjustCurveParameters(quoteToken);
+
         emit DAMMPoolParametersUpdated(quoteToken, pool.concentrationFactor, pool.volatility);
     }
 
@@ -129,16 +132,24 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         bool isBaseToQuote
     ) public virtual nonReentrant whenNotPaused onlyActivePool(quoteToken) returns (uint256 amountOut) {
         require(minAmountOut > 0, "Invalid minimum output");
+        
+        // Update dynamics before processing swap
         updateDAMMPoolDynamics(quoteToken);
-        
+
         LiquidityPool memory pool = pools[quoteToken];
-        
+
+        // Calculate dynamic fee based on volatility
+        uint256 dynamicFee = calculateDynamicFee(pool.volatility);
+
         amountOut = calculateSwapAmount(
             amountIn,
             isBaseToQuote ? pool.baseReserve : pool.quoteReserve,
             isBaseToQuote ? pool.quoteReserve : pool.baseReserve,
             pool.concentrationFactor
         );
+
+        // Apply dynamic fee
+        amountOut = (amountOut * (FEE_DENOMINATOR - dynamicFee)) / FEE_DENOMINATOR;
 
         require(amountOut >= minAmountOut, "Insufficient output amount");
 
@@ -161,6 +172,29 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
 
         emit Swap(quoteToken, msg.sender, amountIn, amountOut, isBaseToQuote);
     }
+
+    function calculateDynamicFee(uint256 volatility) internal pure returns (uint256) {
+        if (volatility > 1000) { // High volatility
+            return BASE_FEE + 50; // Increase fee by 0.5%
+        } else if (volatility < 100) { // Low volatility
+            return BASE_FEE - 10; // Decrease fee by 0.1%
+        }
+        return BASE_FEE;
+    }
+    function adjustCurveParameters(address quoteToken) internal {
+        LiquidityPool storage pool = pools[quoteToken];
+        
+        // Fetch current market price using latestRoundData
+        (, int256 answer,, uint256 updatedAt,) = AggregatorV3Interface(pool.priceFeed).latestRoundData();
+        require(answer > 0, "Invalid market price");
+        require(block.timestamp - updatedAt <= 3600, "Stale market price");
+
+        // Adjust reserves or curve parameters dynamically
+        uint256 adjustmentFactor = pool.volatility / 100; // Example adjustment logic
+        pool.baseReserve = (pool.baseReserve * adjustmentFactor) / FEE_DENOMINATOR;
+        pool.quoteReserve = (pool.quoteReserve * adjustmentFactor) / FEE_DENOMINATOR;
+    }
+
 
     function calculateSwapAmount(
         uint256 amountIn,

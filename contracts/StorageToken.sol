@@ -28,7 +28,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     event ProofContractRemoved(address proofContract);
     event EmergencyAction(string action, uint256 timestamp);
 
-    //DAMM
+    //DAMM: Dynamic Automatic Market Making
     event DAMMPoolCreated(address indexed quoteToken, uint256 initialLiquidity);
     event DAMMSwapExecuted(
         address indexed user,

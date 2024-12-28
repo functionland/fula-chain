@@ -42,11 +42,14 @@ interface IStoragePool {
         uint8 currentReplications;
     }
 
-    event PoolCreated(uint256 indexed poolId, string name, address creator);
+    event DataPoolCreated(uint256 indexed poolId, string name, address creator);
+    event DataPoolDeleted(uint256 indexed poolId, address creator);
     event MemberJoined(uint256 indexed poolId, address member);
     event MemberLeft(uint256 indexed poolId, address indexed member);
-    event JoinRequestSubmitted(uint256 indexed poolId, string peerId);
+    event MemberRemoved(uint32 indexed poolId, address indexed member, address indexed removedBy);
+    event JoinRequestSubmitted(uint256 indexed poolId, string peerId, address indexed member);
     event JoinRequestCanceled(uint256 indexed poolId, address indexed requester);
+    event JoinRequestRejected(uint32 indexed poolId, address indexed accountId);
     event TokensLocked(address indexed user, uint256 amount);
     event TokensUnlocked(address indexed user, uint256 amount);
     event PoolCreationRequirementUpdated(uint256 newAmount);
@@ -56,5 +59,5 @@ interface IStoragePool {
         uint256 requiredTokens,
         uint256 memberCount
     );
-    event EmergencyAction(string action, uint256 timestamp);
+    event PoolEmergencyAction(string action, uint256 timestamp);
 }
