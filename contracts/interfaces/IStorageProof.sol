@@ -3,11 +3,10 @@ pragma solidity ^0.8.28;
 
 interface IStorageProof {
     struct Claim {
-        string cid;
+        string[] cids;
         uint256 timestamp;
         address storer;
         uint32 poolId;
-        uint8 replicationCount;
     }
 
     struct UploadRequest {
@@ -35,24 +34,15 @@ interface IStorageProof {
     }
 
 
-    event UploadRequested(string cid, address indexed uploader, uint32 indexed poolId);
-    event RemovalRequested(string[] cids, address uploader, uint32 poolId);
+    event UploadRequested(string[] cids, address uploader, uint32 indexed poolId); // index PoolId so that cluster leader can pin
+    event RemovalRequested(string[] cid, address uploader, uint32 indexed poolId); // index poolId so that cluster leader can unpin
     event MiningRewardSet(uint256 rewardPerDay);
     event RewardsDistributed(uint256 amount, uint256 timestamp);
-    event ClaimStateUpdated(
-        string indexed cid,
-        address indexed storer,
-        uint32 poolId,
-        uint256 timestamp,
-        uint8 replicationCount
-    );
     event EmergencyAction(string action, uint256 timestamp);
-    event ClaimSubmitted(string indexed cid, address indexed storer, uint32 indexed poolId);
-    event ClaimBatchProcessed(uint32 indexed poolId, address indexed storer, uint256 totalCIDs);
-    event VerificationFailed(string indexed cid, address indexed storer, uint32 indexed poolId);
+    event ClaimSubmitted(string[] cids, address indexed storer, uint32 poolId);
+    event VerificationFailed(address indexed storer, string indexed cid, uint32 poolId);
     event ProofSubmitted(string indexed cid, address indexed storer);
-    event VerificationFailed(address indexed storer, string cid);
-    event ChallengeIssued(string indexed cid, address indexed storer, uint256 byteRangeStart, uint256 byteRangeEnd);
+    event ChallengeIssued(address indexed storer, string[] cid, uint256 byteRangeStart, uint256 byteRangeEnd);
 
     function getUploadRequest(string memory cid, address uploader) external view returns (UploadRequest memory);
 }

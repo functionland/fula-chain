@@ -221,7 +221,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         // Delete the pool itself
         delete pools[poolId];
 
-        emit DataPoolDeleted(poolId, msg.sender);
+        emit DataPoolDeleted(poolId, pool.creator);
     }
 
 
