@@ -18,7 +18,7 @@ interface IStoragePool {
         uint256 joinDate;
         string peerId;
         address accountId;
-        uint8 reputationScore;
+        uint16 reputationScore;
     }
 
     struct Criteria {
@@ -32,15 +32,6 @@ interface IStoragePool {
         mapping(address => bool) votes;
         uint256 approvals;
         uint256 rejections;
-    }
-
-    struct UploadRequest {
-        string[] cids;
-        uint8 replicationFactor;
-        uint32 poolId;
-        address uploader;
-        uint256 timestamp;
-        uint8 currentReplications;
     }
 
     event DataPoolCreated(uint256 indexed poolId, string name, address creator);
@@ -61,4 +52,6 @@ interface IStoragePool {
         uint256 memberCount
     );
     event PoolEmergencyAction(string action, uint256 timestamp);
+    event StorageCostSet(uint32 indexed poolId, uint256 costPerTBYear);
+    function getStorageCost(uint32 poolId) external view returns (uint256);
 }

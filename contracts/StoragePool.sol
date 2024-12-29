@@ -18,8 +18,9 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     mapping(address => uint256) public lockedTokens;
     mapping(address => uint256) public requestIndex;
     uint256 public poolCounter;
-    uint256 public poolCreationTokens; // Amount needed to create a pool
+    uint256 public dataPoolCreationTokens; // Amount needed to create a pool
     uint32 private constant MAX_MEMBERS = 1000;
+    mapping(uint32 => uint256) public storageCostPerTBYear;
 
     function initialize(address _token, address initialOwner) public reinitializer(1) {
         require(_token != address(0), "Invalid token address");
@@ -32,7 +33,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner); // Owner has admin role
         _grantRole(POOL_CREATOR_ROLE, initialOwner); // Assign initial roles
         token = StorageToken(_token);
-        poolCreationTokens = 500_000 * 10**18; // 500K tokens with 18 decimals
+        dataPoolCreationTokens = 500_000 * 10**18; // 500K tokens with 18 decimals
     }
 
     function emergencyPausePool() external onlyOwner {
@@ -52,8 +53,40 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     }
 
     // This sets the number of tokens needed to be locked to be able to create a data pool for data storage
-    function setPoolCreationTokens(uint256 _amount) external onlyOwner {
-        poolCreationTokens = _amount;
+    function setDataPoolCreationTokens(uint256 _amount) external onlyOwner {
+        dataPoolCreationTokens = _amount;
+    }
+
+    // Calculate the required number of locked tokens for a user address
+    function calculateRequiredLockedTokens(address user) public view returns (uint256) {
+        uint256 requiredLockedTokens = 0;
+
+        // Calculate the number of pools the user created
+        uint256 userCreatedPools = 0;
+        for (uint256 i = 0; i < poolCounter; i++) {
+            if (pools[i].creator == user) {
+                userCreatedPools++;
+            }
+        }
+        requiredLockedTokens += userCreatedPools * dataPoolCreationTokens;
+
+        // Calculate the number of pools the user is a member of (except the ones they created)
+        for (uint256 i = 0; i < poolCounter; i++) {
+            if (pools[i].members[user].joinDate > 0 && pools[i].creator != user) {
+                requiredLockedTokens += pools[i].requiredTokens;
+            }
+        }
+
+        // Calculate the number of join requests the user has made
+        for (uint32 i = 0; i < poolCounter; i++) {
+            for (uint32 j = 0; j < joinRequests[i].length; j++) {
+                if (joinRequests[i][j].accountId == user) {
+                    requiredLockedTokens += pools[i].requiredTokens;
+                }
+            }
+        }
+
+        return requiredLockedTokens;
     }
 
     // This method creates a data pool and sets the required information for the pool.
@@ -67,13 +100,14 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         string memory creatorPeerId
     ) external nonReentrant {
         // Ensure the required tokens to join a pool do not exceed the pool creation tokens
-        require(requiredTokens <= poolCreationTokens, "Required tokens exceed limit");
+        require(requiredTokens <= dataPoolCreationTokens, "Required tokens to join the pool exceed limit");
 
-        // Check if the user has enough tokens to create a pool
-        require(token.balanceOf(msg.sender) >= poolCreationTokens, "Insufficient tokens for pool creation");
+        // Check if the user has enough tokens to create a new pool
+        require(token.balanceOf(msg.sender) >= dataPoolCreationTokens, "Insufficient tokens for pool creation");
 
-        // Ensure the user has not already locked tokens for another pool
-        require(lockedTokens[msg.sender] == 0, "Tokens already locked for another pool");
+        // Check if the user has enough locked tokens for the pools they have already created
+        uint256 numberOfRequiredLockedTokens = calculateRequiredLockedTokens(msg.sender);
+        require(lockedTokens[msg.sender] >= numberOfRequiredLockedTokens, "Locked tokens are not enough");
 
         // Validate that name, region, and minPingTime are not empty or invalid
         require(bytes(name).length > 0, "Pool name cannot be empty");
@@ -91,8 +125,8 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         }
 
         // Lock tokens for pool creation
-        token.transferFrom(msg.sender, address(this), poolCreationTokens);
-        lockedTokens[msg.sender] = poolCreationTokens;
+        token.transferFrom(msg.sender, address(this), dataPoolCreationTokens);
+        lockedTokens[msg.sender] += dataPoolCreationTokens;
 
         // Initialize a new Pool struct
         Pool storage pool = pools[poolCounter];
@@ -129,19 +163,32 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
             require(pool.memberList[0] == pool.creator, "Only creator should remain in member list");
         }
 
-        // Unlock tokens locked by the creator for this pool
-        uint256 lockedAmount = lockedTokens[pool.creator];
-        require(lockedAmount > 0, "No tokens locked");
-        token.transfer(pool.creator, lockedAmount);
-        lockedTokens[pool.creator] = 0;
+        // Unlock the tokens locked by the pool creator and reset their balance
+        // Calculate the total number of tokens this user needs to have locked so far
+        uint256 requiredLockedTokens = calculateRequiredLockedTokens(pool.creator);
+        if (msg.sender != owner()) {
+            require(lockedTokens[pool.creator] >= requiredLockedTokens, "Insufficient locked tokens");
+        }
+        require(token.balanceOf(address(this)) >= dataPoolCreationTokens, "Contract has insufficient tokens");
+        if (lockedTokens[pool.creator] >= requiredLockedTokens) {
+            token.transfer(pool.creator, dataPoolCreationTokens);
+            lockedTokens[pool.creator] -= dataPoolCreationTokens;
+        }
 
         // Remove all pending join requests for this pool and refund their locked tokens
         while (joinRequests[poolId].length > 0) {
             JoinRequest storage request = joinRequests[poolId][joinRequests[poolId].length - 1];
             
             // Refund locked tokens to the user who submitted the join request
-            token.transfer(request.accountId, lockedTokens[request.accountId]);
-            lockedTokens[request.accountId] = 0;
+            uint256 requiredLockedTokensForUser = calculateRequiredLockedTokens(request.accountId);
+            if (msg.sender != owner()) {
+                require(lockedTokens[request.accountId] >= requiredLockedTokensForUser, "Insufficient locked tokens for join requests");
+            }
+            require(token.balanceOf(address(this)) >= pool.requiredTokens, "Contract has insufficient tokens");
+            if (lockedTokens[request.accountId] >= requiredLockedTokensForUser) {
+                token.transfer(request.accountId, pool.requiredTokens);
+                lockedTokens[request.accountId] -= pool.requiredTokens;
+            }
 
             // Remove the join request from storage
             _removeJoinRequest(poolId, joinRequests[poolId].length - 1);
@@ -150,11 +197,15 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         // Clear all members from the member list and refund their locked tokens (if any)
         while (pool.memberList.length > 0) {
             address member = pool.memberList[pool.memberList.length - 1];
-
-            if (lockedTokens[member] > 0) {
+            uint256 requiredLockedTokensForUser = calculateRequiredLockedTokens(member);
+            if (msg.sender != owner()) {
+                require(lockedTokens[member] >= requiredLockedTokensForUser, "Insufficient locked tokens for pool member");
+            }
+            require(token.balanceOf(address(this)) >= pool.requiredTokens, "Contract has insufficient tokens");
+            if (lockedTokens[member] >= requiredLockedTokensForUser && member != pool.creator) {
                 // Refund locked tokens to the member
-                token.transfer(member, lockedTokens[member]);
-                lockedTokens[member] = 0;
+                token.transfer(member, pool.requiredTokens);
+                lockedTokens[member] -= pool.requiredTokens;
             }
 
             _removeMemberFromList(pool.memberList, member);
@@ -215,6 +266,18 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         requestIndex[msg.sender] = newIndex;
 
         emit JoinRequestSubmitted(poolId, peerId, msg.sender);
+    }
+
+    function getStorageCost(uint32 poolId) external view override returns (uint256) {
+        return storageCostPerTBYear[poolId];
+    }
+
+    // Function to set the storage cost per pool
+    function setStorageCost(uint32 poolId, uint256 costPerTBYear) external nonReentrant onlyRole(POOL_CREATOR_ROLE) {
+        require(costPerTBYear > 0, "Invalid cost");
+        require(costPerTBYear <= type(uint256).max / 365, "Overflow risk"); // Prevent overflow
+        storageCostPerTBYear[poolId] = costPerTBYear; // Set the cost for the specified pool
+        emit StorageCostSet(poolId, costPerTBYear); // Emit event with poolId
     }
 
     // This method allows a user to cancel their join request for a specific data pool.
@@ -331,7 +394,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         newMember.joinDate = block.timestamp;
         newMember.peerId = peerId;
         newMember.accountId = accountId;
-        newMember.reputationScore = 0;
+        newMember.reputationScore = 400;
         pool.memberList.push(accountId);
         
         emit MemberJoined(poolId, accountId);
