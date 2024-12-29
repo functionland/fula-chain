@@ -251,7 +251,6 @@ abstract contract StorageProof is IStorageProof, IStoragePool, OwnableUpgradeabl
         // Issue challenges for the selected CIDs
         for (uint256 i = 0; i < claimedCidsLength; i++) {
             string memory cid = claimedCids[i];
-            UploadRequest storage request = uploads[cid][storer];
 
             challenges[cid][storer] = Challenge({
                 challengeTimestamp: block.timestamp,
