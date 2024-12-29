@@ -98,7 +98,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         uint256 minPingTime,
         uint256 maxChallengeResponsePeriod,
         string memory creatorPeerId
-    ) external nonReentrant {
+    ) external nonReentrant whenNotPaused {
         // Ensure the required tokens to join a pool do not exceed the pool creation tokens
         require(requiredTokens <= dataPoolCreationTokens, "Required tokens to join the pool exceed limit");
 
@@ -154,7 +154,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
     // This method allows the pool creator to delete their pool if no members other than themselves exist.
     // It also unlocks the tokens locked by the creator and removes all pending join requests.
-    function deletePool(uint32 poolId) external nonReentrant validatePoolId(poolId) {
+    function deletePool(uint32 poolId) external nonReentrant whenNotPaused validatePoolId(poolId) {
         Pool storage pool = pools[poolId];
 
         // Ensure only the pool creator or contract owner can delete the pool
@@ -229,7 +229,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     // Each user can only send one join request at a time and can only be a member of one pool at a time.
     // A user cannot send a join request to the same pool they already have an active request for.
     // The total number of active members plus pending join requests for a pool cannot exceed MAX_MEMBERS.
-    function submitJoinRequest(uint32 poolId, string memory peerId) external nonReentrant validatePoolId(poolId) {
+    function submitJoinRequest(uint32 poolId, string memory peerId) external nonReentrant whenNotPaused validatePoolId(poolId) {
         // Ensure the user does not have locked tokens for another pool
         require(lockedTokens[msg.sender] == 0, "Tokens already locked for another data pool");
 
@@ -279,7 +279,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     }
 
     // Function to set the storage cost per pool
-    function setStorageCost(uint32 poolId, uint256 costPerTBYear) external nonReentrant onlyRole(POOL_CREATOR_ROLE) {
+    function setStorageCost(uint32 poolId, uint256 costPerTBYear) external nonReentrant whenNotPaused onlyRole(POOL_CREATOR_ROLE) {
         require(costPerTBYear > 0, "Invalid cost");
         require(costPerTBYear <= type(uint256).max / 365, "Overflow risk"); // Prevent overflow
         Pool storage pool = pools[poolId];
@@ -291,7 +291,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     // This method allows a user to cancel their join request for a specific data pool.
     // Upon cancellation, the user's locked tokens are unlocked and refunded.
     // The join request is removed from storage efficiently to reduce gas costs.
-    function cancelJoinRequest(uint32 poolId) external nonReentrant validatePoolId(poolId) {
+    function cancelJoinRequest(uint32 poolId) external nonReentrant whenNotPaused validatePoolId(poolId) {
         // Retrieve the index of the user's join request from the mapping
         uint256 index = requestIndex[msg.sender];
 
@@ -317,7 +317,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     // This method allows a member of a pool to leave the pool they are part of.
     // Upon leaving, the user's locked tokens are unlocked and refunded.
     // The pool creator cannot leave their own pool.
-    function leavePool(uint32 poolId) external nonReentrant validatePoolId(poolId) {
+    function leavePool(uint32 poolId) external nonReentrant whenNotPaused validatePoolId(poolId) {
         Pool storage pool = pools[poolId];
 
         // Ensure the caller is a member of the pool
@@ -344,7 +344,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
     // This method allows the pool creator or contract owner to remove a member from the pool.
     // The member's locked tokens are unlocked and refunded upon removal.
-    function removeMember(uint32 poolId, address member) external nonReentrant validatePoolId(poolId) {
+    function removeMember(uint32 poolId, address member) external nonReentrant whenNotPaused validatePoolId(poolId) {
         Pool storage pool = pools[poolId];
 
         // Ensure only the pool creator or contract owner can remove a member
@@ -425,7 +425,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         uint32 poolId,
         string memory peerIdToVote,
         bool approve
-    ) external nonReentrant validatePoolId(poolId) {
+    ) external nonReentrant whenNotPaused validatePoolId(poolId) {
         require(bytes(peerIdToVote).length > 0, "Invalid peer ID");
 
         Pool storage pool = pools[poolId];
@@ -491,7 +491,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         uint32 poolId,
         address member,
         uint8 score
-    ) external onlyRole(POOL_CREATOR_ROLE) {
+    ) external nonReentrant whenNotPaused onlyRole(POOL_CREATOR_ROLE) {
         require(score <= 1000, "Score exceeds maximum");
         Pool storage pool = pools[poolId];
         require(msg.sender == pool.creator, "Not Authorized");
