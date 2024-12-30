@@ -226,7 +226,7 @@ abstract contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgra
         return (totalProjectedRewards, rewardsPerStake);
     }
 
-    function calculateUnstakePenalty(address staker, uint256 stakeIndex) external nonReentrant view returns (
+    function calculateUnstakePenalty(address staker, uint256 stakeIndex) external view returns (
         uint256 penaltyAmount,
         uint256 netAmount,
         bool isEarlyUnstake,
@@ -260,7 +260,6 @@ abstract contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgra
     function unstake(uint256 index) external nonReentrant {
         Stake[] storage userStakes = stakes[msg.sender];
         require(index < userStakes.length, "Invalid stake index");
-        require(token.balanceOf(address(this)) >= amountToReturn, "Contract has insufficient tokens");
 
         Stake memory currentStake = userStakes[index];
         
@@ -269,6 +268,7 @@ abstract contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgra
         uint256 penalty = earlyUnstake ? (currentStake.amount * penaltyForEarlyUnstake) / 100 : 0;
         
         uint256 amountToReturn = currentStake.amount - penalty;
+        require(token.balanceOf(address(this)) >= amountToReturn, "Contract has insufficient tokens");
 
         totalStaked -= currentStake.amount;
 
