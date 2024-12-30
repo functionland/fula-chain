@@ -74,7 +74,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         address priceFeed,
         uint256 initialBaseAmount,
         uint256 initialQuoteAmount
-    ) public virtual {
+    ) internal virtual {
         require(!pools[quoteToken].isActive, "Pool exists");
         require(priceFeed != address(0), "Invalid price feed");
 
@@ -96,7 +96,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         emit DAMMPoolCreated(quoteToken, priceFeed);
     }
 
-    function updateDAMMPoolDynamics(address quoteToken) public whenNotPaused onlyActivePool(quoteToken) {
+    function updateDAMMPoolDynamics(address quoteToken) internal whenNotPaused onlyActivePool(quoteToken) {
         LiquidityPool storage pool = pools[quoteToken];
         
         (, int256 currentPrice,, uint256 updatedAt,) = AggregatorV3Interface(pool.priceFeed).latestRoundData();
@@ -105,7 +105,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         require(updatedAt > 0, "Round not complete");
 
         // Calculate price volatility using EMA
-        uint256 priceChange = abs(uint256(currentPrice) - pool.lastPrice);
+        uint256 priceChange = _abs(uint256(currentPrice) - pool.lastPrice);
         pool.volatility = (pool.volatility * 8 + priceChange * 2) / 10;
 
         // Adjust concentration based on volatility
@@ -120,7 +120,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         pool.lastUpdateTime = block.timestamp;
 
         // Adjust curve parameters dynamically
-        adjustCurveParameters(quoteToken);
+        _adjustCurveParameters(quoteToken);
 
         emit DAMMPoolParametersUpdated(quoteToken, pool.concentrationFactor, pool.volatility);
     }
@@ -130,7 +130,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         uint256 amountIn,
         uint256 minAmountOut,
         bool isBaseToQuote
-    ) public virtual nonReentrant whenNotPaused onlyActivePool(quoteToken) returns (uint256 amountOut) {
+    ) internal virtual nonReentrant whenNotPaused onlyActivePool(quoteToken) returns (uint256 amountOut) {
         require(minAmountOut > 0, "Invalid minimum output");
         
         // Update dynamics before processing swap
@@ -139,9 +139,9 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         LiquidityPool memory pool = pools[quoteToken];
 
         // Calculate dynamic fee based on volatility
-        uint256 dynamicFee = calculateDynamicFee(pool.volatility);
+        uint256 dynamicFee = _calculateDynamicFee(pool.volatility);
 
-        amountOut = calculateSwapAmount(
+        amountOut = _calculateSwapAmount(
             amountIn,
             isBaseToQuote ? pool.baseReserve : pool.quoteReserve,
             isBaseToQuote ? pool.quoteReserve : pool.baseReserve,
@@ -173,7 +173,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         emit Swap(quoteToken, msg.sender, amountIn, amountOut, isBaseToQuote);
     }
 
-    function calculateDynamicFee(uint256 volatility) internal pure returns (uint256) {
+    function _calculateDynamicFee(uint256 volatility) internal pure returns (uint256) {
         if (volatility > 1000) { // High volatility
             return BASE_FEE + 50; // Increase fee by 0.5%
         } else if (volatility < 100) { // Low volatility
@@ -181,7 +181,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
         }
         return BASE_FEE;
     }
-    function adjustCurveParameters(address quoteToken) internal {
+    function _adjustCurveParameters(address quoteToken) internal {
         LiquidityPool storage pool = pools[quoteToken];
         
         // Fetch current market price using latestRoundData
@@ -196,7 +196,7 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
     }
 
 
-    function calculateSwapAmount(
+    function _calculateSwapAmount(
         uint256 amountIn,
         uint256 reserveIn,
         uint256 reserveOut,
@@ -212,17 +212,17 @@ abstract contract DAMMModule is PausableUpgradeable, ReentrancyGuardUpgradeable 
     }
 
     // Emergency functions
-    function pauseDAMMPool(address quoteToken) public virtual {
+    function pauseDAMMPool(address quoteToken) internal virtual {
         pools[quoteToken].isActive = false;
         emit EmergencyActionDAMM("Pool paused", quoteToken);
     }
 
-    function resumeDAMMPool(address quoteToken) public virtual {
+    function resumeDAMMPool(address quoteToken) internal virtual {
         pools[quoteToken].isActive = true;
         emit EmergencyActionDAMM("Pool resumed", quoteToken);
     }
 
-    function abs(uint256 a) internal pure returns (uint256) {
+    function _abs(uint256 a) internal pure returns (uint256) {
         return a;
     }
 

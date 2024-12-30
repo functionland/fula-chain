@@ -12,8 +12,14 @@ import "./StorageToken.sol";
 contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, PausableUpgradeable, ReentrancyGuardUpgradeable, AccessControlUpgradeable {
     bytes32 public constant ROLE_VERIFIER = keccak256("ROLE_VERIFIER");
     bytes32 public constant POOL_CREATOR_ROLE = keccak256("POOL_CREATOR_ROLE");
+
+    uint256 private lastEmergencyAction;
+    uint256 private constant EMERGENCY_COOLDOWN = 5 minutes;
     
     uint256 public constant IMPLEMENTATION_VERSION = 1;
+
+    uint256 private constant POOL_ACTION_DELAY = 8 hours;
+    mapping(bytes32 => uint256) private poolActionTimeLocks;
     
     StorageToken public token;
     mapping(uint256 => Pool) public pools;
@@ -49,6 +55,8 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     }
 
     function emergencyPausePool() external onlyOwner {
+        require(block.timestamp >= lastEmergencyAction + EMERGENCY_COOLDOWN, "Cooldown active");
+        lastEmergencyAction = block.timestamp;
         _pause();
         emit PoolEmergencyAction("Pool Contract paused", block.timestamp);
     }
@@ -116,6 +124,8 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
         // Check if the user has enough tokens to create a new pool
         require(token.balanceOf(msg.sender) >= dataPoolCreationTokens, "Insufficient tokens for pool creation");
+        bytes32 actionHash = keccak256(abi.encodePacked("CREATE_POOL", msg.sender));
+        require(block.timestamp >= poolActionTimeLocks[actionHash], "Timelock active");
 
         // Check if the user has enough locked tokens for the pools they have already created
         uint256 numberOfRequiredLockedTokens = calculateRequiredLockedTokens(msg.sender);
@@ -160,6 +170,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
         // Grant the POOL_CREATOR_ROLE to the caller
         _grantRole(POOL_CREATOR_ROLE, msg.sender);
+        poolActionTimeLocks[actionHash] = block.timestamp + POOL_ACTION_DELAY;
 
         emit DataPoolCreated(pool.id, pool.name, pool.creator);
     }
@@ -171,6 +182,8 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
         // Ensure only the pool creator or contract owner can delete the pool
         require(msg.sender == pool.creator || msg.sender == owner(), "Not authorized");
+        bytes32 actionHash = keccak256(abi.encodePacked("DELETE_POOL", msg.sender));
+        require(block.timestamp >= poolActionTimeLocks[actionHash], "Timelock active");
 
         // If not the contract owner, ensure no members other than the creator exist
         if (msg.sender != owner()) {
@@ -232,6 +245,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
         // Delete the pool itself
         delete pools[poolId];
+        poolActionTimeLocks[actionHash] = block.timestamp + POOL_ACTION_DELAY;
 
         emit DataPoolDeleted(poolId, pool.creator);
     }
@@ -293,7 +307,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     // Function to set the storage cost per pool
     function setStorageCost(uint32 poolId, uint256 costPerTBYear) external nonReentrant whenNotPaused onlyRole(POOL_CREATOR_ROLE) {
         require(costPerTBYear > 0, "Invalid cost");
-        require(costPerTBYear <= type(uint256).max / 365, "Overflow risk"); // Prevent overflow
+        require(costPerTBYear <= type(uint256).max / (365 days), "Overflow risk"); // Prevent overflow
         Pool storage pool = pools[poolId];
         require(msg.sender == pool.creator, "Not Authorized");
         storageCostPerTBYear[poolId] = costPerTBYear; // Set the cost for the specified pool
@@ -304,6 +318,8 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     // Upon cancellation, the user's locked tokens are unlocked and refunded.
     // The join request is removed from storage efficiently to reduce gas costs.
     function cancelJoinRequest(uint32 poolId) external nonReentrant whenNotPaused validatePoolId(poolId) {
+        require(poolId < poolCounter, "Invalid pool ID");
+        Pool storage pool = pools[poolId];
         // Retrieve the index of the user's join request from the mapping
         uint256 index = requestIndex[msg.sender];
 
@@ -312,9 +328,9 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
         // Unlock the user's tokens and reset their locked token balance
         uint256 lockedAmount = lockedTokens[msg.sender];
-        require(lockedAmount > 0, "No tokens locked");
-        require(token.transfer(msg.sender, lockedAmount), "Token transfer failed");
-        lockedTokens[msg.sender] = 0;
+        require(lockedAmount >= pool.requiredTokens, "Not enough tokens locked");
+        require(token.transfer(msg.sender, pool.requiredTokens), "Token transfer failed");
+        lockedTokens[msg.sender] -= pool.requiredTokens;
 
         // Remove the join request from the pool's joinRequests array
         _removeJoinRequest(poolId, index);
@@ -340,9 +356,9 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
         // Unlock the user's locked tokens and reset their balance
         uint256 lockedAmount = lockedTokens[msg.sender];
-        require(lockedAmount > 0, "No tokens locked");
-        require(token.transfer(msg.sender, lockedAmount), "Token transfer failed");
-        lockedTokens[msg.sender] = 0;
+        require(lockedAmount >= pool.requiredTokens, "Not enough tokens locked");
+        require(token.transfer(msg.sender, pool.requiredTokens), "Token transfer failed");
+        lockedTokens[msg.sender] -= pool.requiredTokens;
 
         // Remove the user from the member list efficiently
         _removeMemberFromList(pool.memberList, msg.sender);
@@ -370,9 +386,9 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
         // Unlock tokens locked by the member
         uint256 lockedAmount = lockedTokens[member];
-        if (lockedAmount > 0) {
-            require(token.transfer(member, lockedAmount), "Token transfer failed");
-            lockedTokens[member] = 0;
+        if (lockedAmount >= pool.requiredTokens) {
+            require(token.transfer(member, pool.requiredTokens), "Token transfer failed");
+            lockedTokens[member] -= pool.requiredTokens;
         }
 
         // Remove the member from the member list
@@ -409,7 +425,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     ) internal {
         require(accountId != address(0), "Invalid account ID");
         Pool storage pool = pools[poolId];
-        require(pool.memberList.length <= MAX_MEMBERS, "Pool is full");
+        require(pool.memberList.length < MAX_MEMBERS, "Pool is full");
         Member storage newMember = pool.members[accountId];
         newMember.joinDate = block.timestamp;
         newMember.peerId = peerId;
@@ -481,8 +497,11 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
                     // Check if rejections meet the threshold for denial
                     if (request.rejections >= pool.memberList.length / 2) {
                         // Refund locked tokens to the user
-                        require(token.transfer(request.accountId, lockedTokens[request.accountId]), "Token transfer failed");
-                        lockedTokens[request.accountId] = 0;
+                        uint256 lockedAmount = lockedTokens[request.accountId];
+                        if (lockedAmount >= pool.requiredTokens) {
+                            require(token.transfer(request.accountId, pool.requiredTokens), "Token transfer failed");
+                            lockedTokens[request.accountId] -= pool.requiredTokens;
+                        }
 
                         // Remove the join request from storage
                         _removeJoinRequest(poolId, i);
@@ -518,7 +537,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         return (providerStatus[provider] & IS_PROVIDER) != 0;
     }
 
-    function addProvider(address provider, uint256 storageSize) external onlyRole(ROLE_VERIFIER) {
+    function addProvider(address provider, uint256 storageSize) external nonReentrant onlyRole(ROLE_VERIFIER) {
         require(provider != address(0), "Invalid provider address");
         require(!_isProviderActive(provider), "Provider already exists");
         

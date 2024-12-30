@@ -14,6 +14,8 @@ import "./interfaces/IStoragePool.sol";
 abstract contract StorageProof is IStorageProof, IStoragePool, OwnableUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable, AccessControlUpgradeable {
     uint256 public constant IMPLEMENTATION_VERSION = 1;
     bytes32 public constant PROOF_MANAGER_ROLE = keccak256("PROOF_MANAGER_ROLE");
+    uint256 private constant MAX_TIME_DRIFT = 1 hours;
+    
     StorageToken public token;
     IRewardEngine public rewardEngine;
     IStoragePool public storagePool;
@@ -28,11 +30,6 @@ abstract contract StorageProof is IStorageProof, IStoragePool, OwnableUpgradeabl
     mapping(string => mapping(address => Challenge)) public challenges; // Tracks challenges issued for CIDs
     mapping(uint256 => IStoragePool.Pool) public pools;
 
-    string[] public toBeRemovedCIDs; // List of CIDs marked for removal due to insufficient quota
-    uint256 public miningRewardPerDay;
-    uint256 public lastRewardDistribution;
-    uint256 private constant MAX_TIME_DRIFT = 1 hours;
-
     function initialize(address _token, address initialOwner, address _rewardEngine) public reinitializer(1) {
         require(initialOwner != address(0), "Invalid owner address");
         __Ownable_init(initialOwner);
@@ -43,7 +40,6 @@ abstract contract StorageProof is IStorageProof, IStoragePool, OwnableUpgradeabl
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner); // Owner has admin role
         _grantRole(PROOF_MANAGER_ROLE, initialOwner); // Assign initial roles
         token = StorageToken(_token);
-        lastRewardDistribution = block.timestamp;
         rewardEngine = IRewardEngine(_rewardEngine);
     }
 

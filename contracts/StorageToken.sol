@@ -6,19 +6,27 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "./DAMMModule.sol";
 
-contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, PausableUpgradeable, AccessControlUpgradeable, DAMMModule {
+contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, PausableUpgradeable, AccessControlUpgradeable, ReentrancyGuardUpgradeable, DAMMModule {
     uint256 private constant TOKEN_UNIT = 10**18;
     uint256 private constant TOTAL_SUPPLY = 1_000_000 * TOKEN_UNIT; // 1M tokens
+    bool private _locked;
+    uint256 private lastEmergencyAction;
+    uint256 private constant EMERGENCY_COOLDOWN = 5 minutes;
+
     bytes32 public constant BRIDGE_OPERATOR_ROLE = keccak256("BRIDGE_OPERATOR_ROLE");
-    mapping(address => bool) public bridgeOperators;
     mapping(address => bool) public poolContracts;
     mapping(address => bool) public proofContracts;
     mapping(uint256 => bool) public supportedChains;
+
+    // Add timelock for critical role changes
+    mapping(address => uint256) private roleChangeTimeLock;
+    uint256 private constant ROLE_CHANGE_DELAY = 8 hours;
 
     event BridgeTransfer(address indexed from, uint256 amount, uint256 targetChain);
     event BridgeOperatorAdded(address operator);
@@ -29,6 +37,14 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     event ProofContractRemoved(address proofContract);
     event EmergencyAction(string action, uint256 timestamp);
 
+    event BridgeOperationDetails(
+        address indexed operator,
+        string operation,
+        uint256 amount,
+        uint256 chainId,
+        uint256 timestamp
+    );
+
     //DAMM: Dynamic Automatic Market Making
     event DAMMPoolCreated(address indexed quoteToken, uint256 initialLiquidity);
     event DAMMSwapExecuted(
@@ -37,12 +53,12 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         uint256 indexed amountIn,
         uint256 amountOut
     );
-    
     function initialize(address initialOwner) public reinitializer(1) {  // Increment version number for each upgrade
         require(initialOwner != address(0), "Invalid owner address");
         __ERC20_init("Test Token", "TT");
         __UUPSUpgradeable_init();
         __Ownable_init(initialOwner);
+        __ReentrancyGuard_init();
         __DAMMModule_init();
         __Pausable_init();
         __AccessControl_init();
@@ -56,12 +72,16 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     }
 
     function tokenUnit() public pure returns (uint256) {
-        return TOKEN_UNIT;
+        unchecked {
+            return 10**18; // This calculation cannot overflow
+        }
     }
 
 
     function emergencyPauseToken() external onlyOwner {
+        require(block.timestamp >= lastEmergencyAction + EMERGENCY_COOLDOWN, "Cooldown active");
         _pause();
+        lastEmergencyAction = block.timestamp;
         emit EmergencyAction("Contract paused", block.timestamp);
     }
 
@@ -70,24 +90,19 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         emit EmergencyAction("Contract unpaused", block.timestamp);
     }
 
-    modifier onlyBridgeOperator() {
-        require(bridgeOperators[msg.sender], "Not a bridge operator");
-        _;
-    }
-
     // Bridge operator management
     function addBridgeOperator(address operator) external onlyRole(DEFAULT_ADMIN_ROLE) validateAddress(operator) {
         require(operator != address(0), "Invalid operator address");
-        require(!bridgeOperators[operator], "Operator already exists");
+        require(block.timestamp >= roleChangeTimeLock[operator], "Time lock active");
+    
+        roleChangeTimeLock[operator] = block.timestamp + ROLE_CHANGE_DELAY;
         grantRole(BRIDGE_OPERATOR_ROLE, operator);
-        bridgeOperators[operator] = true;
         emit BridgeOperatorAdded(operator);
     }
 
     function removeBridgeOperator(address operator) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(operator != address(0), "Invalid operator address");
         revokeRole(BRIDGE_OPERATOR_ROLE, operator);
-        bridgeOperators[operator] = false;
         emit BridgeOperatorRemoved(operator);
     }
 
@@ -115,14 +130,27 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     // Bridge-specific functions with access control
     function bridgeMint(address to, uint256 amount, uint256 sourceChain) 
-        external onlyBridgeOperator {
+        external 
+        whenNotPaused 
+        onlyRole(BRIDGE_OPERATOR_ROLE)
+    {
+        require(amount > 0, "Amount must be positive");
         require(totalSupply() + amount <= TOTAL_SUPPLY, "Exceeds maximum supply");
         require(supportedChains[sourceChain], "Unsupported source chain");
         _mint(to, amount);
+        emit BridgeOperationDetails(msg.sender, "MINT", amount, sourceChain, block.timestamp);
     }
 
-    function bridgeBurn(address from, uint256 amount) external onlyBridgeOperator {
+    function bridgeBurn(address from, uint256 amount, uint256 targetChain) 
+        external 
+        whenNotPaused 
+        onlyRole(BRIDGE_OPERATOR_ROLE)
+    {
+        require(amount > 0, "Amount must be positive");
+        require(balanceOf(from) >= amount, "Insufficient balance to burn");
+        require(supportedChains[targetChain], "Unsupported target chain");
         _burn(from, amount);
+        emit BridgeOperationDetails(msg.sender, "BURN", amount, targetChain, block.timestamp);
     }
 
     // Override transfer functions to handle pool and proof contracts
@@ -130,7 +158,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         address sender,
         address recipient,
         uint256 amount
-    ) public virtual override returns (bool) {
+    ) public virtual whenNotPaused override returns (bool) {
         if (poolContracts[msg.sender] || proofContracts[msg.sender]) {
             _transfer(sender, recipient, amount);
             return true;
@@ -145,7 +173,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     }
 
     // Modify bridgeTransfer function
-    function bridgeTransfer(uint256 targetChain, uint256 amount) external {
+    function bridgeTransfer(uint256 targetChain, uint256 amount) external nonReentrant whenNotPaused {
         require(supportedChains[targetChain], "Unsupported chain");
         require(balanceOf(msg.sender) >= amount, "Insufficient balance");
         
@@ -160,5 +188,3 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     uint256[50] private __gap;
 }
-
-// yarn hardhat verify --network sepolia 0x...

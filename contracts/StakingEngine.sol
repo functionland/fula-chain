@@ -152,8 +152,9 @@ abstract contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgra
     function stake(uint256 amount, uint256 duration) external nonReentrant {
         require(amount > 0, "Cannot stake 0");
         require(duration == 60 days || duration == 180 days || duration == 360 days, "Invalid duration");
+        require(token.balanceOf(msg.sender) >= amount, "User has insufficient tokens");
 
-        token.transferFrom(msg.sender, address(this), amount);
+        require(token.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
 
         stakes[msg.sender].push(Stake({
             amount: amount,
@@ -225,7 +226,7 @@ abstract contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgra
         return (totalProjectedRewards, rewardsPerStake);
     }
 
-    function calculateUnstakePenalty(address staker, uint256 stakeIndex) external view returns (
+    function calculateUnstakePenalty(address staker, uint256 stakeIndex) external nonReentrant view returns (
         uint256 penaltyAmount,
         uint256 netAmount,
         bool isEarlyUnstake,
@@ -259,6 +260,7 @@ abstract contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgra
     function unstake(uint256 index) external nonReentrant {
         Stake[] storage userStakes = stakes[msg.sender];
         require(index < userStakes.length, "Invalid stake index");
+        require(token.balanceOf(address(this)) >= amountToReturn, "Contract has insufficient tokens");
 
         Stake memory currentStake = userStakes[index];
         
@@ -272,7 +274,7 @@ abstract contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgra
 
         _removeStake(msg.sender, index);
 
-        token.transfer(msg.sender, amountToReturn);
+        require(token.transfer(msg.sender, amountToReturn), "Token transfer failed");
 
         emit Unstaked(msg.sender, currentStake.amount, earlyUnstake);
     }
@@ -416,6 +418,7 @@ abstract contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgra
         // Ensure there are sufficient rewards available in the reward pool
         uint256 totalAvailableRewards = rewardPool.preMintedTokens + rewardPool.transactionFees + rewardPool.revenueSharing + rewardPool.liquidityMining;
         require(totalAvailableRewards >= amount, "Insufficient rewards in the pool");
+        require(token.balanceOf(address(this)) >= amount, "Contract has insufficient tokens");
 
         // Deduct rewards from the appropriate pools in order of priority
         if (rewardPool.preMintedTokens >= amount) {
@@ -431,7 +434,7 @@ abstract contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgra
         }
 
         // Transfer rewards to the staker
-        token.transfer(staker, amount);
+        require(token.transfer(staker, amount), "Token transfer failed");
 
         // Update total rewards distributed
         totalRewardsDistributed += amount;
