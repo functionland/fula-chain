@@ -3,10 +3,8 @@ import { ethers, upgrades } from "hardhat";
 import { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers";
 import { 
     StakingEngine,
-    StorageToken,
-    StakingEngine__factory,
-    StorageToken__factory
-} from "../typechain-types";
+    StorageToken
+} from "../typechain-types/contracts";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
 
 describe("StakingEngine", function () {
@@ -17,7 +15,7 @@ describe("StakingEngine", function () {
     let user2: SignerWithAddress;
     let users: SignerWithAddress[];
 
-    const INITIAL_SUPPLY = ethers.utils.parseEther("1000000000"); // 1 billion tokens
+    const INITIAL_SUPPLY = ethers.parseEther("1000000000"); // 1 billion tokens
     const DAY = 24 * 60 * 60;
     const SIXTY_DAYS = 60 * DAY;
     const HUNDRED_EIGHTY_DAYS = 180 * DAY;
@@ -37,8 +35,8 @@ describe("StakingEngine", function () {
         await stakingEngine.deployed();
 
         // Transfer tokens to users for testing
-        await token.transfer(user1.address, ethers.utils.parseEther("1000000"));
-        await token.transfer(user2.address, ethers.utils.parseEther("1000000"));
+        await token.transfer(user1.address, ethers.parseEther("1000000"));
+        await token.transfer(user2.address, ethers.parseEther("1000000"));
     });
 
     describe("Initialization", function () {
@@ -53,7 +51,7 @@ describe("StakingEngine", function () {
     });
 
     describe("Staking", function () {
-        const stakeAmount = ethers.utils.parseEther("100000");
+        const stakeAmount = ethers.parseEther("100000");
 
         beforeEach(async function () {
             await token.connect(user1).approve(stakingEngine.address, stakeAmount);
@@ -88,25 +86,25 @@ describe("StakingEngine", function () {
     });
 
     describe("Reward Calculation", function () {
-        const stakeAmount = ethers.utils.parseEther("100000");
+        const stakeAmount = ethers.parseEther("100000");
         
         beforeEach(async function () {
             // Setup reward pool
             await stakingEngine.connect(owner).updateStakingRewardPool(
-                ethers.utils.parseEther("1000000"),
-                ethers.utils.parseEther("500000"),
-                ethers.utils.parseEther("300000"),
-                ethers.utils.parseEther("200000")
+                ethers.parseEther("1000000"),
+                ethers.parseEther("500000"),
+                ethers.parseEther("300000"),
+                ethers.parseEther("200000")
             );
         });
 
         it("Should calculate different rates for different tiers", async function () {
             const rate1 = await stakingEngine.calculateRewardRate(
-                ethers.utils.parseEther("10000"),
+                ethers.parseEther("10000"),
                 SIXTY_DAYS
             );
             const rate2 = await stakingEngine.calculateRewardRate(
-                ethers.utils.parseEther("1000000"),
+                ethers.parseEther("1000000"),
                 HUNDRED_EIGHTY_DAYS
             );
             
@@ -121,17 +119,17 @@ describe("StakingEngine", function () {
     });
 
     describe("Claiming Rewards", function () {
-        const stakeAmount = ethers.utils.parseEther("100000");
+        const stakeAmount = ethers.parseEther("100000");
 
         beforeEach(async function () {
             await token.connect(user1).approve(stakingEngine.address, stakeAmount);
             await stakingEngine.connect(user1).stake(stakeAmount, SIXTY_DAYS);
             
             await stakingEngine.connect(owner).updateStakingRewardPool(
-                ethers.utils.parseEther("1000000"),
-                ethers.utils.parseEther("500000"),
-                ethers.utils.parseEther("300000"),
-                ethers.utils.parseEther("200000")
+                ethers.parseEther("1000000"),
+                ethers.parseEther("500000"),
+                ethers.parseEther("300000"),
+                ethers.parseEther("200000")
             );
         });
 
@@ -153,7 +151,7 @@ describe("StakingEngine", function () {
     });
 
     describe("Unstaking", function () {
-        const stakeAmount = ethers.utils.parseEther("100000");
+        const stakeAmount = ethers.parseEther("100000");
 
         beforeEach(async function () {
             await token.connect(user1).approve(stakingEngine.address, stakeAmount);
@@ -181,17 +179,17 @@ describe("StakingEngine", function () {
     });
 
     describe("Projected Rewards", function () {
-        const stakeAmount = ethers.utils.parseEther("100000");
+        const stakeAmount = ethers.parseEther("100000");
 
         beforeEach(async function () {
             await token.connect(user1).approve(stakingEngine.address, stakeAmount);
             await stakingEngine.connect(user1).stake(stakeAmount, SIXTY_DAYS);
             
             await stakingEngine.connect(owner).updateStakingRewardPool(
-                ethers.utils.parseEther("1000000"),
-                ethers.utils.parseEther("500000"),
-                ethers.utils.parseEther("300000"),
-                ethers.utils.parseEther("200000")
+                ethers.parseEther("1000000"),
+                ethers.parseEther("500000"),
+                ethers.parseEther("300000"),
+                ethers.parseEther("200000")
             );
         });
 
@@ -217,7 +215,7 @@ describe("StakingEngine", function () {
     });
 
     describe("Unstake Penalty Calculation", function () {
-        const stakeAmount = ethers.utils.parseEther("100000");
+        const stakeAmount = ethers.parseEther("100000");
 
         beforeEach(async function () {
             await token.connect(user1).approve(stakingEngine.address, stakeAmount);
