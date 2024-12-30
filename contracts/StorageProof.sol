@@ -16,6 +16,7 @@ abstract contract StorageProof is IStorageProof, IStoragePool, OwnableUpgradeabl
     bytes32 public constant PROOF_MANAGER_ROLE = keccak256("PROOF_MANAGER_ROLE");
     StorageToken public token;
     IRewardEngine public rewardEngine;
+    IStoragePool public storagePool;
     
     mapping(uint32 => mapping(address => Claim[])) public claims;
     mapping(string => mapping(address => UploadRequest)) public uploads;
@@ -151,8 +152,11 @@ abstract contract StorageProof is IStorageProof, IStoragePool, OwnableUpgradeabl
     function submitClaim(
         string[] memory cids,
         uint32 poolId,
-        uint256[] memory actualSizes // Actual sizes of each CID in bytes
+        uint256[] memory actualSizes, // Actual sizes of each CID in bytes
+        uint256 totalStoredSize
     ) external nonReentrant whenNotPaused validateCIDs(cids) {
+        require(storagePool.isProviderActive(msg.sender), "Not an active provider");
+        uint256 totalClaimedSize = 0;
         require(cids.length > 0, "No CIDs provided");
         require(cids.length == actualSizes.length, "Mismatched CIDs and sizes");
 
@@ -215,7 +219,7 @@ abstract contract StorageProof is IStorageProof, IStoragePool, OwnableUpgradeabl
                 removals[cid].cids[0] = cid;
                 continue;
             }
-
+            totalClaimedSize += size;
             claimedCids[i] = cid;
             claimedCount++;
         }
@@ -228,10 +232,11 @@ abstract contract StorageProof is IStorageProof, IStoragePool, OwnableUpgradeabl
             cids: claimedCids,
             storer: msg.sender,
             poolId: poolId,
-            timestamp: uint40(block.timestamp)
+            timestamp: uint40(block.timestamp),
+            dataSize: totalClaimedSize
         }));
         // Distribute rewards via RewardEngine after storing the claim
-        rewardEngine.distributeRewards(claimedCids, msg.sender, poolId);
+        rewardEngine.distributeRewards(claimedCids, totalStoredSize, msg.sender, poolId);
         emit ClaimSubmitted(claimedCids, msg.sender, poolId);
     }
 

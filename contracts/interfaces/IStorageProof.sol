@@ -7,6 +7,7 @@ interface IStorageProof {
         uint256 timestamp;
         address storer;
         uint32 poolId;
+        uint256 dataSize;
     }
 
     struct UploadRequest {

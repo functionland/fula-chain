@@ -12,67 +12,135 @@ abstract contract RewardEngine is OwnableUpgradeable, IRewardEngine, IStoragePro
     IStorageProof public storageProof;
     IStoragePool public storagePool;
 
-    mapping(address => uint8) public reputationScores; // Reputation scores for storers (default: 500)
-    mapping(address => FailedVerification[]) public failedVerifications; // Tracks failed verifications
+    uint256 public constant INITIAL_MINING_REWARDS_PER_YEAR = 120_000_000 ether;
+    uint256 public constant HALVING_PERIOD = 2 * 365 * 24 * 60 * 60; // 2 years in seconds
+    uint256 public constant LARGE_PROVIDER_THRESHOLD = 2 ether; // 2TB in bytes
+    uint256 public constant LARGE_PROVIDER_MULTIPLIER = 2;
+
+    uint256 public miningRewardsPerYear;
+    uint256 public lastHalvingTime;
+    
+    mapping(address => uint256) public lastRewardDistributionTime;
+    mapping(address => uint8) public reputationScores;
+    mapping(address => FailedVerification[]) public failedVerifications;
 
     struct FailedVerification {
         string cid;
         uint256 timestamp;
     }
 
-    event RewardsDistributed(string indexed cid, address indexed storer);
+    event RewardsDistributed(
+        string indexed cid, 
+        address indexed storer, 
+        uint256 miningReward, 
+        uint256 storageReward
+    );
     event ReputationUpdated(address indexed storer, uint8 newScore);
+    event MiningRewardsUpdated(uint256 newYearlyReward);
 
-    function initialize(address _token, address initialOwner, address _storageProof, address _storagePool) public reinitializer(1) {
+    function initialize(
+        address _token, 
+        address initialOwner, 
+        address _storageProof, 
+        address _storagePool
+    ) public reinitializer(1) {
         require(initialOwner != address(0), "Invalid owner address");
         __Ownable_init(initialOwner);
         token = StorageToken(_token);
         storageProof = IStorageProof(_storageProof);
-        storagePool = IStoragePool(_storagePool); // Initialize the storagePool
+        storagePool = IStoragePool(_storagePool);
+        miningRewardsPerYear = INITIAL_MINING_REWARDS_PER_YEAR;
+        lastHalvingTime = block.timestamp;
     }
 
-    function distributeRewards(string memory cid, address storer, uint32 poolId) external override onlyOwner {
+    function distributeRewards(
+        string[] memory cids, 
+        uint256 totalStoredSize, 
+        address storer, 
+        uint32 poolId
+    ) external override onlyOwner {
         require(storer != address(0), "Invalid storer address");
-        uint256 storageCostPerTBYear = storagePool.getStorageCost(poolId); // Get the storage cost from IStoragePool
-        require(storageCostPerTBYear >= 0, "Invalid storage cost");
-        UploadRequest memory request = storageProof.getUploadRequest(cid, msg.sender);
-        require(request.timestamp > 0, "Upload request does not exist");
-        require(block.timestamp >= request.timestamp, "Invalid timestamp");
         
-        // Calculate tokens to release based on proof period (1 day)
-        uint256 tokensToRelease = storageCostPerTBYear / 365;
-        require(tokensToRelease > 0, "Invalid token release amount");
-        require(token.balanceOf(address(this)) >= tokensToRelease, "Insufficient contract balance");
-        // Transfer tokens from contract to storer
-        bool success = token.transfer(storer, tokensToRelease);
-        require(success, "Token Transfer failed");
-        emit RewardsDistributed(cid, storer);
+        // Calculate mining rewards
+        uint256 miningReward = _calculateMiningReward(storer);
+        
+        // Calculate storage rewards
+        uint256 storageReward = _calculateStorageReward(
+            totalStoredSize,
+            storer,
+            poolId
+        );
+        
+        uint256 totalReward = miningReward + storageReward;
+        require(token.balanceOf(address(this)) >= totalReward, "Insufficient balance");
+        
+        // Update last distribution time
+        lastRewardDistributionTime[storer] = block.timestamp;
+        
+        // Transfer rewards
+        bool success = token.transfer(storer, totalReward);
+        require(success, "Token transfer failed");
+        
+        emit RewardsDistributed(cids[0], storer, miningReward, storageReward);
     }
 
-    function penalizeStorer(string memory cid, address storer) external override onlyOwner {
-        FailedVerification[] storage failures = failedVerifications[storer];
+    function _calculateMiningReward(
+        address storer
+    ) internal view returns (uint256) {
+        // Verify provider is active
+        require(storagePool.isProviderActive(storer), "Not an active provider");
+        
+        // Check if halving should occur
+        uint256 currentPeriod = (block.timestamp - lastHalvingTime) / HALVING_PERIOD;
+        uint256 effectiveYearlyReward = miningRewardsPerYear >> currentPeriod;
+        
+        // Get provider type from storage pool
+        bool isLargeProvider = storagePool.isLargeProviderActive(storer);
+        
+        // Get total providers in each category
+        (uint256 totalSmallProviders, uint256 totalLargeProviders) = storagePool.getProviderCounts();
+        require(totalSmallProviders + totalLargeProviders > 0, "No active providers");
+        
+        // Calculate weighted total providers
+        uint256 weightedTotalProviders = totalSmallProviders + 
+            (totalLargeProviders * LARGE_PROVIDER_MULTIPLIER);
+        
+        // Calculate daily reward per provider
+        uint256 dailyReward = effectiveYearlyReward / 365;
+        uint256 rewardPerProvider = dailyReward / weightedTotalProviders;
+        
+        // Apply provider multiplier based on pool status
+        return isLargeProvider ? 
+            rewardPerProvider * LARGE_PROVIDER_MULTIPLIER : 
+            rewardPerProvider;
+    }
 
-        // Remove old failed verifications (older than 7 days)
-        uint256 i = 0;
-        while (i < failures.length) {
-            if (failures[i].timestamp + 7 days < block.timestamp) {
-                failures[i] = failures[failures.length - 1];
-                failures.pop();
-            } else {
-                i++;
-            }
-        }
+    function _calculateStorageReward(
+        uint256 totalStoredSize,
+        address storer,
+        uint32 poolId
+    ) internal view returns (uint256) {
+        uint256 storageCostPerTBYear = storagePool.getStorageCost(poolId);
+        require(storageCostPerTBYear > 0, "Invalid storage cost");
+        
+        // Calculate time since last distribution
+        uint256 lastDistribution = lastRewardDistributionTime[storer];
+        uint256 timeElapsed = lastDistribution > 0 ? 
+            block.timestamp - lastDistribution : 
+            1 days;
+        
+        // Calculate daily reward per TB
+        uint256 dailyRewardPerTB = storageCostPerTBYear / 365;
+        
+        // Convert totalStoredSize to TB and calculate reward
+        uint256 storedTB = totalStoredSize / 1 ether; // Assuming 1 ether = 1TB
+        return (dailyRewardPerTB * storedTB * timeElapsed) / 1 days;
+    }
 
-        // Add the current failed verification
-        failures.push(FailedVerification({
-            cid: cid,
-            timestamp: block.timestamp
-        }));
-
-        // Reduce reputation score by 1 (minimum score: 0)
-        uint8 currentScore = reputationScores[storer];
-        reputationScores[storer] = currentScore > 0 ? currentScore - 1 : 0;
-
-        emit ReputationUpdated(storer, reputationScores[storer]);
+    function setMiningRewardsPerYear(uint256 newYearlyReward) external onlyOwner {
+        require(newYearlyReward > 0, "Invalid reward amount");
+        miningRewardsPerYear = newYearlyReward;
+        lastHalvingTime = block.timestamp;
+        emit MiningRewardsUpdated(newYearlyReward);
     }
 }

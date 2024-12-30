@@ -10,13 +10,24 @@ import "./interfaces/IStoragePool.sol";
 import "./StorageToken.sol";
 
 contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, PausableUpgradeable, ReentrancyGuardUpgradeable, AccessControlUpgradeable {
-    uint256 public constant IMPLEMENTATION_VERSION = 1;
+    bytes32 public constant ROLE_VERIFIER = keccak256("ROLE_VERIFIER");
     bytes32 public constant POOL_CREATOR_ROLE = keccak256("POOL_CREATOR_ROLE");
+    
+    uint256 public constant IMPLEMENTATION_VERSION = 1;
+    
     StorageToken public token;
     mapping(uint256 => Pool) public pools;
     mapping(uint32 => JoinRequest[]) public joinRequests;
     mapping(address => uint256) public lockedTokens;
     mapping(address => uint256) public requestIndex;
+    // Single mapping using bit flags
+    mapping(address => uint8) public providerStatus;
+    address[] private providerList;
+    // Constants for bit positions
+    uint8 private constant IS_PROVIDER = 1;      // 0000 0001
+    uint8 private constant IS_LARGE_PROVIDER = 2; // 0000 0010
+    uint256 public totalSmallProviders;
+    uint256 public totalLargeProviders;
     uint256 public poolCounter;
     uint256 public dataPoolCreationTokens; // Amount needed to create a pool
     uint32 private constant MAX_MEMBERS = 1000;
@@ -32,6 +43,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         __AccessControl_init();
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner); // Owner has admin role
         _grantRole(POOL_CREATOR_ROLE, initialOwner); // Assign initial roles
+        _grantRole(ROLE_VERIFIER, initialOwner);
         token = StorageToken(_token);
         dataPoolCreationTokens = 500_000 * 10**18; // 500K tokens with 18 decimals
     }
@@ -497,6 +509,45 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         require(msg.sender == pool.creator, "Not Authorized");
         require(pool.members[member].joinDate > 0, "Not a member");
         pool.members[member].reputationScore = score;
+    }
+
+    function isProviderActive(address provider) external view override returns (bool) {
+        return (providerStatus[provider] & IS_PROVIDER) != 0;
+    }
+    function _isProviderActive(address provider) internal view returns (bool) {
+        return (providerStatus[provider] & IS_PROVIDER) != 0;
+    }
+
+    function addProvider(address provider, uint256 storageSize) external onlyRole(ROLE_VERIFIER) {
+        require(provider != address(0), "Invalid provider address");
+        require(!_isProviderActive(provider), "Provider already exists");
+        
+        uint8 status = IS_PROVIDER; // Set provider bit
+        bool isLarge = storageSize >= 2 ether;
+        if (isLarge) {
+            status |= IS_LARGE_PROVIDER; // Set large provider bit
+            totalLargeProviders++;
+        } else {
+            totalSmallProviders++;
+        }
+        
+        providerStatus[provider] = status;
+        providerList.push(provider);
+        
+        emit ProviderAdded(provider, storageSize, isLarge);
+    }
+
+    // New optimized getProviderCounts
+    function getProviderCounts() external view returns (uint256 smallProviders, uint256 largeProviders) {
+        return (totalSmallProviders, totalLargeProviders);
+    }
+
+    function getAllProviders() external view returns (address[] memory) {
+        return providerList;
+    }  
+
+    function isLargeProviderActive(address provider) external view returns (bool) {
+        return (providerStatus[provider] & IS_LARGE_PROVIDER) != 0;
     }
 
     function _authorizeUpgrade(address) internal override onlyOwner {}

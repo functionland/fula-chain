@@ -12,7 +12,8 @@ import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol"
 import "./DAMMModule.sol";
 
 contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, PausableUpgradeable, AccessControlUpgradeable, DAMMModule {
-    uint256 private constant TOTAL_SUPPLY = 1_000_000 * 10**18; // 1M tokens
+    uint256 private constant TOKEN_UNIT = 10**18;
+    uint256 private constant TOTAL_SUPPLY = 1_000_000 * TOKEN_UNIT; // 1M tokens
     bytes32 public constant BRIDGE_OPERATOR_ROLE = keccak256("BRIDGE_OPERATOR_ROLE");
     mapping(address => bool) public bridgeOperators;
     mapping(address => bool) public poolContracts;
@@ -53,6 +54,11 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     function version() public pure returns (string memory) {
         return "1.0.0";
     }
+
+    function tokenUnit() public pure returns (uint256) {
+        return TOKEN_UNIT;
+    }
+
 
     function emergencyPauseToken() external onlyOwner {
         _pause();
@@ -148,58 +154,6 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         
         // Emit event for bridge operators
         emit BridgeTransfer(msg.sender, amount, targetChain);
-    }
-
-    //DAMM
-    function executeDAMMSwap(
-        address quoteToken,
-        uint256 amountIn,
-        uint256 minAmountOut,
-        bool isBaseToQuote
-    ) external nonReentrant returns (uint256) {
-        // Check
-        require(quoteToken != address(0), "Invalid quote token");
-        require(amountIn > 0, "Invalid amount");
-        
-        // Effect
-        uint256 amountOut;
-        if (isBaseToQuote) {
-            _transfer(msg.sender, address(this), amountIn);
-            amountOut = super.swap(quoteToken, amountIn, minAmountOut, true);
-            // Interaction
-            bool success = IERC20(quoteToken).transfer(msg.sender, amountOut);
-            require(success, "Quote transfer failed");
-        } else {
-            require(IERC20(quoteToken).transferFrom(msg.sender, address(this), amountIn), "Quote transfer failed");
-            amountOut = super.swap(quoteToken, amountIn, minAmountOut, false);
-            _transfer(address(this), msg.sender, amountOut);
-        }
-        return amountOut;
-    }
-
-    function createDAMMPool(
-        address quoteToken,
-        address priceFeed,
-        uint256 initialBaseAmount,
-        uint256 initialQuoteAmount
-    ) external onlyOwner validateAddress(quoteToken) validateAddress(priceFeed) {
-        require(IERC20(quoteToken).transferFrom(msg.sender, address(this), initialQuoteAmount), "Quote transfer failed");
-        _transfer(msg.sender, address(this), initialBaseAmount);
-        
-        super.createPoolDAMM(quoteToken, priceFeed, initialBaseAmount, initialQuoteAmount);
-        emit DAMMPoolCreated(quoteToken, initialBaseAmount);
-    }
-
-    function emergencyPauseDAMMPool(address quoteToken) external onlyOwner {
-        super.pauseDAMMPool(quoteToken);
-    }
-
-    function emergencyResumeDAMMPool(address quoteToken) external onlyOwner {
-        super.resumeDAMMPool(quoteToken);
-    }
-
-    function updateDAMMPoolParameters(address quoteToken) external onlyOwner {
-        updateDAMMPoolDynamics(quoteToken);
     }
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}

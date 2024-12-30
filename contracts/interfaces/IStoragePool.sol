@@ -47,6 +47,14 @@ interface IStoragePool {
     event PoolCreationRequirementUpdated(uint256 newAmount);
     event PoolEmergencyAction(string action, uint256 timestamp);
     event StorageCostSet(uint32 indexed poolId, uint256 costPerTBYear);
-    
+    event ProviderAdded(
+        address indexed provider,
+        uint256 storageSize,
+        bool isLargeProvider
+    );
+
     function getStorageCost(uint32 poolId) external view returns (uint256);
+    function isProviderActive(address provider) external view returns (bool);
+    function getProviderCounts() external view returns (uint256 smallProviders, uint256 largeProviders);
+    function isLargeProviderActive(address provider) external view returns (bool);
 }
