@@ -39,6 +39,10 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     uint32 private constant MAX_MEMBERS = 1000;
     mapping(uint32 => uint256) public storageCostPerTBYear;
 
+    // required to remove for loops to make gas fees predictable
+    mapping(address => uint256) private userTotalRequiredLockedTokens;
+    mapping(string => JoinRequest) private usersActiveJoinRequestByPeerID;
+
     function initialize(address _token, address initialOwner) public reinitializer(1) {
         require(_token != address(0), "Invalid token address");
         require(initialOwner != address(0), "Invalid owner address");
@@ -79,34 +83,8 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
     // Calculate the required number of locked tokens for a user address
     function calculateRequiredLockedTokens(address user) public view returns (uint256) {
-        uint256 requiredLockedTokens = 0;
 
-        // Calculate the number of pools the user created
-        uint256 userCreatedPools = 0;
-        for (uint256 i = 0; i < poolCounter; i++) {
-            if (pools[i].creator == user) {
-                userCreatedPools++;
-            }
-        }
-        requiredLockedTokens += userCreatedPools * dataPoolCreationTokens;
-
-        // Calculate the number of pools the user is a member of (except the ones they created)
-        for (uint256 i = 0; i < poolCounter; i++) {
-            if (pools[i].members[user].joinDate > 0 && pools[i].creator != user) {
-                requiredLockedTokens += pools[i].requiredTokens;
-            }
-        }
-
-        // Calculate the number of join requests the user has made
-        for (uint32 i = 0; i < poolCounter; i++) {
-            for (uint32 j = 0; j < joinRequests[i].length; j++) {
-                if (joinRequests[i][j].accountId == user) {
-                    requiredLockedTokens += pools[i].requiredTokens;
-                }
-            }
-        }
-
-        return requiredLockedTokens;
+        return userTotalRequiredLockedTokens[user];
     }
 
     // This method creates a data pool and sets the required information for the pool.
@@ -172,6 +150,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         _grantRole(POOL_CREATOR_ROLE, msg.sender);
         poolActionTimeLocks[actionHash] = block.timestamp + POOL_ACTION_DELAY;
 
+        userTotalRequiredLockedTokens[msg.sender] += dataPoolCreationTokens;
         emit DataPoolCreated(pool.id, pool.name, pool.creator);
     }
 
@@ -179,28 +158,30 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     // It also unlocks the tokens locked by the creator and removes all pending join requests.
     function deletePool(uint32 poolId) external nonReentrant whenNotPaused validatePoolId(poolId) {
         Pool storage pool = pools[poolId];
+        uint256 requiredTokensForPool = pool.requiredTokens;
+        address creator = pool.creator;
 
         // Ensure only the pool creator or contract owner can delete the pool
-        require(msg.sender == pool.creator || msg.sender == owner(), "Not authorized");
+        require(msg.sender == creator || msg.sender == owner(), "Not authorized");
         bytes32 actionHash = keccak256(abi.encodePacked("DELETE_POOL", msg.sender));
         require(block.timestamp >= poolActionTimeLocks[actionHash], "Timelock active");
 
         // If not the contract owner, ensure no members other than the creator exist
         if (msg.sender != owner()) {
             require(pool.memberList.length == 1, "Pool has active members");
-            require(pool.memberList[0] == pool.creator, "Only creator should remain in member list");
+            require(pool.memberList[0] == creator, "Only creator should remain in member list");
         }
 
         // Unlock the tokens locked by the pool creator and reset their balance
         // Calculate the total number of tokens this user needs to have locked so far
-        uint256 requiredLockedTokens = calculateRequiredLockedTokens(pool.creator);
+        uint256 requiredLockedTokens = calculateRequiredLockedTokens(creator);
         if (msg.sender != owner()) {
-            require(lockedTokens[pool.creator] >= requiredLockedTokens, "Insufficient locked tokens");
+            require(lockedTokens[creator] >= requiredLockedTokens, "Insufficient locked tokens");
         }
         require(token.balanceOf(address(this)) >= dataPoolCreationTokens, "Contract has insufficient tokens");
-        if (lockedTokens[pool.creator] >= requiredLockedTokens) {
-            require(token.transfer(pool.creator, dataPoolCreationTokens), "Token transfer failed");
-            lockedTokens[pool.creator] -= dataPoolCreationTokens;
+        if (lockedTokens[creator] >= requiredLockedTokens) {
+            require(token.transfer(creator, dataPoolCreationTokens), "Token transfer failed");
+            lockedTokens[creator] -= dataPoolCreationTokens;
         }
 
         // Remove all pending join requests for this pool and refund their locked tokens
@@ -212,14 +193,20 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
             if (msg.sender != owner()) {
                 require(lockedTokens[request.accountId] >= requiredLockedTokensForUser, "Insufficient locked tokens for join requests");
             }
-            require(token.balanceOf(address(this)) >= pool.requiredTokens, "Contract has insufficient tokens");
+            require(token.balanceOf(address(this)) >= requiredTokensForPool, "Contract has insufficient tokens");
             if (lockedTokens[request.accountId] >= requiredLockedTokensForUser) {
-                require(token.transfer(request.accountId, pool.requiredTokens), "Token transfer failed");
-                lockedTokens[request.accountId] -= pool.requiredTokens;
+                require(token.transfer(request.accountId, requiredTokensForPool), "Token transfer failed");
+                lockedTokens[request.accountId] -= requiredTokensForPool;
+            }
+            // Reduce required locked tokens for the removed joined request.
+            if (userTotalRequiredLockedTokens[request.accountId] >= requiredTokensForPool){
+                userTotalRequiredLockedTokens[request.accountId] -= requiredTokensForPool;
+            } else {
+                userTotalRequiredLockedTokens[request.accountId] = 0;
             }
 
             // Remove the join request from storage
-            _removeJoinRequest(poolId, joinRequests[poolId].length - 1);
+            _removeJoinRequest(poolId, request.accountId);
         }
 
         // Clear all members from the member list and refund their locked tokens (if any)
@@ -229,11 +216,19 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
             if (msg.sender != owner()) {
                 require(lockedTokens[member] >= requiredLockedTokensForUser, "Insufficient locked tokens for pool member");
             }
-            require(token.balanceOf(address(this)) >= pool.requiredTokens, "Contract has insufficient tokens");
-            if (lockedTokens[member] >= requiredLockedTokensForUser && member != pool.creator) {
+            require(token.balanceOf(address(this)) >= requiredTokensForPool, "Contract has insufficient tokens");
+            if (lockedTokens[member] >= requiredLockedTokensForUser && member != creator) {
                 // Refund locked tokens to the member
-                require(token.transfer(member, pool.requiredTokens), "Token transfer failed");
-                lockedTokens[member] -= pool.requiredTokens;
+                require(token.transfer(member, requiredTokensForPool), "Token transfer failed");
+                lockedTokens[member] -= requiredTokensForPool;
+            }
+            if (member != creator){
+                // Reduce required locked tokens for the removed pool member.
+                if (userTotalRequiredLockedTokens[member] >= requiredTokensForPool){
+                    userTotalRequiredLockedTokens[member] -= requiredTokensForPool;
+                } else {
+                    userTotalRequiredLockedTokens[member] = 0;
+                }
             }
 
             _removeMemberFromList(pool.memberList, member);
@@ -241,13 +236,20 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         }
 
         // Revoke the POOL_CREATOR_ROLE from the pool creator
-        _revokeRole(POOL_CREATOR_ROLE, pool.creator);
+        _revokeRole(POOL_CREATOR_ROLE, creator);
 
         // Delete the pool itself
         delete pools[poolId];
         poolActionTimeLocks[actionHash] = block.timestamp + POOL_ACTION_DELAY;
 
-        emit DataPoolDeleted(poolId, pool.creator);
+        // Reduce required locked tokens for the pool creator.
+        if (userTotalRequiredLockedTokens[creator] >= dataPoolCreationTokens){
+            userTotalRequiredLockedTokens[creator] -= dataPoolCreationTokens;
+        } else {
+            userTotalRequiredLockedTokens[creator] = 0;
+        }
+
+        emit DataPoolDeleted(poolId, creator);
     }
 
 
@@ -272,16 +274,14 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
         // Ensure the user does not already have an active join request for this pool
         JoinRequest[] storage requests = joinRequests[poolId];
-        for (uint256 i = 0; i < requests.length; i++) {
-            require(requests[i].accountId != msg.sender, "Already submitted a join request for this data pool");
-        }
+        require(requestIndex[msg.sender] == 0, "User already has active requests");
 
         // Ensure the total number of active members plus pending join requests does not exceed MAX_MEMBERS
         require(pool.memberList.length + requests.length < MAX_MEMBERS, "Data pool has reached maximum capacity");
 
         // Lock the user's tokens for this join request
         require(token.transferFrom(msg.sender, address(this), pool.requiredTokens), "Token transfer failed");
-        lockedTokens[msg.sender] = pool.requiredTokens;
+        lockedTokens[msg.sender] += pool.requiredTokens;
 
         // Create and save the new join request
         uint256 newIndex = requests.length;
@@ -294,10 +294,19 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         newRequest.approvals = 0; // Initialize approvals count
         newRequest.rejections = 0; // Initialize rejections count
 
+        JoinRequest storage peerRequest = usersActiveJoinRequestByPeerID[peerId];
+        peerRequest.peerId = peerId;
+        peerRequest.accountId = msg.sender;
+        peerRequest.poolId = poolId;
+        peerRequest.approvals = 0;
+        peerRequest.rejections = 0;
+
         // Save the index of this request for efficient lookup during cancellation or management
         requestIndex[msg.sender] = newIndex;
-
+        userTotalRequiredLockedTokens[msg.sender] += pool.requiredTokens;
+        
         emit JoinRequestSubmitted(poolId, peerId, msg.sender);
+
     }
 
     function getStorageCost(uint32 poolId) external view override returns (uint256) {
@@ -319,12 +328,12 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     // The join request is removed from storage efficiently to reduce gas costs.
     function cancelJoinRequest(uint32 poolId) external nonReentrant whenNotPaused validatePoolId(poolId) {
         require(poolId < poolCounter, "Invalid pool ID");
-        Pool storage pool = pools[poolId];
         // Retrieve the index of the user's join request from the mapping
         uint256 index = requestIndex[msg.sender];
-
+        require(index > 0, "Request not found");
         // Validate that the index is within bounds of the joinRequests array for the specified pool
         require(index < joinRequests[poolId].length, "Invalid request");
+        Pool storage pool = pools[poolId];
 
         // Unlock the user's tokens and reset their locked token balance
         uint256 lockedAmount = lockedTokens[msg.sender];
@@ -333,10 +342,13 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         lockedTokens[msg.sender] -= pool.requiredTokens;
 
         // Remove the join request from the pool's joinRequests array
-        _removeJoinRequest(poolId, index);
+        _removeJoinRequest(poolId, msg.sender);
 
-        // Clear the user's request index mapping entry
-        delete requestIndex[msg.sender];
+        if(userTotalRequiredLockedTokens[msg.sender] >= pool.requiredTokens){
+            userTotalRequiredLockedTokens[msg.sender] -= pool.requiredTokens;
+        } else {
+            userTotalRequiredLockedTokens[msg.sender] = 0;
+        }
 
         // Emit an event to log the cancellation of the join request
         emit JoinRequestCanceled(poolId, msg.sender);
@@ -365,6 +377,11 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
         // Delete the user's membership data from storage
         delete pool.members[msg.sender];
+        if (userTotalRequiredLockedTokens[msg.sender] >= pool.requiredTokens) {
+            userTotalRequiredLockedTokens[msg.sender] -= pool.requiredTokens;
+        } else {
+            userTotalRequiredLockedTokens[msg.sender] = 0;
+        }
 
         // Emit an event to log that the user has left the pool
         emit MemberLeft(poolId, msg.sender);
@@ -390,6 +407,11 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
             require(token.transfer(member, pool.requiredTokens), "Token transfer failed");
             lockedTokens[member] -= pool.requiredTokens;
         }
+        if (userTotalRequiredLockedTokens[member] >= pool.requiredTokens) {
+            userTotalRequiredLockedTokens[member] -= pool.requiredTokens;
+        } else {
+            userTotalRequiredLockedTokens[member] = 0;
+        }
 
         // Remove the member from the member list
         _removeMemberFromList(pool.memberList, member);
@@ -402,6 +424,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
     // Internal function to efficiently remove a member from the member list.
     // This function swaps the target member with the last member in the list and then pops it.
+    //TODO : Remove for loop
     function _removeMemberFromList(address[] storage memberList, address member) internal {
         uint256 length = memberList.length;
         
@@ -436,7 +459,10 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         emit MemberJoined(poolId, accountId);
     }
 
-    function _removeJoinRequest(uint32 poolId, uint256 index) internal {
+    function _removeJoinRequest(uint32 poolId, address member) internal {
+        // Retrieve the index of the user's join request from the mapping
+        uint256 index = requestIndex[member];
+
         uint256 lastIndex = joinRequests[poolId].length - 1;
         joinRequests[poolId][index].peerId = joinRequests[poolId][lastIndex].peerId;
         joinRequests[poolId][index].accountId = joinRequests[poolId][lastIndex].accountId;
@@ -444,6 +470,10 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         joinRequests[poolId][index].approvals = joinRequests[poolId][lastIndex].approvals;
         joinRequests[poolId][index].rejections = joinRequests[poolId][lastIndex].rejections;
         joinRequests[poolId].pop();
+        // Clear the user's request index mapping entry
+        delete usersActiveJoinRequestByPeerID[joinRequests[poolId][index].peerId];
+        delete requestIndex[member];
+        requestIndex[joinRequests[poolId][lastIndex].accountId] = index;
     }
 
     // This method allows current members of a data pool to vote on a new join request.
@@ -455,6 +485,8 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         bool approve
     ) external nonReentrant whenNotPaused validatePoolId(poolId) {
         require(bytes(peerIdToVote).length > 0, "Invalid peer ID");
+        
+        require(usersActiveJoinRequestByPeerID[peerIdToVote].accountId != address(0), "Join request not found");
 
         Pool storage pool = pools[poolId];
 
@@ -465,56 +497,49 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         uint256 requestsLength = requests.length;
 
         // Iterate through join requests to find the one matching `peerIdToVote`
-        for (uint256 i = 0; i < requestsLength; i++) {
-            if (keccak256(bytes(requests[i].peerId)) == keccak256(bytes(peerIdToVote))) {
-                JoinRequest storage request = requests[i];
 
-                // Ensure the voter has not already voted on this request
-                require(!request.votes[msg.sender], "Already voted");
+        JoinRequest storage request = usersActiveJoinRequestByPeerID[peerIdToVote];
 
-                // Record the voter's vote
-                request.votes[msg.sender] = true;
+        // Ensure the voter has not already voted on this request
+        require(!request.votes[msg.sender], "Already voted");
 
-                if (approve) {
-                    // Increment approval count
-                    request.approvals++;
+        // Record the voter's vote
+        request.votes[msg.sender] = true;
 
-                    // Check if approvals meet the threshold for acceptance
-                    if (
-                        request.approvals >= pool.memberList.length / 3 || 
-                        request.approvals >= 10
-                    ) {
-                        // Add the user as a member of the pool
-                        _addMember(poolId, request.peerId, request.accountId);
+        if (approve) {
+            // Increment approval count
+            request.approvals++;
 
-                        // Remove the join request from storage
-                        _removeJoinRequest(poolId, i);
-                    }
-                } else {
-                    // Increment rejection count
-                    request.rejections++;
+            // Check if approvals meet the threshold for acceptance
+            if (
+                request.approvals >= pool.memberList.length / 3 || 
+                request.approvals >= 10
+            ) {
+                // Add the user as a member of the pool
+                _addMember(poolId, request.peerId, request.accountId);
 
-                    // Check if rejections meet the threshold for denial
-                    if (request.rejections >= pool.memberList.length / 2) {
-                        // Refund locked tokens to the user
-                        uint256 lockedAmount = lockedTokens[request.accountId];
-                        if (lockedAmount >= pool.requiredTokens) {
-                            require(token.transfer(request.accountId, pool.requiredTokens), "Token transfer failed");
-                            lockedTokens[request.accountId] -= pool.requiredTokens;
-                        }
+                // Remove the join request from storage
+                _removeJoinRequest(poolId, request.accountId);
+            }
+        } else {
+            // Increment rejection count
+            request.rejections++;
 
-                        // Remove the join request from storage
-                        _removeJoinRequest(poolId, i);
-
-                        emit JoinRequestRejected(poolId, request.accountId);
-                    }
+            // Check if rejections meet the threshold for denial
+            if (request.rejections >= pool.memberList.length / 2) {
+                // Refund locked tokens to the user
+                uint256 lockedAmount = lockedTokens[request.accountId];
+                if (lockedAmount >= pool.requiredTokens) {
+                    require(token.transfer(request.accountId, pool.requiredTokens), "Token transfer failed");
+                    lockedTokens[request.accountId] -= pool.requiredTokens;
                 }
 
-                return; // Exit after processing the vote to save gas
+                // Remove the join request from storage
+                _removeJoinRequest(poolId, request.accountId);
+
+                emit JoinRequestRejected(poolId, request.accountId);
             }
         }
-
-        revert("Join request not found");
     }
 
     // Set reputation implementation
