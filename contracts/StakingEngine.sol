@@ -32,15 +32,6 @@ abstract contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgra
     uint256 private constant MAX_MULTIPLIER = 3 * PRECISION_FACTOR;                // 3x maximum multiplier
     uint256 private constant SLOPE_PRECISION = PRECISION_FACTOR;                   // Precision for slope calculations
 
-    struct TierInfo {
-        uint256 minAmount;
-        uint256 duration;
-        uint256 rewardMultiplier;
-        uint256 penaltyRate;
-    }
-    mapping(uint256 => TierInfo) public stakingTiers;
-    uint256 public totalTiers;
-
     struct Stake {
         uint256 amount; // Amount of tokens staked
         uint256 startTime; // Timestamp when staking started
@@ -81,37 +72,6 @@ abstract contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgra
     function emergencyUnpauseRewardDistribution() external onlyOwner {
         _unpause();
         emit EmergencyAction("Rewards Distribution unpaused", block.timestamp);
-    }
-
-    function adjustStakingParameters(
-        uint256 newMinStakeAmount,
-        uint256 newMaxStakeAmount,
-        uint256[] calldata durations,
-        uint256[] calldata multipliers
-    ) external onlyOwner {
-        require(durations.length == multipliers.length, "Length mismatch");
-        require(durations.length > 0, "Empty arrays");
-        require(newMaxStakeAmount >= newMinStakeAmount, "Invalid amounts");
-        
-        // Clear existing tiers
-        totalTiers = 0;
-        
-        // Set new tiers
-        for (uint256 i = 0; i < durations.length; i++) {
-            require(durations[i] >= 60 days, "Duration too short");
-            require(multipliers[i] > 0, "Invalid multiplier");
-            
-            stakingTiers[totalTiers] = TierInfo({
-                minAmount: i == 0 ? newMinStakeAmount : stakingTiers[totalTiers - 1].minAmount * 2,
-                duration: durations[i],
-                rewardMultiplier: multipliers[i],
-                penaltyRate: 25 // Default penalty rate
-            });
-            
-            totalTiers++;
-        }
-        
-        emit StakingParametersUpdated(newMinStakeAmount, newMaxStakeAmount, totalTiers);
     }
 
     function updateRewardDistributionRates(

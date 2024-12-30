@@ -42,6 +42,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
     // required to remove for loops to make gas fees predictable
     mapping(address => uint256) private userTotalRequiredLockedTokens;
     mapping(string => JoinRequest) private usersActiveJoinRequestByPeerID;
+    mapping(uint256 => mapping(address => uint256)) private poolMemberIndices;
 
     function initialize(address _token, address initialOwner) public reinitializer(1) {
         require(_token != address(0), "Invalid token address");
@@ -231,7 +232,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
                 }
             }
 
-            _removeMemberFromList(pool.memberList, member);
+            _removeMemberFromList(pool.memberList, member, poolId);
             delete pool.members[member]; // Clear membership data from storage
         }
 
@@ -373,7 +374,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         lockedTokens[msg.sender] -= pool.requiredTokens;
 
         // Remove the user from the member list efficiently
-        _removeMemberFromList(pool.memberList, msg.sender);
+        _removeMemberFromList(pool.memberList, msg.sender, poolId);
 
         // Delete the user's membership data from storage
         delete pool.members[msg.sender];
@@ -414,7 +415,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         }
 
         // Remove the member from the member list
-        _removeMemberFromList(pool.memberList, member);
+        _removeMemberFromList(pool.memberList, member, poolId);
 
         // Clear membership data from storage
         delete pool.members[member];
@@ -424,21 +425,18 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
 
     // Internal function to efficiently remove a member from the member list.
     // This function swaps the target member with the last member in the list and then pops it.
-    //TODO : Remove for loop
-    function _removeMemberFromList(address[] storage memberList, address member) internal {
-        uint256 length = memberList.length;
+    function _removeMemberFromList(address[] storage memberList, address member, uint32 poolId) internal {
+        uint256 index = poolMemberIndices[poolId][member];
+        uint256 lastIndex = memberList.length - 1;
         
-        for (uint256 i = 0; i < length; i++) {
-            if (memberList[i] == member) {
-                // Swap with last element and pop to remove efficiently
-                memberList[i] = memberList[length - 1];
-                memberList.pop();
-                return;
-            }
+        if (index != lastIndex) {
+            address lastMember = memberList[lastIndex];
+            memberList[index] = lastMember;
+            poolMemberIndices[poolId][lastMember] = index;
         }
-
-        // If we reach here, something went wrong (this should never happen if validations are correct)
-        revert("Member not found in list");
+        
+        memberList.pop();
+        delete poolMemberIndices[poolId][member];
     }
 
     function _addMember(
@@ -454,6 +452,7 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         newMember.peerId = peerId;
         newMember.accountId = accountId;
         newMember.reputationScore = 400;
+        poolMemberIndices[poolId][accountId] = pool.memberList.length;
         pool.memberList.push(accountId);
         
         emit MemberJoined(poolId, accountId);
@@ -493,12 +492,9 @@ contract StoragePool is IStoragePool, OwnableUpgradeable, UUPSUpgradeable, Pausa
         // Ensure the voter is a member of the pool
         require(pool.members[msg.sender].joinDate > 0, "Not a pool member");
 
-        JoinRequest[] storage requests = joinRequests[poolId];
-        uint256 requestsLength = requests.length;
-
         // Iterate through join requests to find the one matching `peerIdToVote`
-
         JoinRequest storage request = usersActiveJoinRequestByPeerID[peerIdToVote];
+        require(request.poolId == poolId, "Invalid pool ID");
 
         // Ensure the voter has not already voted on this request
         require(!request.votes[msg.sender], "Already voted");
