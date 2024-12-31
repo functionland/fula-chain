@@ -53,6 +53,15 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         uint256 indexed amountIn,
         uint256 amountOut
     );
+
+    error ExceedsMaximumSupply(uint256 requested, uint256 maxSupply);
+    error AmountMustBePositive();
+    error UnsupportedSourceChain(uint256 chain);
+    error TokenPaused();
+    error InsufficientAllowance(address spender, uint256 amount);
+    error UnauthorizedTransfer(address sender);
+    error TimeLockActive(address operator);
+
     function initialize(address initialOwner) public reinitializer(1) {  // Increment version number for each upgrade
         require(initialOwner != address(0), "Invalid owner address");
         __ERC20_init("Test Token", "TT");
@@ -93,7 +102,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     // Bridge operator management
     function addBridgeOperator(address operator) external onlyRole(DEFAULT_ADMIN_ROLE) validateAddress(operator) {
         require(operator != address(0), "Invalid operator address");
-        require(block.timestamp >= roleChangeTimeLock[operator], "Time lock active");
+        if (block.timestamp < roleChangeTimeLock[operator]) revert TimeLockActive(operator);
     
         roleChangeTimeLock[operator] = block.timestamp + ROLE_CHANGE_DELAY;
         grantRole(BRIDGE_OPERATOR_ROLE, operator);
@@ -128,15 +137,23 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         emit ProofContractRemoved(proofContract);
     }
 
+    function transfer(address to, uint256 amount) public virtual override whenNotPaused returns (bool) {
+        if (paused()) revert TokenPaused();
+        return super.transfer(to, amount);
+    }
+
     // Bridge-specific functions with access control
     function bridgeMint(address to, uint256 amount, uint256 sourceChain) 
-        external 
-        whenNotPaused 
-        onlyRole(BRIDGE_OPERATOR_ROLE)
+    external 
+    whenNotPaused 
+    onlyRole(BRIDGE_OPERATOR_ROLE)
     {
-        require(amount > 0, "Amount must be positive");
-        require(totalSupply() + amount <= TOTAL_SUPPLY, "Exceeds maximum supply");
-        require(supportedChains[sourceChain], "Unsupported source chain");
+        if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
+        if (amount == 0) revert AmountMustBePositive();
+        if (totalSupply() + amount > TOTAL_SUPPLY) {
+            revert ExceedsMaximumSupply(amount, TOTAL_SUPPLY);
+        }
+        if (!supportedChains[sourceChain]) revert UnsupportedSourceChain(sourceChain);
         _mint(to, amount);
         emit BridgeOperationDetails(msg.sender, "MINT", amount, sourceChain, block.timestamp);
     }
@@ -146,6 +163,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         whenNotPaused 
         onlyRole(BRIDGE_OPERATOR_ROLE)
     {
+        if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
         require(amount > 0, "Amount must be positive");
         require(balanceOf(from) >= amount, "Insufficient balance to burn");
         require(supportedChains[targetChain], "Unsupported target chain");
@@ -159,6 +177,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         address recipient,
         uint256 amount
     ) public virtual whenNotPaused override returns (bool) {
+        if (paused()) revert TokenPaused();
         if (poolContracts[msg.sender] || proofContracts[msg.sender]) {
             _transfer(sender, recipient, amount);
             return true;
