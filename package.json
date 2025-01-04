@@ -10,7 +10,8 @@
     "hardhat:setvar": "yarn hardhat vars set PK",
     "deploy:deployMultichain": "yarn hardhat run scripts/deployToken.ts --network sepolia --show-stack-traces",
     "deploy:deployMultichainBytecode": "yarn hardhat run scripts/deployMultichainBytecode.ts --network sepolia",
-    "deploy:localhost": "yarn hardhat run scripts/localhost.ts"
+    "deploy:localhost": "yarn hardhat run scripts/localhost.ts",
+    "test:stakingEngine": "yarn hardhat test test/stakingEngine.test.ts"
   },
   "devDependencies": {
     "@buildwithsygma/sygma-sdk-core": "^2.7",

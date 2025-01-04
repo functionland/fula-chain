@@ -8,60 +8,83 @@ import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "./StorageToken.sol";
 import "./interfaces/IStakingEngine.sol";
 
-library Math {
-    function min(uint256 a, uint256 b) internal pure returns (uint256) {
-        return a < b ? a : b;
+contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable {
+    uint32 public constant LOCK_PERIOD_1 = 60 days;
+    uint32 public constant LOCK_PERIOD_2 = 180 days;
+    uint32 public constant LOCK_PERIOD_3 = 365 days;
+
+    uint256 public constant FIXED_APY_60_DAYS = 2; // 2% for 60 days
+    uint256 public constant FIXED_APY_180_DAYS = 9; // 9% for 180 days
+    uint256 public constant FIXED_APY_365_DAYS = 23; // 23% for 365 days
+
+    struct StakeInfo {
+        uint256 amount;
+        uint256 rewardDebt; // Tracks user's share of accumulated rewards
+        uint256 lockPeriod;
+        uint256 startTime; // Track when the stake was created
     }
 
-    function max(uint256 a, uint256 b) internal pure returns (uint256) {
-        return a > b ? a : b;
-    }
-}
+    mapping(address => StakeInfo[]) public stakes;
+    uint256 public totalStaked;
+    uint256 public lastUpdateTime;
 
-abstract contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable {
-    using Math for uint256;
-
-    uint256 private constant PRECISION_FACTOR = 1e24;
-    uint256 public monthlyEcosystemTokens = 9_354_167;
-    uint256 private constant TOTAL_RATE_BASIS = 10000; // 100% = 10000 basis points
     StorageToken public token;
 
-    // Constants for utilization curve parameters
-    uint256 private constant OPTIMAL_UTILIZATION = 80 * PRECISION_FACTOR / 100;    // 80% optimal utilization
-    uint256 private constant MIN_MULTIPLIER = PRECISION_FACTOR / 2;                // 0.5x minimum multiplier
-    uint256 private constant MAX_MULTIPLIER = 3 * PRECISION_FACTOR;                // 3x maximum multiplier
-    uint256 private constant SLOPE_PRECISION = PRECISION_FACTOR;                   // Precision for slope calculations
+    address public rewardPoolAddress; // Address holding reward pool tokens
+    address public stakingPoolAddress; // Address holding staked tokens
 
-    struct Stake {
-        uint256 amount; // Amount of tokens staked
-        uint256 startTime; // Timestamp when staking started
-        uint256 duration; // Staking duration in seconds
-        uint256 rewardClaimed; // Total rewards claimed so far
-    }
+    uint256 public accRewardPerToken60Days;
+    uint256 public accRewardPerToken180Days;
+    uint256 public accRewardPerToken365Days;
 
-    struct RewardPool {
-        uint256 preMintedTokens; // Tokens from pre-minted allocation
-        uint256 transactionFees; // Tokens collected from transaction fees
-        uint256 revenueSharing; // Tokens allocated from revenue sharing
-        uint256 liquidityMining; // Tokens allocated for liquidity mining
-    }
+    uint256 totalStaked60Days;
+    uint256 totalStaked180Days;
+    uint256 totalStaked365Days;
 
-    mapping(address => Stake[]) public stakes; // Tracks stakes for each user
-    RewardPool public rewardPool; // Tracks available reward pools
+    event RewardsAdded(uint256 amount);
+    event Staked(address indexed user, uint256 amount, uint256 lockPeriod);
+    event Unstaked(address indexed user, uint256 amount, uint256 distributedReward, uint256 penalty);
+    event MissedRewards(address indexed user, uint256 amount);
+    event RewardDistributionLog(
+        address indexed user,
+        uint256 amount,
+        uint256 pendingRewards,
+        uint256 penalty,
+        uint256 rewardPoolBalance,
+        uint256 lockPeriod,
+        uint256 elapsedTime
+    );
+    event UnableToDistributeRewards(address indexed user, uint256 rewardPoolBalance, uint256 stakedAmount, uint256 finalRewards, uint256 lockPeriod);
 
-    uint256 public totalStaked; // Total tokens staked across all users
-    uint256 public totalRewardsDistributed; // Total rewards distributed
+    error TotalStakedTooLow(uint256 totalStaked, uint256 required);
+    error APYCannotBeSatisfied(uint8 stakingPeriod, uint256 projectedAPY, uint256 minimumAPY);
 
-    uint256 public penaltyForEarlyUnstake; // Penalty percentage for early unstaking (e.g., 25%)
-
-    function initialize(address _token, address initialOwner) public reinitializer(1) {
+    function initialize(
+        address _token,
+        address _rewardPoolAddress,
+        address _stakingPoolAddress,
+        address initialOwner
+    ) public reinitializer(1) {
         __Ownable_init(initialOwner);
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
         __Pausable_init();
 
         token = StorageToken(_token);
-        penaltyForEarlyUnstake = 25; // Default penalty for early unstaking (25%)
+        rewardPoolAddress = _rewardPoolAddress;
+        stakingPoolAddress = _stakingPoolAddress;
+
+        lastUpdateTime = block.timestamp;
+
+        // Approve staking contract to spend tokens
+        require(
+            token.approve(address(this), type(uint256).max),
+            "Initial approval failed"
+        );
+    }
+
+    function addToRewardPoolFromContract(uint256 _value) external onlyOwner {
+        require(token.transferFrom(address(this), rewardPoolAddress, _value), "Transfer failed");
     }
 
     function emergencyPauseRewardDistribution() external onlyOwner {
@@ -74,339 +97,359 @@ abstract contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgra
         emit EmergencyAction("Rewards Distribution unpaused", block.timestamp);
     }
 
-    function updateRewardDistributionRates(
-        uint256 preMintedRate,
-        uint256 transactionFeeRate,
-        uint256 revenueSharingRate,
-        uint256 liquidityMiningRate
-    ) external onlyOwner {
+    function getUserStakes(address user) external view returns (StakeInfo[] memory) {
+        return stakes[user];
+    }
+
+    function stakeToken(uint256 amount, uint256 lockPeriod) external whenNotPaused {
+        require(amount > 0, "Amount must be greater than zero");
         require(
-            preMintedRate + transactionFeeRate + revenueSharingRate + liquidityMiningRate == TOTAL_RATE_BASIS,
-            "Invalid rates"
+            lockPeriod == 60 days || lockPeriod == 180 days || lockPeriod == 365 days,
+            "Invalid lock period"
         );
-        
-        // Update the distribution rates for each reward pool
-        rewardPool.preMintedTokens = (rewardPool.preMintedTokens * preMintedRate) / TOTAL_RATE_BASIS;
-        rewardPool.transactionFees = (rewardPool.transactionFees * transactionFeeRate) / TOTAL_RATE_BASIS;
-        rewardPool.revenueSharing = (rewardPool.revenueSharing * revenueSharingRate) / TOTAL_RATE_BASIS;
-        rewardPool.liquidityMining = (rewardPool.liquidityMining * liquidityMiningRate) / TOTAL_RATE_BASIS;
-        
-        emit RewardDistributionRatesUpdated(
-            preMintedRate,
-            transactionFeeRate,
-            revenueSharingRate,
-            liquidityMiningRate
+
+        // Update rewards before processing the stake
+        updateRewards();
+
+        // Calculate projected APY after adding this stake
+        uint256 projectedAPY = calculateProjectedAPY(amount, lockPeriod);
+        if (
+            lockPeriod == 60 days && projectedAPY < FIXED_APY_60_DAYS
+        ) {
+            revert APYCannotBeSatisfied(1, projectedAPY, FIXED_APY_60_DAYS);
+        }
+        if (
+            lockPeriod == 180 days && projectedAPY < FIXED_APY_180_DAYS
+        ) {
+            revert APYCannotBeSatisfied(2, projectedAPY, FIXED_APY_180_DAYS);
+        }
+        if (
+            lockPeriod == 365 days && projectedAPY < FIXED_APY_365_DAYS
+        ) {
+            revert APYCannotBeSatisfied(3, projectedAPY, FIXED_APY_365_DAYS);
+        }
+
+        // Calculate pending rewards for all existing stakes of the user
+        uint256 pendingRewards = calculatePendingRewards(msg.sender);
+        if (pendingRewards > 0) {
+            require(
+                token.transferFrom(rewardPoolAddress, msg.sender, pendingRewards),
+                "Reward transfer failed"
+            );
+        }
+
+        // Transfer staked tokens to staking pool
+        require(
+            token.transferFrom(msg.sender, stakingPoolAddress, amount),
+            "Stake transfer failed"
         );
-    }
+        // Add new stake entry for this user
+        stakes[msg.sender].push(
+            StakeInfo({
+                amount: amount,
+                rewardDebt: calculateRewardDebt(amount, lockPeriod), // Updated reward debt calculation
+                lockPeriod: lockPeriod,
+                startTime: block.timestamp
+            })
+        );
 
-    // Function to set the value
-    function setMonthlyEcosystemTokens(uint256 _value) external onlyOwner {
-        monthlyEcosystemTokens = _value;
-    }
+        // Update total staked for the specific lock period
+        if (lockPeriod == 60 days) {
+            totalStaked60Days += amount;
+        } else if (lockPeriod == 180 days) {
+            totalStaked180Days += amount;
+        } else if (lockPeriod == 365 days) {
+            totalStaked365Days += amount;
+        }
 
-    // Function to get the value (optional, since the variable is public)
-    function getMonthlyEcosystemTokens() external view returns (uint256) {
-        return monthlyEcosystemTokens;
-    }
-
-    function stake(uint256 amount, uint256 duration) external nonReentrant {
-        require(amount > 0, "Cannot stake 0");
-        require(duration == 60 days || duration == 180 days || duration == 360 days, "Invalid duration");
-        require(token.balanceOf(msg.sender) >= amount, "User has insufficient tokens");
-
-        require(token.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
-
-        stakes[msg.sender].push(Stake({
-            amount: amount,
-            startTime: block.timestamp,
-            duration: duration,
-            rewardClaimed: 0
-        }));
-
+        // Update global total staked
         totalStaked += amount;
 
-        emit Staked(msg.sender, amount, duration);
+        emit Staked(msg.sender, amount, lockPeriod);
     }
 
-    function claimStakingRewards() external nonReentrant {
-        Stake[] storage userStakes = stakes[msg.sender];
-        require(userStakes.length > 0, "No active stakes");
+    function calculateElapsedRewards(
+        uint256 stakedAmount,
+        uint256 fixedAPY,
+        uint256 timeElapsed
+    ) internal pure returns (uint256) {
+        if (stakedAmount == 0) {
+            return 0; // No rewards if nothing is staked
+        }
 
-        uint256 totalRewards = 0;
+        // Calculate annualized rewards based on fixed APY
+        uint256 annualRewards = (stakedAmount * fixedAPY) / 100;
 
-        for (uint256 i = 0; i < userStakes.length; i++) {
-            Stake storage currentStake = userStakes[i];
-            if (block.timestamp > currentStake.startTime) {
-                uint256 elapsedTime = block.timestamp - currentStake.startTime;
-                uint256 rewardRate = calculateRewardRate(currentStake.amount, currentStake.duration);
-                uint256 reward = (currentStake.amount * rewardRate * elapsedTime) / (365 days * 100); // APY calculation
+        // Adjust rewards proportionally to elapsed time (in seconds)
+        return (annualRewards * timeElapsed) / 365 days;
+    }
 
-                if (reward > currentStake.rewardClaimed) {
-                    uint256 claimableReward = reward - currentStake.rewardClaimed;
-                    currentStake.rewardClaimed += claimableReward;
-                    totalRewards += claimableReward;
-                }
+
+    function calculateRewardDebt(uint256 amount, uint256 lockPeriod) internal view returns (uint256) {
+        if (lockPeriod == 60 days) {
+            return (amount * accRewardPerToken60Days) / 1e18;
+        } else if (lockPeriod == 180 days) {
+            return (amount * accRewardPerToken180Days) / 1e18;
+        } else if (lockPeriod == 365 days) {
+            return (amount * accRewardPerToken365Days) / 1e18;
+        }
+        return 0; // Default case; should never occur due to earlier validation
+    }
+    function getAccRewardPerTokenForLockPeriod(uint256 lockPeriod) internal view returns (uint256) {
+        if (lockPeriod == 60 days) {
+            return accRewardPerToken60Days;
+        } else if (lockPeriod == 180 days) {
+            return accRewardPerToken180Days;
+        } else if (lockPeriod == 365 days) {
+            return accRewardPerToken365Days;
+        }
+        return 0; // Default case; should never occur due to earlier validation
+    }
+
+
+    function unstakeToken(uint256 index) external whenNotPaused {
+        require(index < stakes[msg.sender].length, "Invalid stake index");
+
+        // Fetch the specific stake to be unstaked
+        StakeInfo storage stake = stakes[msg.sender][index];
+        uint256 stakedAmount = stake.amount;
+        uint256 lockPeriod = stake.lockPeriod;
+        require(stakedAmount > 0, "No active stake");
+
+        // Update rewards before processing unstaking
+        updateRewards();
+
+        // Calculate pending rewards for this specific stake
+        uint256 accRewardPerToken = getAccRewardPerTokenForLockPeriod(lockPeriod);
+        uint256 pendingRewards = (stakedAmount * accRewardPerToken) / 1e18 - stake.rewardDebt;
+
+        // Apply penalty if unstaking early
+        uint256 elapsedTime = block.timestamp - stake.startTime;
+        uint256 penalty = calculatePenalty(lockPeriod, elapsedTime, stakedAmount);
+
+        // Ensure penalties only apply to pending rewards
+        uint256 finalRewards = 0;
+        uint256 distributedReward = 0;
+        if (pendingRewards > penalty) {
+            finalRewards = pendingRewards - penalty;
+        }
+
+        // Update state: reduce total staked amounts
+        if (totalStaked < stakedAmount) {
+            revert TotalStakedTooLow(totalStaked, stakedAmount);
+        }
+
+        totalStaked -= stakedAmount;
+        if (lockPeriod == 60 days) {
+            if (totalStaked60Days < stakedAmount) {
+                revert TotalStakedTooLow(totalStaked60Days, stakedAmount);
             }
-        }
-
-        require(totalRewards > 0, "No rewards available");
-        
-        _distributeStakingRewards(msg.sender, totalRewards);
-
-        emit StakingRewardsClaimed(msg.sender, totalRewards);
-    }
-
-    function getProjectedRewards(address staker) external view returns (
-        uint256 totalProjectedRewards,
-        uint256[] memory rewardsPerStake
-    ) {
-        Stake[] storage userStakes = stakes[staker];
-        require(userStakes.length > 0, "No active stakes");
-        
-        rewardsPerStake = new uint256[](userStakes.length);
-        totalProjectedRewards = 0;
-        
-        for (uint256 i = 0; i < userStakes.length; i++) {
-            Stake storage currentStake = userStakes[i];
-            if (block.timestamp > currentStake.startTime) {
-                uint256 elapsedTime = block.timestamp - currentStake.startTime;
-                uint256 rewardRate = calculateRewardRate(currentStake.amount, currentStake.duration);
-                
-                // Calculate projected rewards using the same formula as claimStakingRewards
-                uint256 projectedReward = (currentStake.amount * rewardRate * elapsedTime) / (365 days * 100);
-                
-                // Subtract already claimed rewards
-                if (projectedReward > currentStake.rewardClaimed) {
-                    rewardsPerStake[i] = projectedReward - currentStake.rewardClaimed;
-                    totalProjectedRewards += rewardsPerStake[i];
-                }
+            totalStaked60Days -= stakedAmount;
+        } else if (lockPeriod == 180 days) {
+            if (totalStaked180Days < stakedAmount) {
+                revert TotalStakedTooLow(totalStaked180Days, stakedAmount);
             }
+            totalStaked180Days -= stakedAmount;
+        } else if (lockPeriod == 365 days) {
+            if (totalStaked365Days < stakedAmount) {
+                revert TotalStakedTooLow(totalStaked365Days, stakedAmount);
+            }
+            totalStaked365Days -= stakedAmount;
         }
-        
-        return (totalProjectedRewards, rewardsPerStake);
-    }
 
-    function calculateUnstakePenalty(address staker, uint256 stakeIndex) external view returns (
-        uint256 penaltyAmount,
-        uint256 netAmount,
-        bool isEarlyUnstake,
-        uint256 remainingTime
-    ) {
-        Stake[] storage userStakes = stakes[staker];
-        require(stakeIndex < userStakes.length, "Invalid stake index");
-        
-        Stake storage currentStake = userStakes[stakeIndex];
-        uint256 endTime = currentStake.startTime + currentStake.duration;
-        
-        isEarlyUnstake = block.timestamp < endTime;
-        remainingTime = isEarlyUnstake ? endTime - block.timestamp : 0;
-        
-        if (isEarlyUnstake) {
-            // Calculate penalty based on remaining time and stake amount
-            penaltyAmount = (currentStake.amount * penaltyForEarlyUnstake) / 100;
-            
-            // Additional penalty scaling based on how early the unstake is
-            uint256 timeRatio = ((currentStake.duration - remainingTime) * PRECISION_FACTOR) / currentStake.duration;
-            penaltyAmount = (penaltyAmount * (PRECISION_FACTOR - timeRatio)) / PRECISION_FACTOR;
+        // Remove this specific stake by replacing it with the last element in the array
+        uint256 lastIndex = stakes[msg.sender].length - 1;
+        if (index != lastIndex) {
+            stakes[msg.sender][index] = stakes[msg.sender][lastIndex];
+        }
+        stakes[msg.sender].pop(); // Remove the last element
+
+        emit RewardDistributionLog(
+            msg.sender,
+            stakedAmount,
+            pendingRewards,
+            penalty,
+            token.balanceOf(rewardPoolAddress),
+            lockPeriod,
+            elapsedTime
+        );
+
+        // Transfer staked tokens (principal) back to user from staking pool
+        if (token.balanceOf(stakingPoolAddress) < stakedAmount) {
+            revert TotalStakedTooLow(token.balanceOf(stakingPoolAddress), stakedAmount);
+        }
+        require(
+            token.allowance(stakingPoolAddress, address(this)) >= stakedAmount,
+            "Insufficient allowance for stakingPoolAddress"
+        );
+        require(
+            token.transferFrom(stakingPoolAddress, msg.sender, stakedAmount),
+            "Unstake transfer failed"
+        );
+
+        // Transfer final rewards from distribution address to user if available
+        if (finalRewards > 0) {
+            uint256 rewardPoolBalance = token.balanceOf(rewardPoolAddress);
+
+            if (rewardPoolBalance < finalRewards) {
+                emit UnableToDistributeRewards(msg.sender, rewardPoolBalance, stakedAmount, finalRewards, lockPeriod);
+            } else {
+                require(
+                    token.allowance(rewardPoolAddress, address(this)) >= finalRewards,
+                    "Insufficient allowance for rewardPoolAddress"
+                );
+                require(
+                    token.transferFrom(rewardPoolAddress, msg.sender, finalRewards),
+                    "Reward transfer failed"
+                );
+                distributedReward = finalRewards;
+            }
         } else {
-            penaltyAmount = 0;
-        }
-        
-        netAmount = currentStake.amount - penaltyAmount;
-        
-        return (penaltyAmount, netAmount, isEarlyUnstake, remainingTime);
-    }
-
-    function unstake(uint256 index) external nonReentrant {
-        Stake[] storage userStakes = stakes[msg.sender];
-        require(index < userStakes.length, "Invalid stake index");
-
-        Stake memory currentStake = userStakes[index];
-        
-        bool earlyUnstake = block.timestamp < currentStake.startTime + currentStake.duration;
-
-        uint256 penalty = earlyUnstake ? (currentStake.amount * penaltyForEarlyUnstake) / 100 : 0;
-        
-        uint256 amountToReturn = currentStake.amount - penalty;
-        require(token.balanceOf(address(this)) >= amountToReturn, "Contract has insufficient tokens");
-
-        totalStaked -= currentStake.amount;
-
-        _removeStake(msg.sender, index);
-
-        require(token.transfer(msg.sender, amountToReturn), "Token transfer failed");
-
-        emit Unstaked(msg.sender, currentStake.amount, earlyUnstake);
-    }
-
-    function calculateRewardRate(uint256 amount, uint256 duration) public view returns (uint256) {
-        require(totalStaked > 0, "No staked tokens");
-        
-        // Calculate total available rewards across all pools
-        uint256 totalAvailableRewards = _calculateTotalAvailableRewards();
-        
-        if (totalAvailableRewards == 0) return 0;
-        
-        // Calculate base APY considering all reward sources
-        uint256 baseAPY = _calculateBaseAPY(totalAvailableRewards);
-        
-        // Get tier-specific multiplier
-        uint256 tierMultiplier = _getTierMultiplier(amount, duration);
-        
-        // Calculate final reward rate with non-linear scaling
-        return (baseAPY * tierMultiplier) / PRECISION_FACTOR;
-    }
-
-    function _calculateTotalAvailableRewards() internal view returns (uint256) {
-        // Pre-minted allocation (30% of monthly Treasury allocation)
-        uint256 monthlyTreasuryAllocation = monthlyEcosystemTokens * token.tokenUnit();
-        uint256 preMintedRewards = (monthlyTreasuryAllocation * 30) / 100;
-        
-        // Add transaction fees (75% of collected fees)
-        uint256 transactionFeeRewards = (rewardPool.transactionFees * 75) / 100;
-        
-        // Add revenue sharing allocation
-        uint256 revenueShareRewards = rewardPool.revenueSharing;
-        
-        // Add liquidity mining rewards
-        uint256 liquidityMiningRewards = rewardPool.liquidityMining;
-        
-        return preMintedRewards + transactionFeeRewards + revenueShareRewards + liquidityMiningRewards;
-    }
-
-
-    function _calculateUtilizationMultiplier(uint256 utilizationRate) internal pure returns (uint256) {
-        // If utilization is below optimal, incentivize more staking
-        if (utilizationRate <= OPTIMAL_UTILIZATION) {
-            return _calculateLowUtilizationMultiplier(utilizationRate);
-        }
-        // If utilization is above optimal, reduce incentives to prevent over-concentration
-        return _calculateHighUtilizationMultiplier(utilizationRate);
-    }
-
-    function _calculateLowUtilizationMultiplier(uint256 utilizationRate) internal pure returns (uint256) {
-        // Calculate slope for the curve below optimal utilization
-        uint256 slope = (PRECISION_FACTOR - MIN_MULTIPLIER) * SLOPE_PRECISION / OPTIMAL_UTILIZATION;
-        
-        // Linear increase from MIN_MULTIPLIER to PRECISION_FACTOR
-        uint256 multiplier = MIN_MULTIPLIER + (slope * utilizationRate / SLOPE_PRECISION);
-        
-        return Math.min(multiplier, PRECISION_FACTOR);
-    }
-
-    function _calculateHighUtilizationMultiplier(uint256 utilizationRate) internal pure returns (uint256) {
-        // Calculate how far we are above optimal utilization
-        uint256 excessUtilization = utilizationRate - OPTIMAL_UTILIZATION;
-        
-        // Calculate slope for the curve above optimal utilization
-        uint256 slope = (MAX_MULTIPLIER - PRECISION_FACTOR) * SLOPE_PRECISION / 
-                        (PRECISION_FACTOR - OPTIMAL_UTILIZATION);
-        
-        // Exponential increase from PRECISION_FACTOR to MAX_MULTIPLIER
-        uint256 multiplier = PRECISION_FACTOR + (slope * excessUtilization / SLOPE_PRECISION);
-        
-        // Apply exponential dampening to prevent excessive rewards
-        multiplier = multiplier * (PRECISION_FACTOR - (excessUtilization / 2)) / PRECISION_FACTOR;
-        
-        return Math.min(multiplier, MAX_MULTIPLIER);
-    }
-
-    function _applyUtilizationCap(uint256 multiplier, uint256 utilizationRate) internal pure returns (uint256) {
-        // Additional safety cap based on total utilization
-        if (utilizationRate > 95 * PRECISION_FACTOR / 100) { // Over 95% utilization
-            return Math.min(multiplier, PRECISION_FACTOR); // Cap at 1x
-        }
-        return multiplier;
-    }
-
-
-    function _calculateBaseAPY(uint256 totalAvailableRewards) internal view returns (uint256) {
-        // Implement non-linear APY calculation based on total staked amount
-        uint256 utilizationRate = (totalStaked * PRECISION_FACTOR) / token.totalSupply();
-        
-        // Apply diminishing returns as total staked amount increases
-        uint256 baseRate = (totalAvailableRewards * PRECISION_FACTOR) / totalStaked;
-        return (baseRate * _calculateUtilizationMultiplier(utilizationRate)) / PRECISION_FACTOR;
-    }
-
-    function _getTierMultiplier(uint256 amount, uint256 duration) internal view returns (uint256) {
-        // Special case for 1M+ tokens
-        if (amount >= 1_000_000 * token.tokenUnit() && duration >= 180 days) {
-            return (PRECISION_FACTOR * 2) / 3; // Divide by 1.5
+            emit MissedRewards(msg.sender, penalty); // Log missed rewards due to penalties
         }
 
-        return _calculateAmountMultiplier(amount) * _calculateDurationMultiplier(duration) / PRECISION_FACTOR;
+        emit Unstaked(msg.sender, stakedAmount, distributedReward, penalty);
     }
 
-    function _calculateAmountMultiplier(uint256 amount) internal view returns (uint256) {
-        if (amount >= 200_000 * token.tokenUnit()) {
-            return PRECISION_FACTOR; // No reduction
-        } else if (amount >= 100_000 * token.tokenUnit()) {
-            return (PRECISION_FACTOR * 95) / 100; // 5% reduction
-        } else if (amount >= 50_000 * token.tokenUnit()) {
-            return (PRECISION_FACTOR * 85) / 100; // 15% reduction
-        } else if (amount >= 10_000 * token.tokenUnit()) {
-            return (PRECISION_FACTOR * 75) / 100; // 25% reduction
+    function updateRewards() internal {
+        if (totalStaked > 0) {
+            uint256 timeElapsed = block.timestamp - lastUpdateTime;
+
+            // Fetch current reward pool balance
+            uint256 rewardPoolBalance = token.balanceOf(rewardPoolAddress);
+
+            // Calculate rewards for each lock period using centralized logic
+            uint256 rewardsFor60Days = calculateElapsedRewards(
+                totalStaked60Days,
+                FIXED_APY_60_DAYS,
+                timeElapsed
+            );
+            uint256 rewardsFor180Days = calculateElapsedRewards(
+                totalStaked180Days,
+                FIXED_APY_180_DAYS,
+                timeElapsed
+            );
+            uint256 rewardsFor365Days = calculateElapsedRewards(
+                totalStaked365Days,
+                FIXED_APY_365_DAYS,
+                timeElapsed
+            );
+
+            // Total new rewards to distribute across all stakes
+            uint256 newRewards = rewardsFor60Days + rewardsFor180Days + rewardsFor365Days;
+
+            // Ensure we do not exceed available reward pool balance
+            if (newRewards > rewardPoolBalance) {
+                newRewards = rewardPoolBalance;
+            }
+
+            // Update accumulated rewards per token for each lock period
+            if (totalStaked60Days > 0) {
+                accRewardPerToken60Days += (rewardsFor60Days * 1e18) / totalStaked60Days;
+            }
+            if (totalStaked180Days > 0) {
+                accRewardPerToken180Days += (rewardsFor180Days * 1e18) / totalStaked180Days;
+            }
+            if (totalStaked365Days > 0) {
+                accRewardPerToken365Days += (rewardsFor365Days * 1e18) / totalStaked365Days;
+            }
+
+            lastUpdateTime = block.timestamp; // Update last update timestamp
+        }
+    }
+
+    function calculateRewardsForPeriod(
+        uint256 stakedAmount,
+        uint256 fixedAPY,
+        uint256 timeElapsed,
+        uint256 rewardPoolBalance
+    ) public pure returns (uint256) {
+        if (rewardPoolBalance == 0) {
+            return 0; // No rewards if reward pool is empty
+        }
+
+        return calculateElapsedRewards(stakedAmount, fixedAPY, timeElapsed);
+    }
+
+
+    function calculatePendingRewards(address user) public view returns (uint256) {
+        uint256 pendingRewards = 0;
+
+        // Iterate through all stakes for the user
+        for (uint256 i = 0; i < stakes[user].length; i++) {
+            StakeInfo memory stake = stakes[user][i];
+
+            // Get accumulated rewards per token for the stake's lock period
+            uint256 accRewardPerToken = getAccRewardPerTokenForLockPeriod(stake.lockPeriod);
+
+            // Calculate pending rewards for this specific stake
+            pendingRewards += (stake.amount * accRewardPerToken) / 1e18 - stake.rewardDebt;
+        }
+
+        return pendingRewards;
+    }
+
+
+
+    function calculateProjectedAPY(uint256 additionalStake, uint256 lockPeriod)
+        public
+        view
+        returns (uint256)
+    {
+        uint256 rewardPoolBalance = token.balanceOf(rewardPoolAddress);
+        if (rewardPoolBalance == 0 || totalStaked + additionalStake == 0) {
+            return 0; // No rewards available if reward pool or total staked is zero
+        }
+
+        // Define reward multipliers based on lock periods
+        uint256 fixedAPY;
+        if (lockPeriod == 60 days) {
+            fixedAPY = FIXED_APY_60_DAYS; // 2%
+        } else if (lockPeriod == 180 days) {
+            fixedAPY = FIXED_APY_180_DAYS; // 9%
+        } else if (lockPeriod == 365 days) {
+            fixedAPY = FIXED_APY_365_DAYS; // 23%
         } else {
-            return (PRECISION_FACTOR * 50) / 100; // 50% reduction for smallest tier
+            revert("Invalid lock period");
         }
-    }
 
-    function _calculateDurationMultiplier(uint256 duration) internal pure returns (uint256) {
-        if (duration >= 360 days) {
-            return PRECISION_FACTOR; // No reduction for longest duration
-        } else if (duration >= 180 days) {
-            return (PRECISION_FACTOR * 50) / 100; // Divide by 2
-        } else if (duration >= 60 days) {
-            return (PRECISION_FACTOR * 167) / 1000; // Divide by 6 (approximately)
+        // Calculate projected APY as a percentage
+        uint256 neededNewRewards = calculateElapsedRewards(additionalStake, fixedAPY, lockPeriod);
+        uint256 neededCurrentRewards1 = calculateElapsedRewards(totalStaked60Days, fixedAPY, LOCK_PERIOD_1);
+        uint256 neededCurrentRewards2 = calculateElapsedRewards(totalStaked180Days, fixedAPY, LOCK_PERIOD_2);
+        uint256 neededCurrentRewards3 = calculateElapsedRewards(totalStaked365Days, fixedAPY, LOCK_PERIOD_3);
+        if (neededNewRewards + neededCurrentRewards1 + neededCurrentRewards2 + neededCurrentRewards3 <= token.balanceOf(rewardPoolAddress) ) {
+            return fixedAPY;
         } else {
-            return 0; // Invalid duration
+            return 0;
         }
     }
 
-    function updateStakingRewardPool(uint256 preMintedTokens, uint256 transactionFees, uint256 revenueSharing, uint256 liquidityMining) external onlyOwner {
-        // Update the reward pool with new allocations
-        rewardPool.preMintedTokens += preMintedTokens;
-        rewardPool.transactionFees += transactionFees;
-        rewardPool.revenueSharing += revenueSharing;
-        rewardPool.liquidityMining += liquidityMining;
 
-        emit StakingRewardPoolUpdated(rewardPool.preMintedTokens + rewardPool.transactionFees + rewardPool.revenueSharing + rewardPool.liquidityMining);
-    }
+    function calculatePenalty(uint256 lockPeriod, uint256 elapsedTime, uint256 stakedAmount) internal pure returns (uint256) {
+        // If the full lock period has elapsed, no penalty applies
+        if (elapsedTime >= lockPeriod) return 0;
 
-    function _distributeStakingRewards(address staker, uint256 amount) internal {
-        // Ensure there are sufficient rewards available in the reward pool
-        uint256 totalAvailableRewards = rewardPool.preMintedTokens + rewardPool.transactionFees + rewardPool.revenueSharing + rewardPool.liquidityMining;
-        require(totalAvailableRewards >= amount, "Insufficient rewards in the pool");
-        require(token.balanceOf(address(this)) >= amount, "Contract has insufficient tokens");
+        // Calculate the percentage of time remaining in the lock period
+        uint256 remainingPercentage = ((lockPeriod - elapsedTime) * 1e18) / lockPeriod;
 
-        // Deduct rewards from the appropriate pools in order of priority
-        if (rewardPool.preMintedTokens >= amount) {
-            rewardPool.preMintedTokens -= amount;
-        } else if (rewardPool.transactionFees >= amount) {
-            rewardPool.transactionFees -= amount;
-        } else if (rewardPool.revenueSharing >= amount) {
-            rewardPool.revenueSharing -= amount;
-        } else if (rewardPool.liquidityMining >= amount) {
-            rewardPool.liquidityMining -= amount;
+        // Apply a dynamic penalty scaling based on how early unstaking occurs
+        uint256 penaltyRate;
+        if (remainingPercentage > 75 * 1e16) { // >75% time remaining
+            penaltyRate = 50; // 50% penalty on staked amount
+        } else if (remainingPercentage > 50 * 1e16) { // >50% time remaining
+            penaltyRate = 30; // 30% penalty on staked amount
+        } else if (remainingPercentage > 25 * 1e16) { // >25% time remaining
+            penaltyRate = 15; // 15% penalty on staked amount
         } else {
-            revert("Unable to allocate rewards from any pool");
+            penaltyRate = 5; // Minimal penalty for near-completion
         }
 
-        // Transfer rewards to the staker
-        require(token.transfer(staker, amount), "Token transfer failed");
+        // Calculate the penalty as a percentage of the staked amount
+        uint256 penalty = (stakedAmount * penaltyRate) / 100;
 
-        // Update total rewards distributed
-        totalRewardsDistributed += amount;
-
-        emit RewardsDistributed(staker, amount);
+        return penalty;
     }
 
-    function _removeStake(address user, uint256 index) internal {
-        Stake[] storage userStakes = stakes[user];
-        
-        // Efficiently remove the stake by swapping with the last element and popping
-        userStakes[index] = userStakes[userStakes.length - 1];
-        userStakes.pop();
-    }
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 }
