@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
 import "./StorageToken.sol";
 import "./interfaces/IStakingEngine.sol";
 
-contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable {
+contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable {
     uint32 public constant LOCK_PERIOD_1 = 60 days;
     uint32 public constant LOCK_PERIOD_2 = 180 days;
     uint32 public constant LOCK_PERIOD_3 = 365 days;
@@ -65,10 +67,12 @@ contract StakingEngine is IStakingEngine, OwnableUpgradeable, UUPSUpgradeable, R
         address _stakingPoolAddress,
         address initialOwner
     ) public reinitializer(1) {
+        require(initialOwner != address(0), "Invalid owner address");
         __Ownable_init(initialOwner);
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
         __Pausable_init();
+        require(_token != address(0), "Invalid StorageToken address");
 
         token = StorageToken(_token);
         rewardPoolAddress = _rewardPoolAddress;
