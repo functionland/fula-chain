@@ -29,6 +29,10 @@ describe("StakingEngine", function () {
     const StorageToken = await ethers.getContractFactory("StorageToken");
     token = (await upgrades.deployProxy(StorageToken, [owner.address])) as StorageToken;
     await token.waitForDeployment();
+
+    // Mint the maximum supply to the owner
+    const maxSupply = await token.connect(await ethers.getSigner(owner.address)).maxSupply();
+    await token.connect(await ethers.getSigner(owner.address)).mintToken(maxSupply);
   
     // Deploy StakingEngine
     rewardPoolAddress = users[0].address; // Use one of the users as the reward pool address
@@ -46,8 +50,9 @@ describe("StakingEngine", function () {
     // Transfer tokens to reward pool, staking pool, and reward distribution addresses
     const initialRewardPool = ethers.parseEther("0"); // 10,000 tokens
     await token.transfer(rewardPoolAddress, initialRewardPool);
-    await token.transfer(await stakingEngine.getAddress(), ethers.parseEther("5000")); // Add tokens to staking engine contract address directly (this is not needed normally)
-    await token.transfer(stakingPoolAddress, initialStakinPoolAmount); // Example amount for staking pool
+    console.log(`Token contract balance: ${await token.balanceOf(await token.getAddress())}`);
+    await token.transferFromContract(await stakingEngine.getAddress(), ethers.parseEther("5000")); // Add tokens to staking engine contract address directly (this is not needed normally)
+    await token.transferFromContract(stakingPoolAddress, initialStakinPoolAmount); // Example amount for staking pool
   
     // Connect the signer (users[0]) to the token contract
     const tokenWithRewardPoolSigner = token.connect(await ethers.getSigner(users[0].address));
@@ -101,7 +106,7 @@ it("should apply penalties for early unstaking", async function () {
     await stakingEngineOwner.addToRewardPoolFromContract(additionalRewards);
 
     // Transfer tokens to user1 and approve staking contract
-    await token.transfer(user1.address, stakeAmount);
+    await token.transferFromContract(user1.address, stakeAmount);
     const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
     await tokenWithUser1.approve(await stakingEngine.getAddress(), stakeAmount);
 
@@ -197,7 +202,7 @@ it("should calculate rewards correctly based on fixed APYs for different duratio
   await stakingEngineOwner.addToRewardPoolFromContract(additionalRewards);
 
   // Transfer tokens to user1 and approve staking contract
-  await token.transfer(user1.address, stakeAmount);
+  await token.transferFromContract(user1.address, stakeAmount);
   const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
   await tokenWithUser1.approve(await stakingEngine.getAddress(), stakeAmount);
 
@@ -262,10 +267,10 @@ it("should allow multiple staking with different tiers and handle insufficient r
 
   // Transfer initial tokens to reward pool and approve staking contract
   const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
-  await tokenWithOwner.transfer(rewardPoolAddress, initialRewardPoolAmount);
+  await tokenWithOwner.transferFromContract(rewardPoolAddress, initialRewardPoolAmount);
 
   // Transfer tokens to user1 and approve staking contract
-  await token.transfer(user1.address, firstStakeAmount + secondStakeAmount);
+  await token.transferFromContract(user1.address, firstStakeAmount + secondStakeAmount);
   const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
   await tokenWithUser1.approve(await stakingEngine.getAddress(), firstStakeAmount + secondStakeAmount);
   expect(await token.balanceOf(user1.address)).to.equal(firstStakeAmount + secondStakeAmount);
@@ -287,7 +292,7 @@ it("should allow multiple staking with different tiers and handle insufficient r
   const rewardPoolBalanceBefore = await token.balanceOf(rewardPoolAddress);
   expect(rewardPoolBalanceBefore).to.equal(initialRewardPoolAmount);
 
-  await tokenWithOwner.transfer(rewardPoolAddress, additionalRewardPoolAmount);
+  await tokenWithOwner.transferFromContract(rewardPoolAddress, additionalRewardPoolAmount);
 
   const rewardPoolBalanceAfter = await token.balanceOf(rewardPoolAddress);
   expect(rewardPoolBalanceAfter).to.equal(initialRewardPoolAmount + additionalRewardPoolAmount);
@@ -319,10 +324,10 @@ it("should not apply penalties for unstaking after lock period", async function 
 
   // Transfer initial tokens to reward pool and approve staking contract
   const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
-  await tokenWithOwner.transfer(rewardPoolAddress, initialRewardPoolAmount);
+  await tokenWithOwner.transferFromContract(rewardPoolAddress, initialRewardPoolAmount);
 
   // Transfer tokens to user1 and approve staking contract
-  await token.transfer(user1.address, stakeAmount);
+  await token.transferFromContract(user1.address, stakeAmount);
   const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
   await tokenWithUser1.approve(await stakingEngine.getAddress(), stakeAmount);
 
@@ -376,11 +381,11 @@ it("should handle staking and unstaking for multiple users", async function () {
 
   // Transfer initial tokens to reward pool and approve staking contract
   const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
-  await tokenWithOwner.transfer(rewardPoolAddress, initialRewardPoolAmount);
+  await tokenWithOwner.transferFromContract(rewardPoolAddress, initialRewardPoolAmount);
 
   // Transfer tokens to user1 and user2, and approve staking contract
-  await token.transfer(user1.address, user1StakeAmount);
-  await token.transfer(user2.address, user2StakeAmount);
+  await token.transferFromContract(user1.address, user1StakeAmount);
+  await token.transferFromContract(user2.address, user2StakeAmount);
 
   const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
   const tokenWithUser2 = token.connect(await ethers.getSigner(user2.address));
@@ -474,11 +479,11 @@ it("should handle staking and unstaking for multiple users2", async function () 
 
   // Transfer initial tokens to reward pool and approve staking contract
   const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
-  await tokenWithOwner.transfer(rewardPoolAddress, initialRewardPoolAmount);
+  await tokenWithOwner.transferFromContract(rewardPoolAddress, initialRewardPoolAmount);
 
   // Transfer tokens to user1 and user2, and approve staking contract
-  await token.transfer(user1.address, user1StakeAmount);
-  await token.transfer(user2.address, user2StakeAmount);
+  await token.transferFromContract(user1.address, user1StakeAmount);
+  await token.transferFromContract(user2.address, user2StakeAmount);
 
   const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
   const tokenWithUser2 = token.connect(await ethers.getSigner(user2.address));
@@ -585,7 +590,7 @@ it("should not allow staking without rewards in the pool", async function () {
   expect(rewardPoolBalanceAfter).to.equal(0); // Reward pool should be empty
 
   // Transfer tokens to user1 and approve staking contract
-  await token.transfer(user1.address, stakeAmount);
+  await token.transferFromContract(user1.address, stakeAmount);
   const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
   await tokenWithUser1.approve(await stakingEngine.getAddress(), stakeAmount);
 
@@ -611,10 +616,10 @@ it("should handle multiple staking and partial unstaking", async function () {
 
   // Transfer tokens to reward pool
   const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
-  await tokenWithOwner.transfer(rewardPoolAddress, rewardPoolAmount);
+  await tokenWithOwner.transferFromContract(rewardPoolAddress, rewardPoolAmount);
 
   // Transfer tokens to user1 and approve staking contract
-  await token.transfer(user1.address, firstStakeAmount + secondStakeAmount);
+  await token.transferFromContract(user1.address, firstStakeAmount + secondStakeAmount);
   const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
   await tokenWithUser1.approve(await stakingEngine.getAddress(), firstStakeAmount + secondStakeAmount);
 
@@ -674,10 +679,10 @@ it("should fail staking if user has insufficient allowance", async function () {
 
   // Transfer tokens to reward pool
   const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
-  await tokenWithOwner.transfer(rewardPoolAddress, rewardPoolAmount);
+  await tokenWithOwner.transferFromContract(rewardPoolAddress, rewardPoolAmount);
 
   // Transfer tokens to user1 but do not approve staking contract
-  await token.transfer(user1.address, stakeAmount);
+  await token.transferFromContract(user1.address, stakeAmount);
 
   // Attempt to stake without approving
   const lockPeriod60Days = 60 * 24 * 60 * 60; // Valid lock period (60 days)
@@ -692,13 +697,13 @@ it("should fail staking if user has insufficient balance", async function () {
   const rewardPoolAmount = ethers.parseEther("500"); // Reward pool balance
   const userBlanace = ethers.parseEther("10"); 
 
-  await token.transfer(user1.address, userBlanace);
+  await token.transferFromContract(user1.address, userBlanace);
   const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
   await tokenWithUser1.approve(await stakingEngine.getAddress(), stakeAmount);
 
   // Transfer tokens to reward pool
   const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
-  await tokenWithOwner.transfer(rewardPoolAddress, rewardPoolAmount);
+  await tokenWithOwner.transferFromContract(rewardPoolAddress, rewardPoolAmount);
 
   // Ensure user1 has no tokens
   const userBalance = await token.balanceOf(user1.address);
@@ -718,10 +723,10 @@ it("should allow unstaking even if reward distribution address has insufficient 
 
   // Step 1: Transfer initial tokens to reward pool
   const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
-  await tokenWithOwner.transfer(rewardPoolAddress, initialRewardPoolAmount);
+  await tokenWithOwner.transferFromContract(rewardPoolAddress, initialRewardPoolAmount);
 
   // Step 3: Transfer tokens to user1 and approve staking contract
-  await token.transfer(user1.address, stakeAmount);
+  await token.transferFromContract(user1.address, stakeAmount);
   const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
   await tokenWithUser1.approve(await stakingEngine.getAddress(), stakeAmount);
 
@@ -808,11 +813,11 @@ it("should handle multiple users staking and unstaking at different times", asyn
 
   // Step 1: Transfer tokens to reward pool
   const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
-  await tokenWithOwner.transfer(rewardPoolAddress, rewardPoolAmount);
+  await tokenWithOwner.transferFromContract(rewardPoolAddress, rewardPoolAmount);
 
   // Step 2: Transfer tokens to user1 and user2, and approve staking contract
-  await token.transfer(user1.address, user1StakeAmount);
-  await token.transfer(user2.address, user2StakeAmount);
+  await token.transferFromContract(user1.address, user1StakeAmount);
+  await token.transferFromContract(user2.address, user2StakeAmount);
 
   const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
   const tokenWithUser2 = token.connect(await ethers.getSigner(user2.address));
@@ -929,11 +934,11 @@ it("should distribute rewards proportionally among multiple stakers", async func
 
   // Step 1: Transfer tokens to reward pool
   const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
-  await tokenWithOwner.transfer(rewardPoolAddress, rewardPoolAmount);
+  await tokenWithOwner.transferFromContract(rewardPoolAddress, rewardPoolAmount);
 
   // Step 2: Transfer tokens to user1 and user2, and approve staking contract
-  await token.transfer(user1.address, user1StakeAmount);
-  await token.transfer(user2.address, user2StakeAmount);
+  await token.transferFromContract(user1.address, user1StakeAmount);
+  await token.transferFromContract(user2.address, user2StakeAmount);
 
   const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
   const tokenWithUser2 = token.connect(await ethers.getSigner(user2.address));
@@ -1019,10 +1024,10 @@ it("should prevent staking or unstaking when the contract is paused", async func
 
   // Step 1: Transfer tokens to reward pool
   const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
-  await tokenWithOwner.transfer(rewardPoolAddress, rewardPoolAmount);
+  await tokenWithOwner.transferFromContract(rewardPoolAddress, rewardPoolAmount);
 
   // Step 2: Transfer tokens to user1 and approve staking contract
-  await token.transfer(user1.address, stakeAmount);
+  await token.transferFromContract(user1.address, stakeAmount);
   const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
   await tokenWithUser1.approve(await stakingEngine.getAddress(), stakeAmount);
 
@@ -1056,7 +1061,7 @@ it("should prevent staking or unstaking when the contract is paused", async func
     const stakeAmount = ethers.parseEther("100"); // User stakes 100 tokens
   
     // Transfer tokens to user1 and approve staking contract
-    await token.transfer(user1.address, stakeAmount);
+    await token.transferFromContract(user1.address, stakeAmount);
     await token.connect(await ethers.getSigner(user1.address)).approve(await stakingEngine.getAddress(), stakeAmount);
   
     // Attempt to stake with an invalid lock period (e.g., 45 days)
@@ -1073,11 +1078,11 @@ it("should prevent staking or unstaking when the contract is paused", async func
 
     // Step 1: Transfer tokens to reward pool
     const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
-    await tokenWithOwner.transfer(rewardPoolAddress, rewardPoolAmount);
+    await tokenWithOwner.transferFromContract(rewardPoolAddress, rewardPoolAmount);
 
     // Step 2: Transfer tokens to user1 and user2, and approve staking contract
-    await token.transfer(user1.address, user1StakeAmount);
-    await token.transfer(user2.address, user2StakeAmount);
+    await token.transferFromContract(user1.address, user1StakeAmount);
+    await token.transferFromContract(user2.address, user2StakeAmount);
 
     const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
     const tokenWithUser2 = token.connect(await ethers.getSigner(user2.address));
@@ -1165,6 +1170,9 @@ describe("StakingEngine with large user base", function () {
         const StorageToken = await ethers.getContractFactory("StorageToken");
         token = (await upgrades.deployProxy(StorageToken, [owner.address])) as StorageToken;
         await token.waitForDeployment();
+
+        const maxSupply = await token.connect(await ethers.getSigner(owner.address)).maxSupply();
+        await token.connect(await ethers.getSigner(owner.address)).mintToken(maxSupply);
     
         // Deploy StakingEngine
         rewardPoolAddress = users[0].address; // Use one of the users as the reward pool address
@@ -1181,8 +1189,8 @@ describe("StakingEngine with large user base", function () {
     
         // Transfer tokens to reward pool, staking pool, and reward distribution addresses
         const initialRewardPool = ethers.parseEther("10000"); // 10,000 tokens
-        await token.transfer(rewardPoolAddress, initialRewardPool);
-        await token.transfer(stakingPoolAddress, ethers.parseEther("5000")); // Example amount for staking pool
+        await token.transferFromContract(rewardPoolAddress, initialRewardPool);
+        await token.transferFromContract(stakingPoolAddress, ethers.parseEther("5000")); // Example amount for staking pool
     
         // Approve staking contract for reward pool and reward distribution addresses
         await token.connect(await ethers.getSigner(users[0].address)).approve(await stakingEngine.getAddress(), ethers.MaxUint256); // Reward pool approval
@@ -1205,11 +1213,11 @@ describe("StakingEngine with large user base", function () {
     
         // Step 1: Transfer tokens to reward pool
         const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
-        await tokenWithOwner.transfer(rewardPoolAddress, rewardPoolAmount);
+        await tokenWithOwner.transferFromContract(rewardPoolAddress, rewardPoolAmount);
     
         // Step 2: Transfer tokens to all users and approve staking contract
         for (let i = 3; i < numUsers + 3; i++) {
-            await token.transfer(users[i].address, stakeAmount); // Transfer tokens to user
+            await token.transferFromContract(users[i].address, stakeAmount); // Transfer tokens to user
             await token.connect(await ethers.getSigner(users[i].address)).approve(await stakingEngine.getAddress(), stakeAmount); // Approve staking contract
         }
     
