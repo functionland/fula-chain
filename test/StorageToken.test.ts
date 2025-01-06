@@ -14,14 +14,16 @@ describe("StorageToken", function () {
     let users: SignerWithAddress[];
 
     const TOTAL_SUPPLY = ethers.parseEther("1000000"); // 1M tokens
-    const BRIDGE_OPERATOR_ROLE = ethers.keccak256(ethers.toUtf8Bytes("BRIDGE_OPERATOR_ROLE"));
     const CHAIN_ID = 1;
 
     beforeEach(async function () {
         [owner, bridgeOperator, user1, user2, ...users] = await ethers.getSigners();
 
         const StorageToken = await ethers.getContractFactory("StorageToken");
-        token = await upgrades.deployProxy(StorageToken, [owner.address]);
+        token = await upgrades.deployProxy(StorageToken, [owner.address], {
+            initializer: 'initialize'
+        });
+        console.log(`Owner address: ${owner.address}`);
         await token.waitForDeployment();
 
         // Mint the maximum supply to the owner
@@ -46,6 +48,10 @@ describe("StorageToken", function () {
 
     describe("Bridge Operations", function () {
         beforeEach(async function () {
+            const hasRole = await token.hasRole(await token.ADMIN_ROLE(), await ethers.getSigner(owner.address));
+            expect(hasRole).to.be.true;
+            const hasBridgeRole = await token.hasRole(await token.BRIDGE_OPERATOR_ROLE(), await ethers.getSigner(owner.address));
+            expect(hasBridgeRole).to.be.true;
             await token.setSupportedChain(CHAIN_ID, true);
             await token.addBridgeOperator(bridgeOperator.address);
             // Wait for timelock
@@ -90,14 +96,14 @@ describe("StorageToken", function () {
 
     describe("Access Control", function () {
         it("Should grant roles to owner", async function () {
-            expect(await token.hasRole(await token.DEFAULT_ADMIN_ROLE(), owner.address)).to.be.true;
-            expect(await token.hasRole(BRIDGE_OPERATOR_ROLE, owner.address)).to.be.true;
+            expect(await token.hasRole(await token.ADMIN_ROLE(), owner.address)).to.be.true;
+            expect(await token.hasRole(await token.BRIDGE_OPERATOR_ROLE(), owner.address)).to.be.true;
         });
 
         it("Should allow owner to add bridge operator", async function () {
             await token.addBridgeOperator(bridgeOperator.address);
             await time.increase(8 * 3600 + 1);
-            expect(await token.hasRole(BRIDGE_OPERATOR_ROLE, bridgeOperator.address)).to.be.true;
+            expect(await token.hasRole(await token.BRIDGE_OPERATOR_ROLE(), bridgeOperator.address)).to.be.true;
         });
     });
 
@@ -169,31 +175,31 @@ describe("StorageToken", function () {
             it("Should prevent non-owner from managing pool contracts", async function () {
                 await expect(
                     token.connect(await ethers.getSigner(attacker.address)).addPoolContract(attacker.address)
-                ).to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
+                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
     
                 await expect(
                     token.connect(await ethers.getSigner(attacker.address)).removePoolContract(user1.address)
-                ).to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
+                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
             });
     
             it("Should prevent non-owner from managing proof contracts", async function () {
                 await expect(
                     token.connect(await ethers.getSigner(attacker.address)).addProofContract(attacker.address)
-                ).to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
+                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
     
                 await expect(
                     token.connect(await ethers.getSigner(attacker.address)).removeProofContract(user1.address)
-                ).to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
+                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
             });
     
             it("Should prevent non-owner from managing emergency functions", async function () {
                 await expect(
                     token.connect(await ethers.getSigner(attacker.address)).emergencyPauseToken()
-                ).to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
+                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
     
                 await expect(
                     token.connect(await ethers.getSigner(attacker.address)).emergencyUnpauseToken()
-                ).to.be.revertedWithCustomError(token, "OwnableUnauthorizedAccount");
+                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
             });
         });
     
