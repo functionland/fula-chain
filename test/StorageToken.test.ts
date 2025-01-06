@@ -23,6 +23,10 @@ describe("StorageToken", function () {
         const StorageToken = await ethers.getContractFactory("StorageToken");
         token = await upgrades.deployProxy(StorageToken, [owner.address]);
         await token.waitForDeployment();
+
+        // Mint the maximum supply to the owner
+        const maxSupply = await token.connect(await ethers.getSigner(owner.address)).maxSupply();
+        await token.connect(await ethers.getSigner(owner.address)).mintToken(maxSupply);
     });
 
     describe("Initialization", function () {
@@ -35,8 +39,8 @@ describe("StorageToken", function () {
             expect(await token.totalSupply()).to.equal(TOTAL_SUPPLY);
         });
 
-        it("Should assign total supply to owner", async function () {
-            expect(await token.balanceOf(owner.address)).to.equal(TOTAL_SUPPLY);
+        it("Should assign total supply to contract", async function () {
+            expect(await token.balanceOf(await token.getAddress())).to.equal(TOTAL_SUPPLY);
         });
     });
 
@@ -48,16 +52,15 @@ describe("StorageToken", function () {
             await time.increase(8 * 3600 + 1);
         });
     
-        it("Should allow bridge operator to mint tokens", async function () {
+        it("Should allow bridge operator to mint tokens on target chain", async function () {
             // First burn some tokens to make room for minting
             const burnAmount = ethers.parseEther("1000");
-            await token.connect(await ethers.getSigner(owner.address)).transfer(user1.address, burnAmount);
-            await token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeBurn(user1.address, burnAmount, CHAIN_ID);
+            await token.bridgeBurn(burnAmount, CHAIN_ID);
             
             // Now mint should succeed
             const mintAmount = ethers.parseEther("500"); // Mint less than what was burned
-            await token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeMint(user2.address, mintAmount, CHAIN_ID);
-            expect(await token.balanceOf(user2.address)).to.equal(mintAmount);
+            await token.bridgeMint(mintAmount, CHAIN_ID);
+            expect(await token.balanceOf(await token.getAddress())).to.equal(await token.maxSupply() - burnAmount  + mintAmount);
         });
     });
 
@@ -69,16 +72,17 @@ describe("StorageToken", function () {
         });
     
         it("Should allow minting up to remaining supply", async function () {
+            expect(await token.balanceOf(await token.getAddress())).to.equal(await token.maxSupply());
             const oneToken = ethers.parseEther("1");
             await expect(
-                token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeMint(user1.address, oneToken, CHAIN_ID)
+                token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeMint(oneToken, CHAIN_ID)
             ).to.be.revertedWithCustomError(token, "ExceedsMaximumSupply");
         });
     
         it("Should prevent minting beyond total supply", async function () {
             const overSupply = ethers.parseEther("1000001");
             await expect(
-                token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeMint(user1.address, overSupply, CHAIN_ID)
+                token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeMint(overSupply, CHAIN_ID)
             ).to.be.revertedWithCustomError(token, "ExceedsMaximumSupply");
         });
     });    
@@ -152,11 +156,11 @@ describe("StorageToken", function () {
     
             it("Should prevent unauthorized bridge operations", async function () {
                 await expect(
-                    token.connect(await ethers.getSigner(attacker.address)).bridgeMint(attacker.address, ethers.parseEther("100"), CHAIN_ID)
+                    token.connect(await ethers.getSigner(attacker.address)).bridgeMint(ethers.parseEther("100"), CHAIN_ID)
                 ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
     
                 await expect(
-                    token.connect(await ethers.getSigner(attacker.address)).bridgeBurn(user1.address, ethers.parseEther("100"), CHAIN_ID)
+                    token.connect(await ethers.getSigner(attacker.address)).bridgeBurn(ethers.parseEther("100"), CHAIN_ID)
                 ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
             });
         });
@@ -202,14 +206,14 @@ describe("StorageToken", function () {
                 // Burn some tokens first to avoid supply limit
                 const burnAmount = ethers.parseEther("1000");
                 await token.connect(await ethers.getSigner(owner.address)).transfer(user1.address, burnAmount);
-                await token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeBurn(user1.address, burnAmount, CHAIN_ID);
+                await token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeBurn(burnAmount, CHAIN_ID);
             });
         
             it("Should prevent bridge operations on unsupported chains", async function () {
                 const UNSUPPORTED_CHAIN = 999;
                 const amount = ethers.parseEther("100");
                 await expect(
-                    token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeMint(user1.address, amount, UNSUPPORTED_CHAIN)
+                    token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeMint(amount, UNSUPPORTED_CHAIN)
                 ).to.be.revertedWithCustomError(token, "UnsupportedSourceChain")
                 .withArgs(UNSUPPORTED_CHAIN);
             });
@@ -218,7 +222,7 @@ describe("StorageToken", function () {
                 const amount = ethers.parseEther("100");
                 await token.emergencyPauseToken();
                 await expect(
-                    token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeMint(user1.address, amount, CHAIN_ID)
+                    token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeMint(amount, CHAIN_ID)
                 ).to.be.revertedWithCustomError(token, "EnforcedPause");
             });
         
@@ -227,7 +231,7 @@ describe("StorageToken", function () {
                 await token.addBridgeOperator(user2.address);
                 // Try immediately without waiting for timelock
                 await expect(
-                    token.connect(await ethers.getSigner(user2.address)).bridgeMint(user1.address, amount, CHAIN_ID)
+                    token.connect(await ethers.getSigner(user2.address)).bridgeMint(amount, CHAIN_ID)
                 ).to.be.revertedWithCustomError(token, "TimeLockActive");
             });
         });
@@ -263,11 +267,15 @@ describe("10 Transactors Performing Transactions", function () {
       const StorageToken = await ethers.getContractFactory("StorageToken");
       token = await upgrades.deployProxy(StorageToken, [owner.address]);
       await token.waitForDeployment();
+
+      // Mint the maximum supply to the owner
+      const maxSupply = await token.connect(await ethers.getSigner(owner.address)).maxSupply();
+      await token.connect(await ethers.getSigner(owner.address)).mintToken(maxSupply);
     });
   
     it("Should handle simultaneous transactions correctly", async function () {
       const transferAmount = ethers.parseEther("100");
-      const initialBalance = await token.balanceOf(owner.address);
+      const initialBalance = await token.balanceOf(await token.getAddress());
   
       // Distribute tokens to users
       for (let i = 0; i < 10; i++) {
@@ -276,8 +284,9 @@ describe("10 Transactors Performing Transactions", function () {
       }
   
       // Verify owner's balance decreased correctly
-      const expectedOwnerBalance = initialBalance - (transferAmount * BigInt(10));
-      expect(await token.balanceOf(owner.address)).to.equal(expectedOwnerBalance);
+      const expectedContractBalance = initialBalance - (transferAmount * BigInt(10));
+      const finalBalance = await token.balanceOf(await token.getAddress());
+      expect(finalBalance).to.be.eq(expectedContractBalance);
   
       // Users transfer tokens to each other
       for (let i = 0; i < 9; i++) {
@@ -307,6 +316,10 @@ describe("10 Transactors Performing Transactions", function () {
       // Assign bridge operator role
       await token.addBridgeOperator(bridgeOperator.address);
       await time.increase(8 * 3600 + 1); // Wait for timelock
+
+      // Mint the maximum supply to the owner
+      const maxSupply = await token.connect(await ethers.getSigner(owner.address)).maxSupply();
+      await token.connect(await ethers.getSigner(owner.address)).mintToken(maxSupply);
     });
   
     it("Should prevent unauthorized minting", async function () {
@@ -314,7 +327,7 @@ describe("10 Transactors Performing Transactions", function () {
   
       // Hacker attempts to mint tokens
       await expect(
-        token.connect(await ethers.getSigner(hacker.address)).bridgeMint(hacker.address, mintAmount, CHAIN_ID)
+        token.connect(await ethers.getSigner(hacker.address)).bridgeMint(mintAmount, CHAIN_ID)
       ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
     });
   
@@ -323,7 +336,7 @@ describe("10 Transactors Performing Transactions", function () {
   
       // Hacker attempts to burn tokens
       await expect(
-        token.connect(await ethers.getSigner(hacker.address)).bridgeBurn(hacker.address, burnAmount, CHAIN_ID)
+        token.connect(await ethers.getSigner(hacker.address)).bridgeBurn(burnAmount, CHAIN_ID)
       ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
     });
   });

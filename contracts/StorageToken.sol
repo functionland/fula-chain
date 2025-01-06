@@ -73,7 +73,6 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         __AccessControl_init();
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner); // Assign admin role to deployer
         _grantRole(BRIDGE_OPERATOR_ROLE, initialOwner); // Assign bridge operator role to deployer
-        _mint(initialOwner, TOTAL_SUPPLY);
     }
 
     function version() public pure returns (string memory) {
@@ -83,6 +82,18 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     function tokenUnit() public pure returns (uint256) {
         unchecked {
             return 10**18; // This calculation cannot overflow
+        }
+    }
+
+    function mintToken(uint256 amount) external onlyOwner {
+        require(amount <= TOTAL_SUPPLY - totalSupply(), "No tokens left to mint"); // Calculate remaining tokens to mint
+        require(amount > 0, "amount cannot be zero");
+        _mint(address(this), amount); // Mint tokens to the contract's address
+    }
+
+    function maxSupply() public pure returns (uint256) {
+        unchecked {
+            return TOTAL_SUPPLY; // This calculation cannot overflow
         }
     }
 
@@ -139,35 +150,36 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     function transfer(address to, uint256 amount) public virtual override whenNotPaused returns (bool) {
         if (paused()) revert TokenPaused();
-        return super.transfer(to, amount);
+        _transfer(address(this), to, amount);
+        return true;
     }
 
     // Bridge-specific functions with access control
-    function bridgeMint(address to, uint256 amount, uint256 sourceChain) 
+    function bridgeMint(uint256 amount, uint256 sourceChain) 
     external 
     whenNotPaused 
     onlyRole(BRIDGE_OPERATOR_ROLE)
     {
+        if (!supportedChains[sourceChain]) revert UnsupportedSourceChain(sourceChain);
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
         if (amount == 0) revert AmountMustBePositive();
         if (totalSupply() + amount > TOTAL_SUPPLY) {
             revert ExceedsMaximumSupply(amount, TOTAL_SUPPLY);
         }
-        if (!supportedChains[sourceChain]) revert UnsupportedSourceChain(sourceChain);
-        _mint(to, amount);
+        _mint(address(this), amount);
         emit BridgeOperationDetails(msg.sender, "MINT", amount, sourceChain, block.timestamp);
     }
 
-    function bridgeBurn(address from, uint256 amount, uint256 targetChain) 
+    function bridgeBurn(uint256 amount, uint256 targetChain) 
         external 
         whenNotPaused 
         onlyRole(BRIDGE_OPERATOR_ROLE)
     {
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
         require(amount > 0, "Amount must be positive");
-        require(balanceOf(from) >= amount, "Insufficient balance to burn");
+        require(balanceOf(address(this)) >= amount, "Insufficient balance to burn");
         require(supportedChains[targetChain], "Unsupported target chain");
-        _burn(from, amount);
+        _burn(address(this), amount);
         emit BridgeOperationDetails(msg.sender, "BURN", amount, targetChain, block.timestamp);
     }
 
@@ -189,18 +201,6 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     // Add function to manage supported chains
     function setSupportedChain(uint256 chainId, bool supported) external onlyOwner {
         supportedChains[chainId] = supported;
-    }
-
-    // Modify bridgeTransfer function
-    function bridgeTransfer(uint256 targetChain, uint256 amount) external nonReentrant whenNotPaused {
-        require(supportedChains[targetChain], "Unsupported chain");
-        require(balanceOf(msg.sender) >= amount, "Insufficient balance");
-        
-        // Lock tokens on source chain
-        _burn(msg.sender, amount);
-        
-        // Emit event for bridge operators
-        emit BridgeTransfer(msg.sender, amount, targetChain);
     }
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
