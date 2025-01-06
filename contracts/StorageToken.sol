@@ -67,6 +67,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         __ReentrancyGuard_init();
         __Pausable_init();
         __AccessControl_init();
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, initialOwner); // Assign admin role to deployer
         _grantRole(BRIDGE_OPERATOR_ROLE, initialOwner); // Assign bridge operator role to deployer
     }
