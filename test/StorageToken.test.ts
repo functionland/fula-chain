@@ -205,7 +205,7 @@ describe("StorageToken", function () {
                 
                 // Burn some tokens first to avoid supply limit
                 const burnAmount = ethers.parseEther("1000");
-                await token.connect(await ethers.getSigner(owner.address)).transfer(user1.address, burnAmount);
+                await token.connect(await ethers.getSigner(owner.address)).transferFromContract(user1.address, burnAmount);
                 await token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeBurn(burnAmount, CHAIN_ID);
             });
         
@@ -241,13 +241,13 @@ describe("StorageToken", function () {
                 const amount = ethers.parseEther("100");
                 await token.emergencyPauseToken();
                 await expect(
-                    token.connect(await ethers.getSigner(owner.address)).transfer(user1.address, amount)
+                    token.connect(await ethers.getSigner(owner.address)).transferFromContract(user1.address, amount)
                 ).to.be.revertedWithCustomError(token, "EnforcedPause");
             });
         
             it("Should prevent unauthorized pool contract operations", async function () {
                 const amount = ethers.parseEther("100");
-                await token.transfer(user1.address, amount);
+                await token.transferFromContract(user1.address, amount);
                 await expect(
                     token.connect(await ethers.getSigner(attacker.address)).transferFrom(user1.address, attacker.address, amount)
                 ).to.be.revertedWithCustomError(token, "ERC20InsufficientAllowance");
@@ -279,7 +279,7 @@ describe("10 Transactors Performing Transactions", function () {
   
       // Distribute tokens to users
       for (let i = 0; i < 10; i++) {
-        await token.transfer(users[i].address, transferAmount);
+        await token.transferFromContract(users[i].address, transferAmount);
         expect(await token.balanceOf(users[i].address)).to.equal(transferAmount);
       }
   

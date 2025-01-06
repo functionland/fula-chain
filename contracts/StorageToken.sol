@@ -13,6 +13,7 @@ import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol"
 import "./DAMMModule.sol";
 
 contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, PausableUpgradeable, AccessControlUpgradeable, ReentrancyGuardUpgradeable, DAMMModule {
+    
     uint256 private constant TOKEN_UNIT = 10**18;
     uint256 private constant TOTAL_SUPPLY = 1_000_000 * TOKEN_UNIT; // 1M tokens
     bool private _locked;
@@ -111,7 +112,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     }
 
     // Bridge operator management
-    function addBridgeOperator(address operator) external onlyRole(DEFAULT_ADMIN_ROLE) validateAddress(operator) {
+    function addBridgeOperator(address operator) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) validateAddress(operator) {
         require(operator != address(0), "Invalid operator address");
         if (block.timestamp < roleChangeTimeLock[operator]) revert TimeLockActive(operator);
     
@@ -120,43 +121,51 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         emit BridgeOperatorAdded(operator);
     }
 
-    function removeBridgeOperator(address operator) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function removeBridgeOperator(address operator) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
         require(operator != address(0), "Invalid operator address");
         revokeRole(BRIDGE_OPERATOR_ROLE, operator);
         emit BridgeOperatorRemoved(operator);
     }
 
     // Pool contract management
-    function addPoolContract(address poolContract) external onlyOwner {
+    function addPoolContract(address poolContract) external nonReentrant onlyOwner {
+        require(poolContract != address(0), "Invalid pool contract address");
         poolContracts[poolContract] = true;
         emit PoolContractAdded(poolContract);
     }
 
-    function removePoolContract(address poolContract) external onlyOwner {
+    function removePoolContract(address poolContract) external nonReentrant onlyOwner {
         poolContracts[poolContract] = false;
         emit PoolContractRemoved(poolContract);
     }
 
     // Proof contract management
-    function addProofContract(address proofContract) external onlyOwner {
+    function addProofContract(address proofContract) external nonReentrant onlyOwner {
+         require(proofContract != address(0), "Invalid proof contract address");
         proofContracts[proofContract] = true;
         emit ProofContractAdded(proofContract);
     }
 
-    function removeProofContract(address proofContract) external onlyOwner {
+    function removeProofContract(address proofContract) external nonReentrant onlyOwner {
         proofContracts[proofContract] = false;
         emit ProofContractRemoved(proofContract);
     }
 
-    function transfer(address to, uint256 amount) public virtual override whenNotPaused returns (bool) {
+    function transferFromContract(address to, uint256 amount) external virtual whenNotPaused nonReentrant onlyOwner returns (bool) {
         if (paused()) revert TokenPaused();
         _transfer(address(this), to, amount);
         return true;
     }
 
+    function transfer(address to, uint256 amount) public virtual override whenNotPaused nonReentrant returns (bool) {
+        if (paused()) revert TokenPaused();
+        return super.transfer(to, amount);
+    }
+
     // Bridge-specific functions with access control
     function bridgeMint(uint256 amount, uint256 sourceChain) 
     external 
+    nonReentrant
     whenNotPaused 
     onlyRole(BRIDGE_OPERATOR_ROLE)
     {
@@ -173,6 +182,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     function bridgeBurn(uint256 amount, uint256 targetChain) 
         external 
         whenNotPaused 
+        nonReentrant
         onlyRole(BRIDGE_OPERATOR_ROLE)
     {
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
@@ -188,7 +198,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         address sender,
         address recipient,
         uint256 amount
-    ) public virtual whenNotPaused override returns (bool) {
+    ) public virtual whenNotPaused nonReentrant override returns (bool) {
         if (paused()) revert TokenPaused();
         if (poolContracts[msg.sender] || proofContracts[msg.sender]) {
             _transfer(sender, recipient, amount);
@@ -199,7 +209,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     // multi-chain token transfer
     // Add function to manage supported chains
-    function setSupportedChain(uint256 chainId, bool supported) external onlyOwner {
+    function setSupportedChain(uint256 chainId, bool supported) external nonReentrant onlyOwner {
         supportedChains[chainId] = supported;
     }
 
