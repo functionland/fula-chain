@@ -50,11 +50,11 @@ describe("StakingEngine", function () {
     await token.transfer(rewardPoolAddress, initialRewardPool);
     console.log(`Token contract balance: ${await token.balanceOf(await token.getAddress())}`);
     
-    token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user1.address);
-    token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user2.address);
-    token.connect(await ethers.getSigner(owner.address)).addToWhitelist(stakingPoolAddress);
-    token.connect(await ethers.getSigner(owner.address)).addToWhitelist(rewardPoolAddress);
-    token.connect(await ethers.getSigner(owner.address)).addToWhitelist(await stakingEngine.getAddress());
+    await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user1.address);
+    await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user2.address);
+    await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(stakingPoolAddress);
+    await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(rewardPoolAddress);
+    await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(await stakingEngine.getAddress());
     await time.increase(whitelistLockPeriod + 3);
     
     await token.transferFromContract(await stakingEngine.getAddress(), ethers.parseEther("5000")); // Add tokens to staking engine contract address directly (this is not needed normally)
@@ -1214,9 +1214,9 @@ describe("StakingEngine with large user base", function () {
         ])) as StakingEngine;
         await stakingEngine.waitForDeployment();
 
-        token.connect(await ethers.getSigner(owner.address)).addToWhitelist(owner.address);
-        token.connect(await ethers.getSigner(owner.address)).addToWhitelist(stakingPoolAddress);
-        token.connect(await ethers.getSigner(owner.address)).addToWhitelist(rewardPoolAddress);
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(owner.address);
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(stakingPoolAddress);
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(rewardPoolAddress);
         await time.increase(whitelistLockPeriod + 3);
     
         // Transfer tokens to reward pool, staking pool, and reward distribution addresses
