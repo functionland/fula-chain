@@ -15,6 +15,8 @@ describe("StakingEngine", function () {
   let stakingPoolAddress: string;
   let calculateExpectedRewards: (p1: any, p2: any, p3: any) => bigint;
   const initialStakinPoolAmount = ethers.parseEther("5000")
+  const TOTAL_SUPPLY = ethers.parseEther("1000000"); // 1M tokens
+  const whitelistLockPeriod = 48 * 24 * 60 * 60;
 
   beforeEach(async function () {
     // Get signers
@@ -27,12 +29,8 @@ describe("StakingEngine", function () {
   
     // Deploy StorageToken
     const StorageToken = await ethers.getContractFactory("StorageToken");
-    token = (await upgrades.deployProxy(StorageToken, [owner.address])) as StorageToken;
+    token = (await upgrades.deployProxy(StorageToken, [owner.address, TOTAL_SUPPLY])) as StorageToken;
     await token.waitForDeployment();
-
-    // Mint the maximum supply to the owner
-    const maxSupply = await token.connect(await ethers.getSigner(owner.address)).maxSupply();
-    await token.connect(await ethers.getSigner(owner.address)).mintToken(maxSupply);
   
     // Deploy StakingEngine
     rewardPoolAddress = users[0].address; // Use one of the users as the reward pool address
@@ -51,6 +49,14 @@ describe("StakingEngine", function () {
     const initialRewardPool = ethers.parseEther("0"); // 10,000 tokens
     await token.transfer(rewardPoolAddress, initialRewardPool);
     console.log(`Token contract balance: ${await token.balanceOf(await token.getAddress())}`);
+    
+    token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user1.address);
+    token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user2.address);
+    token.connect(await ethers.getSigner(owner.address)).addToWhitelist(stakingPoolAddress);
+    token.connect(await ethers.getSigner(owner.address)).addToWhitelist(rewardPoolAddress);
+    token.connect(await ethers.getSigner(owner.address)).addToWhitelist(await stakingEngine.getAddress());
+    await time.increase(whitelistLockPeriod + 3);
+    
     await token.transferFromContract(await stakingEngine.getAddress(), ethers.parseEther("5000")); // Add tokens to staking engine contract address directly (this is not needed normally)
     await token.transferFromContract(stakingPoolAddress, initialStakinPoolAmount); // Example amount for staking pool
   
@@ -319,7 +325,7 @@ it("should allow multiple staking with different tiers and handle insufficient r
 
 it("should not apply penalties for unstaking after lock period", async function () {
   const fixedAPY60Days = 2;
-  const stakeAmount = ethers.parseEther("100"); // User stakes 100 tokens
+  const stakeAmount = ethers.parseEther("1000"); // User stakes 100 tokens
   const initialRewardPoolAmount = ethers.parseEther("100"); // Initial reward pool balance
 
   // Transfer initial tokens to reward pool and approve staking contract
@@ -330,15 +336,18 @@ it("should not apply penalties for unstaking after lock period", async function 
   await token.transferFromContract(user1.address, stakeAmount);
   const tokenWithUser1 = token.connect(await ethers.getSigner(user1.address));
   await tokenWithUser1.approve(await stakingEngine.getAddress(), stakeAmount);
+  expect(await token.balanceOf(user1.address)).to.be.eq(stakeAmount);
 
-  // Stake tokens for a short lock period (30 days)
-  const lockPeriod60Days = 60 * 24 * 60 * 60; // 30 days in seconds
+  // Stake tokens for a short lock period (60 days)
+  const lockPeriod60Days = 60 * 24 * 60 * 60; // 60 days in seconds
   const stakingWithUser1 = stakingEngine.connect(await ethers.getSigner(user1.address));
   await stakingWithUser1.stakeToken(stakeAmount, lockPeriod60Days);
 
   // Simulate time passing (lock period complete)
   const elapsedTime = lockPeriod60Days + 1;
   await time.increase(elapsedTime); // Move forward by slightly more than one month
+
+  expect(await token.balanceOf(user1.address)).to.be.eq(ethers.parseEther("0"));
 
   // Unstake after lock period
   const tx = await stakingWithUser1.unstakeToken(0); // Assuming multi-staking is implemented
@@ -355,22 +364,41 @@ it("should not apply penalties for unstaking after lock period", async function 
       })
       .find((parsedLog) => parsedLog && parsedLog.name === "Unstaked");
 
-  if (penaltyEvent) {
-      const penalty = penaltyEvent.args?.penalty;
-      const unstakedAmount = penaltyEvent.args?.amount;
+    const penalty = penaltyEvent?.args?.penalty;
+    const unstakedAmount = penaltyEvent?.args?.amount;
+    const distributedReward = penaltyEvent?.args?.distributedReward;
 
-      console.log(`Penalty Applied: ${ethers.formatEther(penalty)}`);
-      console.log(`Unstaked Amount: ${ethers.formatEther(unstakedAmount)}`);
+    console.log(`Penalty Applied: ${ethers.formatEther(penalty)}`);
+    console.log(`Unstaked Amount: ${ethers.formatEther(unstakedAmount)}`);
+    console.log(`distributed Reward: ${ethers.formatEther(distributedReward)}`);
 
-      // Verify that no penalty was applied
-      expect(penalty).to.equal(0); // No penalty should be applied
+    const rewardDistributionLog = receipt?.logs
+      .map((log) => {
+          try {
+              return stakingEngine.interface.parseLog(log);
+          } catch (e) {
+              return null; // Ignore logs that don't match the interface
+          }
+      })
+      .find((parsedLog) => parsedLog && parsedLog.name === "RewardDistributionLog");
 
-      // Verify that the user received their full staked amount back
-      const userBalance = await token.balanceOf(user1.address);
-      expect(userBalance).to.be.gt(stakeAmount); // User receives full staked amount plus rewards
-      const expectedRewards60Days = calculateExpectedRewards(stakeAmount, fixedAPY60Days, elapsedTime);
-      expect(userBalance).to.be.closeTo(stakeAmount + expectedRewards60Days, ethers.parseEther("0.000001"));
-  }
+    const lockPeriodFromLog = rewardDistributionLog?.args?.lockPeriod;
+    const elapsedTimeFromLog = rewardDistributionLog?.args?.elapsedTime;
+    const pendingRewardsFromLog = rewardDistributionLog?.args?.pendingRewards;
+
+    console.log(`lockPeriodFromLog: ${ethers.formatEther(lockPeriodFromLog)}`);
+    console.log(`elapsedTimeFromLog: ${ethers.formatEther(elapsedTimeFromLog)}`);
+    console.log(`pendingRewardsFromLog: ${ethers.formatEther(pendingRewardsFromLog)}`);
+
+    // Verify that no penalty was applied
+    expect(penalty).to.equal(0); // No penalty should be applied
+
+    // Verify that the user received their full staked amount back
+    const userBalance = await token.balanceOf(user1.address);
+    expect(userBalance).to.be.gt(stakeAmount); // User receives full staked amount plus rewards
+    const expectedRewards60Days = calculateExpectedRewards(stakeAmount, fixedAPY60Days, elapsedTime);
+    console.log(`expected Reward: ${expectedRewards60Days}`);
+    expect(userBalance).to.be.gt(stakeAmount + expectedRewards60Days);
 });
 
   
@@ -1161,6 +1189,8 @@ describe("StakingEngine with large user base", function () {
     let users: SignerWithAddress[];
     let rewardPoolAddress: string;
     let stakingPoolAddress: string;
+    const TOTAL_SUPPLY = ethers.parseEther("1000000"); // 1M tokens
+    const whitelistLockPeriod = 48 * 24 * 60 * 60;
 
     beforeEach(async function () {
         // Get signers
@@ -1168,11 +1198,8 @@ describe("StakingEngine with large user base", function () {
     
         // Deploy StorageToken
         const StorageToken = await ethers.getContractFactory("StorageToken");
-        token = (await upgrades.deployProxy(StorageToken, [owner.address])) as StorageToken;
+        token = (await upgrades.deployProxy(StorageToken, [owner.address, TOTAL_SUPPLY])) as StorageToken;
         await token.waitForDeployment();
-
-        const maxSupply = await token.connect(await ethers.getSigner(owner.address)).maxSupply();
-        await token.connect(await ethers.getSigner(owner.address)).mintToken(maxSupply);
     
         // Deploy StakingEngine
         rewardPoolAddress = users[0].address; // Use one of the users as the reward pool address
@@ -1186,6 +1213,11 @@ describe("StakingEngine with large user base", function () {
         owner.address,
         ])) as StakingEngine;
         await stakingEngine.waitForDeployment();
+
+        token.connect(await ethers.getSigner(owner.address)).addToWhitelist(owner.address);
+        token.connect(await ethers.getSigner(owner.address)).addToWhitelist(stakingPoolAddress);
+        token.connect(await ethers.getSigner(owner.address)).addToWhitelist(rewardPoolAddress);
+        await time.increase(whitelistLockPeriod + 3);
     
         // Transfer tokens to reward pool, staking pool, and reward distribution addresses
         const initialRewardPool = ethers.parseEther("10000"); // 10,000 tokens
@@ -1214,10 +1246,15 @@ describe("StakingEngine with large user base", function () {
         // Step 1: Transfer tokens to reward pool
         const tokenWithOwner = token.connect(await ethers.getSigner(owner.address));
         await tokenWithOwner.transferFromContract(rewardPoolAddress, rewardPoolAmount);
+        await tokenWithOwner.transferFromContract(owner.address, stakeAmount * BigInt(10));
     
         // Step 2: Transfer tokens to all users and approve staking contract
         for (let i = 3; i < numUsers + 3; i++) {
-            await token.transferFromContract(users[i].address, stakeAmount); // Transfer tokens to user
+            await token.connect(await ethers.getSigner(owner.address)).approve(owner.address, stakeAmount);
+
+            // User[i] calls transferFrom
+            await token.connect(await ethers.getSigner(owner.address)).transferFrom(owner.address, users[i].address, stakeAmount);
+
             await token.connect(await ethers.getSigner(users[i].address)).approve(await stakingEngine.getAddress(), stakeAmount); // Approve staking contract
         }
     
@@ -1232,7 +1269,7 @@ describe("StakingEngine with large user base", function () {
         expect(totalStakedAfterStaking).to.equal(ethers.parseEther((numUsers * stakedAmountPerUser).toString())); // Total staked should match
     
         // Step 4: Simulate time passing (lock period complete)
-        await time.increase(lockPeriod + 2); // Move forward by slightly more than the lock period
+        await time.increase(lockPeriod + 3); // Move forward by slightly more than the lock period
     
         // Step 5: Simulate unstaking for all users and verify slippage
         for (let i = 3; i < numUsers + 3; i++) {
