@@ -205,7 +205,7 @@ describe("StorageToken", function () {
                 await token.setSupportedChain(CHAIN_ID, true);
                 await token.addBridgeOperator(bridgeOperator.address);
                 await time.increase(8 * 3600 + 1);
-                token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user1.address);
+                await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user1.address);
                 await time.increase(whitelistLockPeriod + 3);
                 
                 // Burn some tokens first to avoid supply limit
@@ -243,7 +243,7 @@ describe("StorageToken", function () {
     
         describe("Transfer Security", function () {
             beforeEach(async function() {
-                token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user1.address);
+                await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user1.address);
                 await time.increase(whitelistLockPeriod + 3);
             });
             it("Should prevent transfers when paused", async function () {
@@ -281,7 +281,7 @@ describe("10 Transactors Performing Transactions", function () {
       await token.waitForDeployment();
       initialBalance = await token.balanceOf(await token.getAddress());
 
-      token.connect(await ethers.getSigner(owner.address)).addToWhitelist(owner.address);
+      await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(owner.address);
       await time.increase(whitelistLockPeriod + 3);
       await token.transferFromContract(owner.address, transferAmount * BigInt(10));
     });
