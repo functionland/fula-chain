@@ -5,6 +5,7 @@ import { StorageToken } from "../typechain-types/contracts";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
 import { Contract } from "ethers";
 
+const whitelistLockPeriod = 49 * 24 * 60 * 60;
 describe("StorageToken", function () {
     let token: StorageToken;
     let owner: SignerWithAddress;
@@ -15,7 +16,6 @@ describe("StorageToken", function () {
 
     const TOTAL_SUPPLY = ethers.parseEther("1000000"); // 1M tokens
     const CHAIN_ID = 1;
-    const whitelistLockPeriod = 48 * 24 * 60 * 60;
 
     beforeEach(async function () {
         [owner, bridgeOperator, user1, user2, ...users] = await ethers.getSigners();
@@ -206,7 +206,7 @@ describe("StorageToken", function () {
                 await token.addBridgeOperator(bridgeOperator.address);
                 await time.increase(8 * 3600 + 1);
                 token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user1.address);
-                await time.increase(whitelistLockPeriod + 2);
+                await time.increase(whitelistLockPeriod + 3);
                 
                 // Burn some tokens first to avoid supply limit
                 const burnAmount = ethers.parseEther("1000");
@@ -244,7 +244,7 @@ describe("StorageToken", function () {
         describe("Transfer Security", function () {
             beforeEach(async function() {
                 token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user1.address);
-                await time.increase(whitelistLockPeriod + 2);
+                await time.increase(whitelistLockPeriod + 3);
             });
             it("Should prevent transfers when paused", async function () {
                 const amount = ethers.parseEther("100");
@@ -271,24 +271,30 @@ describe("10 Transactors Performing Transactions", function () {
     let owner: SignerWithAddress;
     let users: SignerWithAddress[];
     const TOTAL_SUPPLY = ethers.parseEther("1000000");
-    const whitelistLockPeriod = 48 * 24 * 60 * 60;
+    const transferAmount = ethers.parseEther("100");
+    let initialBalance: bigint;
   
     beforeEach(async function () {
       [owner, ...users] = await ethers.getSigners();
       const StorageToken = await ethers.getContractFactory("StorageToken");
       token = await upgrades.deployProxy(StorageToken, [owner.address, TOTAL_SUPPLY]);
       await token.waitForDeployment();
+      initialBalance = await token.balanceOf(await token.getAddress());
+
+      token.connect(await ethers.getSigner(owner.address)).addToWhitelist(owner.address);
+      await time.increase(whitelistLockPeriod + 3);
+      await token.transferFromContract(owner.address, transferAmount * BigInt(10));
     });
   
     it("Should handle simultaneous transactions correctly", async function () {
-      const transferAmount = ethers.parseEther("100");
-      const initialBalance = await token.balanceOf(await token.getAddress());
   
       // Distribute tokens to users
       for (let i = 0; i < 10; i++) {
-        token.connect(await ethers.getSigner(owner.address)).addToWhitelist(users[i].address);
-        await time.increase(whitelistLockPeriod + 2);
-        await token.transferFromContract(users[i].address, transferAmount);
+        await token.connect(await ethers.getSigner(owner.address)).approve(owner.address, transferAmount);
+
+        // User[i] calls transferFrom
+        await token.connect(await ethers.getSigner(owner.address)).transferFrom(owner.address, users[i].address, transferAmount);
+
         expect(await token.balanceOf(users[i].address)).to.equal(transferAmount);
       }
   

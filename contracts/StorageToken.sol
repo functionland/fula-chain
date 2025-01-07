@@ -31,7 +31,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     mapping(address => bool) private whitelist; // Whitelisted addresses
     mapping(address => uint256) private whitelistLockTime; // Lock time for whitelisted addresses
-    uint256 private constant WHITELIST_LOCK_DURATION = 48 hours; // Lock duration after adding to whitelist
+    uint256 private constant WHITELIST_LOCK_DURATION = 1 days; // Lock duration after adding to whitelist
 
     bool private _initializedMint;
 
