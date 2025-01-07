@@ -15,20 +15,17 @@ describe("StorageToken", function () {
 
     const TOTAL_SUPPLY = ethers.parseEther("1000000"); // 1M tokens
     const CHAIN_ID = 1;
+    const whitelistLockPeriod = 48 * 24 * 60 * 60;
 
     beforeEach(async function () {
         [owner, bridgeOperator, user1, user2, ...users] = await ethers.getSigners();
 
         const StorageToken = await ethers.getContractFactory("StorageToken");
-        token = await upgrades.deployProxy(StorageToken, [owner.address], {
+        token = await upgrades.deployProxy(StorageToken, [owner.address, TOTAL_SUPPLY], {
             initializer: 'initialize'
         });
         console.log(`Owner address: ${owner.address}`);
         await token.waitForDeployment();
-
-        // Mint the maximum supply to the owner
-        const maxSupply = await token.connect(await ethers.getSigner(owner.address)).maxSupply();
-        await token.connect(await ethers.getSigner(owner.address)).mintToken(maxSupply);
     });
 
     describe("Initialization", function () {
@@ -208,6 +205,8 @@ describe("StorageToken", function () {
                 await token.setSupportedChain(CHAIN_ID, true);
                 await token.addBridgeOperator(bridgeOperator.address);
                 await time.increase(8 * 3600 + 1);
+                token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user1.address);
+                await time.increase(whitelistLockPeriod + 2);
                 
                 // Burn some tokens first to avoid supply limit
                 const burnAmount = ethers.parseEther("1000");
@@ -243,6 +242,10 @@ describe("StorageToken", function () {
         });
     
         describe("Transfer Security", function () {
+            beforeEach(async function() {
+                token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user1.address);
+                await time.increase(whitelistLockPeriod + 2);
+            });
             it("Should prevent transfers when paused", async function () {
                 const amount = ethers.parseEther("100");
                 await token.emergencyPauseToken();
@@ -267,16 +270,14 @@ describe("10 Transactors Performing Transactions", function () {
     let token: StorageToken;
     let owner: SignerWithAddress;
     let users: SignerWithAddress[];
+    const TOTAL_SUPPLY = ethers.parseEther("1000000");
+    const whitelistLockPeriod = 48 * 24 * 60 * 60;
   
     beforeEach(async function () {
       [owner, ...users] = await ethers.getSigners();
       const StorageToken = await ethers.getContractFactory("StorageToken");
-      token = await upgrades.deployProxy(StorageToken, [owner.address]);
+      token = await upgrades.deployProxy(StorageToken, [owner.address, TOTAL_SUPPLY]);
       await token.waitForDeployment();
-
-      // Mint the maximum supply to the owner
-      const maxSupply = await token.connect(await ethers.getSigner(owner.address)).maxSupply();
-      await token.connect(await ethers.getSigner(owner.address)).mintToken(maxSupply);
     });
   
     it("Should handle simultaneous transactions correctly", async function () {
@@ -285,6 +286,8 @@ describe("10 Transactors Performing Transactions", function () {
   
       // Distribute tokens to users
       for (let i = 0; i < 10; i++) {
+        token.connect(await ethers.getSigner(owner.address)).addToWhitelist(users[i].address);
+        await time.increase(whitelistLockPeriod + 2);
         await token.transferFromContract(users[i].address, transferAmount);
         expect(await token.balanceOf(users[i].address)).to.equal(transferAmount);
       }
@@ -310,22 +313,19 @@ describe("10 Transactors Performing Transactions", function () {
     let bridgeOperator: SignerWithAddress;
     let hacker: SignerWithAddress;
     const CHAIN_ID = 1;
+    const TOTAL_SUPPLY = ethers.parseEther("1000000");
   
     beforeEach(async function () {
       [owner, bridgeOperator, hacker] = await ethers.getSigners();
   
       // Deploy the main token contract
       const StorageToken = await ethers.getContractFactory("StorageToken");
-      token = await upgrades.deployProxy(StorageToken, [owner.address]);
+      token = await upgrades.deployProxy(StorageToken, [owner.address, TOTAL_SUPPLY]);
       await token.waitForDeployment();
   
       // Assign bridge operator role
       await token.addBridgeOperator(bridgeOperator.address);
       await time.increase(8 * 3600 + 1); // Wait for timelock
-
-      // Mint the maximum supply to the owner
-      const maxSupply = await token.connect(await ethers.getSigner(owner.address)).maxSupply();
-      await token.connect(await ethers.getSigner(owner.address)).mintToken(maxSupply);
     });
   
     it("Should prevent unauthorized minting", async function () {

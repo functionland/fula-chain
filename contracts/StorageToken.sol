@@ -29,6 +29,12 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     mapping(address => uint256) private roleChangeTimeLock;
     uint256 private constant ROLE_CHANGE_DELAY = 8 hours;
 
+    mapping(address => bool) private whitelist; // Whitelisted addresses
+    mapping(address => uint256) private whitelistLockTime; // Lock time for whitelisted addresses
+    uint256 private constant WHITELIST_LOCK_DURATION = 48 hours; // Lock duration after adding to whitelist
+
+    bool private _initializedMint;
+
     event BridgeTransfer(address indexed from, uint256 amount, uint256 targetChain);
     event BridgeOperatorAdded(address operator);
     event BridgeOperatorRemoved(address operator);
@@ -45,6 +51,10 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         uint256 chainId,
         uint256 timestamp
     );
+    event WalletWhitelisted(address indexed wallet);
+    event WalletRemovedFromWhitelist(address indexed wallet);
+    event TransferFromContract(address indexed from, address indexed to, uint256 amount);
+    event TokensMinted(address indexed to, uint256 amount);
 
     error ExceedsMaximumSupply(uint256 requested, uint256 maxSupply);
     error AmountMustBePositive();
@@ -58,9 +68,15 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         require(_address != address(0), "Invalid address");
         _;
     }
+    modifier onlyWhitelisted(address to) {
+        require(whitelist[to], "Recipient not whitelisted");
+        require(block.timestamp >= whitelistLockTime[to], "Recipient is still locked");
+        _;
+    }
 
-    function initialize(address initialOwner) public reinitializer(1) {  // Increment version number for each upgrade
+    function initialize(address initialOwner, uint256 initialMintedTokens) public reinitializer(1) {  // Increment version number for each upgrade
         require(initialOwner != address(0), "Invalid owner address");
+        require(initialMintedTokens <= TOTAL_SUPPLY, "Exceeds maximum supply");
         __ERC20_init("Test Token", "TT");
         __UUPSUpgradeable_init();
         __Ownable_init(initialOwner);
@@ -70,6 +86,15 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, initialOwner); // Assign admin role to deployer
         _grantRole(BRIDGE_OPERATOR_ROLE, initialOwner); // Assign bridge operator role to deployer
+
+        // Mint the initial tokens to the owner's address
+        if (!_initializedMint) {
+            _mint(address(this), initialMintedTokens);
+            emit TokensMinted(address(this), initialMintedTokens);
+
+            // Mark minting as initialized
+            _initializedMint = true;
+        }
     }
 
     function version() public pure returns (string memory) {
@@ -82,16 +107,26 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         }
     }
 
-    function mintToken(uint256 amount) external onlyOwner {
-        require(amount <= TOTAL_SUPPLY - totalSupply(), "No tokens left to mint"); // Calculate remaining tokens to mint
-        require(amount > 0, "amount cannot be zero");
-        _mint(address(this), amount); // Mint tokens to the contract's address
-    }
-
     function maxSupply() public pure returns (uint256) {
         unchecked {
             return TOTAL_SUPPLY; // This calculation cannot overflow
         }
+    }
+
+    // Add a wallet to the whitelist
+    function addToWhitelist(address wallet) external onlyRole(ADMIN_ROLE) {
+        require(wallet != address(0), "Invalid wallet address");
+        whitelist[wallet] = true;
+        whitelistLockTime[wallet] = block.timestamp + WHITELIST_LOCK_DURATION;
+        emit WalletWhitelisted(wallet);
+    }
+
+    // Remove a wallet from the whitelist
+    function removeFromWhitelist(address wallet) external onlyRole(ADMIN_ROLE) {
+        require(wallet != address(0), "Invalid wallet address");
+        whitelist[wallet] = false;
+        whitelistLockTime[wallet] = 0; // Reset lock time
+        emit WalletRemovedFromWhitelist(wallet);
     }
 
 
@@ -147,9 +182,21 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         emit ProofContractRemoved(proofContract);
     }
 
-    function transferFromContract(address to, uint256 amount) external virtual whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) returns (bool) {
-        if (paused()) revert TokenPaused();
+    function transferFromContract(address to, uint256 amount)
+        external
+        virtual
+        whenNotPaused
+        nonReentrant
+        onlyRole(ADMIN_ROLE)
+        onlyWhitelisted(to)
+        returns (bool)
+    {
+        if (paused()) revert("TokenPaused");
+        
         _transfer(address(this), to, amount);
+        
+        emit TransferFromContract(address(this), to, amount);
+        
         return true;
     }
 
