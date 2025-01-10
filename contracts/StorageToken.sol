@@ -43,6 +43,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     event SupportedChainChanged(uint256 indexed chainId, bool supported);
 
     error ExceedsMaximumSupply(uint256 requested, uint256 maxSupply);
+    error ExceedsAvailableSupply(uint256 requested, uint256 supply);
     error AmountMustBePositive();
     error UnsupportedChain(uint256 chain);
     error TokenPaused();
@@ -126,6 +127,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     // UnPausing contract actions after emergency to return to normal
     function emergencyUnpauseToken() external onlyRole(ADMIN_ROLE) {
+        require(block.timestamp >= lastEmergencyAction + EMERGENCY_COOLDOWN, "Cooldown active");
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
         _unpause();
         emit EmergencyAction("Contract unpaused", block.timestamp);
@@ -162,6 +164,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
      * Uses `_revokeRole` because additional custom logic (time lock) is implemented.
     */
     function removeAdmin(address admin) external whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) {
+        require(admin != msg.sender, "Cannot remove self");
         require(admin != address(0), "Invalid admin address");
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
         _revokeRole(ADMIN_ROLE, admin);
@@ -197,6 +200,8 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     // Transfers tokens from contract to a whitelisted address (after the lock time has passed)
     function transferFromContract(address to, uint256 amount) external virtual whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) onlyWhitelisted(to) returns (bool) {
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
+        if (amount <= 0) revert AmountMustBePositive();
+        if (amount > balanceOf(address(this))) revert ExceedsAvailableSupply(amount, balanceOf(address(this)));
         _transfer(address(this), to, amount);
         emit TransferFromContract(address(this), to, amount);
         return true;
@@ -204,6 +209,8 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     // Transfer from caller to an address if contract is not paused
     function transfer(address to, uint256 amount) public virtual override whenNotPaused nonReentrant returns (bool) {
+        if (amount <= 0) revert AmountMustBePositive();
+        require(to != address(0), "ERC20: transfer to the zero address not allowed");
         return super.transfer(to, amount);
     }
 
@@ -211,6 +218,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     function transferFrom(address sender, address recipient, uint256 amount) public virtual whenNotPaused nonReentrant override returns (bool) {
         require(sender != address(0), "ERC20: transfer from the zero address not allowed");
         require(recipient != address(0), "ERC20: transfer to the zero address not allowed");
+        if (amount <= 0) revert AmountMustBePositive();
         if (poolContracts[msg.sender] || proofContracts[msg.sender]) {
             require(balanceOf(sender) >= amount, "ERC20: transfer amount exceeds balance");
             _transfer(sender, recipient, amount);
@@ -223,7 +231,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     function bridgeMint(uint256 amount, uint256 sourceChain) external whenNotPaused nonReentrant onlyRole(BRIDGE_OPERATOR_ROLE) {
         if (!supportedChains[sourceChain]) revert UnsupportedChain(sourceChain);
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
-        if (amount == 0) revert AmountMustBePositive();
+        if (amount <= 0) revert AmountMustBePositive();
         if (totalSupply() + amount > TOTAL_SUPPLY) {
             revert ExceedsMaximumSupply(amount, TOTAL_SUPPLY);
         }
@@ -234,7 +242,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     function bridgeBurn(uint256 amount, uint256 targetChain) external whenNotPaused nonReentrant onlyRole(BRIDGE_OPERATOR_ROLE) {
         if (!supportedChains[targetChain]) revert UnsupportedChain(targetChain);
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
-        require(amount > 0, "Amount must be positive");
+        if (amount <= 0) revert AmountMustBePositive();
         require(balanceOf(address(this)) >= amount, "Insufficient balance to burn");
         _burn(address(this), amount);
         emit BridgeOperationDetails(msg.sender, "BURN", amount, targetChain, block.timestamp);
@@ -243,6 +251,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     // Add function to manage supported chains for cross-chain mint and burn
     function setSupportedChain(uint256 chainId, bool supported) external whenNotPaused nonReentrant onlyRole(BRIDGE_OPERATOR_ROLE) {
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
+        require(chainId > 0, "Invalid chain ID");
         supportedChains[chainId] = supported;
         emit SupportedChainChanged(chainId, supported);
     }

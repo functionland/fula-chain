@@ -5,7 +5,10 @@ import { StorageToken } from "../typechain-types/contracts";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
 import { Contract } from "ethers";
 
-const whitelistLockPeriod = 49 * 24 * 60 * 60;
+const WHITELIST_LOCK_DURATION = 24 * 60 * 60;
+const INITIAL_MINTED_TOKENS = ethers.parseEther("1000000"); // 1M tokens
+const MAX_SUPPLY = ethers.parseEther("2000000000");
+
 describe("StorageToken", function () {
     let token: StorageToken;
     let owner: SignerWithAddress;
@@ -13,342 +16,966 @@ describe("StorageToken", function () {
     let user1: SignerWithAddress;
     let user2: SignerWithAddress;
     let users: SignerWithAddress[];
+    
 
-    const TOTAL_SUPPLY = ethers.parseEther("1000000"); // 1M tokens
-    const CHAIN_ID = 1;
-
-    beforeEach(async function () {
-        [owner, bridgeOperator, user1, user2, ...users] = await ethers.getSigners();
-
+    beforeEach(async () => {
+        [owner, ...users] = await ethers.getSigners();
         const StorageToken = await ethers.getContractFactory("StorageToken");
-        token = await upgrades.deployProxy(StorageToken, [owner.address, TOTAL_SUPPLY], {
+        token = await upgrades.deployProxy(StorageToken, [owner.address, INITIAL_MINTED_TOKENS], {
             initializer: 'initialize'
-        });
-        console.log(`Owner address: ${owner.address}`);
+        }) as StorageToken;;
         await token.waitForDeployment();
     });
 
-    describe("Initialization", function () {
-        it("Should initialize with correct name and symbol", async function () {
-            expect(await token.name()).to.equal("Test Token");
-            expect(await token.symbol()).to.equal("TT");
-        });
-
-        it("Should set correct total supply", async function () {
-            expect(await token.totalSupply()).to.equal(TOTAL_SUPPLY);
-        });
-
-        it("Should assign total supply to contract", async function () {
-            expect(await token.balanceOf(await token.getAddress())).to.equal(TOTAL_SUPPLY);
-        });
+    it("should initialize correctly", async () => {
+        const deploymentTx = await token.deploymentTransaction();
+        const receipt = await deploymentTx.wait();
+        const logs = receipt?.logs;
+        if (!logs) {
+            throw new Error("TokensMinted logs not found");
+        }
+        const event = logs
+            .map((log) => {
+                try {
+                    return token.interface.parseLog(log);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .find((parsedLog) => parsedLog && parsedLog.name === "TokensMinted");
+        if (!event) {
+            throw new Error("TokensMinted event not found");
+        }
+    
+        expect(await token.name()).to.equal("Placeholder Token");
+        expect(await token.symbol()).to.equal("PLACEHOLDER");
+        expect(await token.hasRole(await token.ADMIN_ROLE(), owner.address)).to.be.true;
+        expect(await token.hasRole(await token.BRIDGE_OPERATOR_ROLE(), owner.address)).to.be.true;
+        expect(await token.totalSupply()).to.equal(INITIAL_MINTED_TOKENS);
+        expect(event?.args?.amount).to.equal(INITIAL_MINTED_TOKENS);
     });
-
-    describe("Bridge Operations", function () {
-        beforeEach(async function () {
-            const hasRole = await token.hasRole(await token.ADMIN_ROLE(), await ethers.getSigner(owner.address));
-            expect(hasRole).to.be.true;
-            const hasBridgeRole = await token.hasRole(await token.BRIDGE_OPERATOR_ROLE(), await ethers.getSigner(owner.address));
-            expect(hasBridgeRole).to.be.true;
-            await token.setSupportedChain(CHAIN_ID, true);
-            await token.addBridgeOperator(bridgeOperator.address);
-            // Wait for timelock
-            await time.increase(8 * 3600 + 1);
-        });
+    it("should add wallet to whitelist with lock duration", async () => {
+        const wallet = users[0].address;
+        const tx = await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
+        const receipt = await tx.wait();
     
-        it("Should allow bridge operator to mint tokens on target chain", async function () {
-            // First burn some tokens to make room for minting
-            const burnAmount = ethers.parseEther("1000");
-            await token.bridgeBurn(burnAmount, CHAIN_ID);
-            
-            // Now mint should succeed
-            const mintAmount = ethers.parseEther("500"); // Mint less than what was burned
-            await token.bridgeMint(mintAmount, CHAIN_ID);
-            expect(await token.balanceOf(await token.getAddress())).to.equal(await token.maxSupply() - burnAmount  + mintAmount);
-        });
-    });
-
-    describe("Supply Management", function () {
-        beforeEach(async function() {
-            await token.addBridgeOperator(bridgeOperator.address);
-            await time.increase(8 * 3600 + 1); // Wait for timelock
-            await token.setSupportedChain(CHAIN_ID, true); // Need to support chain
-        });
+        const event = receipt?.logs
+            .map((log) => {
+                try {
+                    return token.interface.parseLog(log);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .find((parsedLog) => parsedLog && parsedLog.name === "WalletWhitelistedWithLock");
+        if (!event) {
+            throw new Error("TokensMinted event not found");
+        }
     
-        it("Should allow minting up to remaining supply", async function () {
-            expect(await token.balanceOf(await token.getAddress())).to.equal(await token.maxSupply());
-            const oneToken = ethers.parseEther("1");
-            await expect(
-                token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeMint(oneToken, CHAIN_ID)
-            ).to.be.revertedWithCustomError(token, "ExceedsMaximumSupply");
-        });
-    
-        it("Should prevent minting beyond total supply", async function () {
-            const overSupply = ethers.parseEther("1000001");
-            await expect(
-                token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeMint(overSupply, CHAIN_ID)
-            ).to.be.revertedWithCustomError(token, "ExceedsMaximumSupply");
-        });
-    });    
-    
-
-    describe("Access Control", function () {
-        it("Should grant roles to owner", async function () {
-            expect(await token.hasRole(await token.ADMIN_ROLE(), owner.address)).to.be.true;
-            expect(await token.hasRole(await token.BRIDGE_OPERATOR_ROLE(), owner.address)).to.be.true;
-        });
-
-        it("Should allow owner to add bridge operator", async function () {
-            await token.addBridgeOperator(bridgeOperator.address);
-            await time.increase(8 * 3600 + 1);
-            expect(await token.hasRole(await token.BRIDGE_OPERATOR_ROLE(), bridgeOperator.address)).to.be.true;
-        });
-    });
-
-    describe("Emergency Functions", function () {
-        it("Should allow owner to pause and unpause", async function () {
-            await token.emergencyPauseToken();
-            expect(await token.paused()).to.be.true;
-
-            await token.emergencyUnpauseToken();
-            expect(await token.paused()).to.be.false;
-        });
-
-        it("Should respect emergency cooldown", async function () {
-            await token.emergencyPauseToken();
-            await expect(token.emergencyPauseToken()).to.be.revertedWith("Cooldown active");
-        });
-    });
-
-    describe("Contract Management", function () {
-        it("Should allow owner to add and remove pool contracts", async function () {
-            await token.addPoolContract(user1.address);
-            expect(await token.poolContracts(user1.address)).to.be.true;
-
-            await token.removePoolContract(user1.address);
-            expect(await token.poolContracts(user1.address)).to.be.false;
-        });
-
-        it("Should allow owner to add and remove proof contracts", async function () {
-            await token.addProofContract(user1.address);
-            expect(await token.proofContracts(user1.address)).to.be.true;
-
-            await token.removeProofContract(user1.address);
-            expect(await token.proofContracts(user1.address)).to.be.false;
-        });
-    });
-
-    describe("Security and Access Control", function () {
-        let attacker: SignerWithAddress;
-        
-        beforeEach(async function () {
-            [owner, bridgeOperator, user1, user2, attacker, ...users] = await ethers.getSigners();
-        });
-    
-        describe("Role-Based Access Control", function () {
-            it("Should prevent non-admin from adding bridge operators", async function () {
-                await expect(
-                    token.connect(await ethers.getSigner(attacker.address)).addBridgeOperator(user1.address)
-                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
-            });
-    
-            it("Should prevent non-admin from removing bridge operators", async function () {
-                await expect(
-                    token.connect(await ethers.getSigner(attacker.address)).removeBridgeOperator(bridgeOperator.address)
-                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
-            });
-    
-            it("Should prevent unauthorized bridge operations", async function () {
-                await expect(
-                    token.connect(await ethers.getSigner(attacker.address)).bridgeMint(ethers.parseEther("100"), CHAIN_ID)
-                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
-    
-                await expect(
-                    token.connect(await ethers.getSigner(attacker.address)).bridgeBurn(ethers.parseEther("100"), CHAIN_ID)
-                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
-            });
-        });
-    
-        describe("Owner Privileges", function () {
-            it("Should prevent non-owner from managing pool contracts", async function () {
-                await expect(
-                    token.connect(await ethers.getSigner(attacker.address)).addPoolContract(attacker.address)
-                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
-    
-                await expect(
-                    token.connect(await ethers.getSigner(attacker.address)).removePoolContract(user1.address)
-                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
-            });
-    
-            it("Should prevent non-owner from managing proof contracts", async function () {
-                await expect(
-                    token.connect(await ethers.getSigner(attacker.address)).addProofContract(attacker.address)
-                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
-    
-                await expect(
-                    token.connect(await ethers.getSigner(attacker.address)).removeProofContract(user1.address)
-                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
-            });
-    
-            it("Should prevent non-owner from managing emergency functions", async function () {
-                await expect(
-                    token.connect(await ethers.getSigner(attacker.address)).emergencyPauseToken()
-                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
-    
-                await expect(
-                    token.connect(await ethers.getSigner(attacker.address)).emergencyUnpauseToken()
-                ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
-            });
-        });
-    
-        describe("Bridge Operation Security", function () {
-            beforeEach(async function () {
-                await token.setSupportedChain(CHAIN_ID, true);
-                await token.addBridgeOperator(bridgeOperator.address);
-                await time.increase(8 * 3600 + 1);
-                await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user1.address);
-                await time.increase(whitelistLockPeriod + 3);
-                
-                // Burn some tokens first to avoid supply limit
-                const burnAmount = ethers.parseEther("1000");
-                await token.connect(await ethers.getSigner(owner.address)).transferFromContract(user1.address, burnAmount);
-                await token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeBurn(burnAmount, CHAIN_ID);
-            });
-        
-            it("Should prevent bridge operations on unsupported chains", async function () {
-                const UNSUPPORTED_CHAIN = 999;
-                const amount = ethers.parseEther("100");
-                await expect(
-                    token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeMint(amount, UNSUPPORTED_CHAIN)
-                ).to.be.revertedWithCustomError(token, "UnsupportedSourceChain")
-                .withArgs(UNSUPPORTED_CHAIN);
-            });
-        
-            it("Should prevent bridge operations when paused", async function () {
-                const amount = ethers.parseEther("100");
-                await token.emergencyPauseToken();
-                await expect(
-                    token.connect(await ethers.getSigner(bridgeOperator.address)).bridgeMint(amount, CHAIN_ID)
-                ).to.be.revertedWithCustomError(token, "EnforcedPause");
-            });
-        
-            it("Should enforce timelock on bridge operator role changes", async function () {
-                const amount = ethers.parseEther("100");
-                await token.addBridgeOperator(user2.address);
-                // Try immediately without waiting for timelock
-                await expect(
-                    token.connect(await ethers.getSigner(user2.address)).bridgeMint(amount, CHAIN_ID)
-                ).to.be.revertedWithCustomError(token, "TimeLockActive");
-            });
-        });
-    
-        describe("Transfer Security", function () {
-            beforeEach(async function() {
-                await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(user1.address);
-                await time.increase(whitelistLockPeriod + 3);
-            });
-            it("Should prevent transfers when paused", async function () {
-                const amount = ethers.parseEther("100");
-                await token.emergencyPauseToken();
-                await expect(
-                    token.connect(await ethers.getSigner(owner.address)).transferFromContract(user1.address, amount)
-                ).to.be.revertedWithCustomError(token, "EnforcedPause");
-            });
-        
-            it("Should prevent unauthorized pool contract operations", async function () {
-                const amount = ethers.parseEther("100");
-                await token.transferFromContract(user1.address, amount);
-                await expect(
-                    token.connect(await ethers.getSigner(attacker.address)).transferFrom(user1.address, attacker.address, amount)
-                ).to.be.revertedWithCustomError(token, "ERC20InsufficientAllowance");
-            });
-        });
-    });
-    
-});
-
-describe("10 Transactors Performing Transactions", function () {
-    let token: StorageToken;
-    let owner: SignerWithAddress;
-    let users: SignerWithAddress[];
-    const TOTAL_SUPPLY = ethers.parseEther("1000000");
-    const transferAmount = ethers.parseEther("100");
-    let initialBalance: bigint;
-  
-    beforeEach(async function () {
-      [owner, ...users] = await ethers.getSigners();
-      const StorageToken = await ethers.getContractFactory("StorageToken");
-      token = await upgrades.deployProxy(StorageToken, [owner.address, TOTAL_SUPPLY]);
-      await token.waitForDeployment();
-      initialBalance = await token.balanceOf(await token.getAddress());
-
-      await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(owner.address);
-      await time.increase(whitelistLockPeriod + 3);
-      await token.transferFromContract(owner.address, transferAmount * BigInt(10));
-    });
-  
-    it("Should handle simultaneous transactions correctly", async function () {
-  
-      // Distribute tokens to users
-      for (let i = 0; i < 10; i++) {
-        await token.connect(await ethers.getSigner(owner.address)).approve(owner.address, transferAmount);
-
-        // User[i] calls transferFrom
-        await token.connect(await ethers.getSigner(owner.address)).transferFrom(owner.address, users[i].address, transferAmount);
-
-        expect(await token.balanceOf(users[i].address)).to.equal(transferAmount);
-      }
-  
-      // Verify owner's balance decreased correctly
-      const expectedContractBalance = initialBalance - (transferAmount * BigInt(10));
-      const finalBalance = await token.balanceOf(await token.getAddress());
-      expect(finalBalance).to.be.eq(expectedContractBalance);
-  
-      // Users transfer tokens to each other
-      for (let i = 0; i < 9; i++) {
-        await token.connect(await ethers.getSigner(users[i].address)).transfer(users[i + 1].address, transferAmount / BigInt(2));
-        expect(await token.balanceOf(users[i + 1].address)).to.equal(
-          transferAmount + (transferAmount / BigInt(2))
+        expect(event?.args?.lockUntil).to.be.closeTo(
+            (await ethers.provider.getBlock("latest")).timestamp + WHITELIST_LOCK_DURATION,
+            5 // Allow slight timestamp difference
         );
-      }
+        expect(event?.args?.wallet).to.equal(wallet);
     });
-  });
+    
+    it("should allow admin to pause the contract in an emergency", async () => {
+        const tx = await token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken();
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs
+            .map((log) => {
+                try {
+                    return token.interface.parseLog(log);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .find((parsedLog) => parsedLog && parsedLog.name === "EmergencyAction");
+    
+        if (!event) throw new Error("EmergencyAction event not found");
+    
+        // Assertions
+        expect(await token.paused()).to.be.true;
+        expect(event.args.action).to.equal("Contract paused");
+    });
 
-  describe("Minting and Burning by Hackers", function () {
-    let token: StorageToken;
-    let owner: SignerWithAddress;
-    let bridgeOperator: SignerWithAddress;
-    let hacker: SignerWithAddress;
-    const CHAIN_ID = 1;
-    const TOTAL_SUPPLY = ethers.parseEther("1000000");
-  
-    beforeEach(async function () {
-      [owner, bridgeOperator, hacker] = await ethers.getSigners();
-  
-      // Deploy the main token contract
-      const StorageToken = await ethers.getContractFactory("StorageToken");
-      token = await upgrades.deployProxy(StorageToken, [owner.address, TOTAL_SUPPLY]);
-      await token.waitForDeployment();
-  
-      // Assign bridge operator role
-      await token.addBridgeOperator(bridgeOperator.address);
-      await time.increase(8 * 3600 + 1); // Wait for timelock
+    it("should allow admin to unpause the contract after an emergency", async () => {
+        // Pause the contract first
+        await token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken();
+        await time.increase(5 * 60); 
+    
+        // Unpause the contract
+        const tx = await token.connect(await ethers.getSigner(owner.address)).emergencyUnpauseToken();
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs
+            .map((log) => {
+                try {
+                    return token.interface.parseLog(log);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .find((parsedLog) => parsedLog && parsedLog.name === "EmergencyAction");
+    
+        if (!event) throw new Error("EmergencyAction event not found");
+    
+        // Assertions
+        expect(await token.paused()).to.be.false;
+        expect(event.args.action).to.equal("Contract unpaused");
     });
-  
-    it("Should prevent unauthorized minting", async function () {
-      const mintAmount = ethers.parseEther("100");
-  
-      // Hacker attempts to mint tokens
-      await expect(
-        token.connect(await ethers.getSigner(hacker.address)).bridgeMint(mintAmount, CHAIN_ID)
-      ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
+
+    it("should remove a wallet from whitelist", async () => {
+        const wallet = users[0].address;
+    
+        // Add wallet to whitelist
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
+    
+        // Remove wallet from whitelist
+        const tx = await token.connect(await ethers.getSigner(owner.address)).removeFromWhitelist(wallet);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs
+            .map((log) => {
+                try {
+                    return token.interface.parseLog(log);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .find((parsedLog) => parsedLog && parsedLog.name === "WalletRemovedFromWhitelist");
+    
+        if (!event) throw new Error("WalletRemovedFromWhitelist event not found");
+    
+        // Assertions
+        expect(event.args.wallet).to.equal(wallet);
     });
-  
-    it("Should prevent unauthorized burning", async function () {
-      const burnAmount = ethers.parseEther("100");
-  
-      // Hacker attempts to burn tokens
-      await expect(
-        token.connect(await ethers.getSigner(hacker.address)).bridgeBurn(burnAmount, CHAIN_ID)
-      ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
+    
+    it("should allow admin to add a bridge operator with time lock", async () => {
+        const operator = users[0].address;
+    
+        // Add bridge operator
+        const tx = await token.connect(await ethers.getSigner(owner.address)).addBridgeOperator(operator);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs
+            .map((log) => {
+                try {
+                    return token.interface.parseLog(log);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .find((parsedLog) => parsedLog && parsedLog.name === "RoleUpdated");
+    
+        if (!event) throw new Error("RoleUpdated event not found");
+    
+        // Assertions
+        expect(await token.hasRole(await token.BRIDGE_OPERATOR_ROLE(), operator)).to.be.true;
+        expect(event.args.target).to.equal(operator);
+        expect(event.args.role).to.equal(await token.BRIDGE_OPERATOR_ROLE());
+        expect(event.args.status).to.be.true;
     });
-  });
+    
+    it("should allow admin to remove a bridge operator after time lock", async () => {
+        const operator = users[0].address;
+    
+        // Add bridge operator first
+        await token.connect(await ethers.getSigner(owner.address)).addBridgeOperator(operator);
+    
+        // Remove bridge operator
+        const tx = await token.connect(await ethers.getSigner(owner.address)).removeBridgeOperator(operator);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs
+            .map((log) => {
+                try {
+                    return token.interface.parseLog(log);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .find((parsedLog) => parsedLog && parsedLog.name === "RoleUpdated");
+    
+        if (!event) throw new Error("RoleUpdated event not found");
+    
+        // Assertions
+        expect(await token.hasRole(await token.BRIDGE_OPERATOR_ROLE(), operator)).to.be.false;
+        expect(event.args.target).to.equal(operator);
+        expect(event.args.role).to.equal(await token.BRIDGE_OPERATOR_ROLE());
+        expect(event.args.status).to.be.false;
+    });
+    
+    it("should mint tokens for cross-chain transfers", async () => {
+        const sourceChain = 1; // Example source chain ID
+        const mintAmount = ethers.parseEther("1000");
+    
+        // Set the source chain as supported
+        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(sourceChain, true);
+    
+        // Mint tokens
+        const tx = await token.connect(await ethers.getSigner(owner.address)).bridgeMint(mintAmount, sourceChain);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs
+            .map((log) => {
+                try {
+                    return token.interface.parseLog(log);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .find((parsedLog) => parsedLog && parsedLog.name === "BridgeOperationDetails");
+    
+        if (!event) throw new Error("BridgeOperationDetails event not found");
+    
+        // Assertions
+        expect(await token.totalSupply()).to.equal(INITIAL_MINTED_TOKENS + BigInt(mintAmount));
+        expect(await token.balanceOf(await token.getAddress())).to.equal(INITIAL_MINTED_TOKENS + BigInt(mintAmount));
+        expect(event.args.operator).to.equal(owner.address);
+        expect(event.args.operation).to.equal("MINT");
+        expect(event.args.amount).to.equal(mintAmount);
+        expect(event.args.chainId).to.equal(sourceChain);
+    });
+    
+    it("should burn tokens for cross-chain transfers", async () => {
+        const targetChain = 2; // Example target chain ID
+        const burnAmount = ethers.parseEther("500");
+    
+        // Set the target chain as supported
+        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(targetChain, true);
+    
+        // Burn tokens
+        const tx = await token.connect(await ethers.getSigner(owner.address)).bridgeBurn(burnAmount, targetChain);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs
+            .map((log) => {
+                try {
+                    return token.interface.parseLog(log);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .find((parsedLog) => parsedLog && parsedLog.name === "BridgeOperationDetails");
+    
+        if (!event) throw new Error("BridgeOperationDetails event not found");
+    
+        // Assertions
+        expect(await token.totalSupply()).to.equal(INITIAL_MINTED_TOKENS - BigInt(burnAmount));
+        expect(await token.balanceOf(await token.getAddress())).to.equal(INITIAL_MINTED_TOKENS - BigInt(burnAmount));
+        expect(event.args.operator).to.equal(owner.address);
+        expect(event.args.operation).to.equal("BURN");
+        expect(event.args.amount).to.equal(burnAmount);
+        expect(event.args.chainId).to.equal(targetChain);
+    });
+
+    it("should add a supported chain", async () => {
+        const chainId = 42; // Example chain ID
+    
+        // Add supported chain
+        const tx = await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(chainId, true);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "SupportedChainChanged");
+    
+        if (!event) throw new Error("SupportedChainChanged event not found");
+    
+        // Assertions
+        expect(await token.supportedChains(chainId)).to.be.true;
+        expect(event.args.chainId).to.equal(chainId);
+        expect(event.args.supported).to.be.true;
+    });
+
+    it("should remove a supported chain", async () => {
+        const chainId = 42; // Example chain ID
+    
+        // Add supported chain first
+        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(chainId, true);
+    
+        // Remove supported chain
+        const tx = await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(chainId, false);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "SupportedChainChanged");
+    
+        if (!event) throw new Error("SupportedChainChanged event not found");
+    
+        // Assertions
+        expect(await token.supportedChains(chainId)).to.be.false;
+        expect(event.args.chainId).to.equal(chainId);
+        expect(event.args.supported).to.be.false;
+    });
+    
+    it("should transfer tokens from contract to whitelisted address", async () => {
+        const wallet = users[0].address;
+        const transferAmount = ethers.parseEther("500");
+    
+        // Add wallet to whitelist
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
+    
+        // Advance time by whitelist lock duration
+        await time.increase(WHITELIST_LOCK_DURATION);
+    
+        // Transfer tokens from contract
+        const tx = await token.connect(await ethers.getSigner(owner.address)).transferFromContract(wallet, transferAmount);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "TransferFromContract");
+    
+        if (!event) throw new Error("TransferFromContract event not found");
+    
+        // Assertions
+        expect(await token.balanceOf(wallet)).to.equal(BigInt(transferAmount));
+        expect(await token.balanceOf(await token.getAddress())).to.equal(
+            BigInt(INITIAL_MINTED_TOKENS) - BigInt(transferAmount)
+        );
+        expect(event.args.from).to.equal(await token.getAddress());
+        expect(event.args.to).to.equal(wallet);
+        expect(event.args.amount).to.equal(transferAmount);
+    });
+    
+    it("should add a pool contract", async () => {
+        const poolContract = users[0].address;
+    
+        // Add pool contract
+        const tx = await token.connect(await ethers.getSigner(owner.address)).addPoolContract(poolContract);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "VerifiedContractAddressUpdated");
+    
+        if (!event) throw new Error("VerifiedContractAddressUpdated event not found");
+    
+        // Assertions
+        expect(await token.poolContracts(poolContract)).to.be.true;
+        expect(event.args.contractAddr).to.equal(poolContract);
+        expect(event.args.contractType).to.equal(0); // ContractType.Pool
+        expect(event.args.status).to.be.true;
+    });
+
+    it("should remove a pool contract", async () => {
+        const poolContract = users[0].address;
+    
+        // Add pool contract first
+        await token.connect(await ethers.getSigner(owner.address)).addPoolContract(poolContract);
+    
+        // Remove pool contract
+        const tx = await token.connect(await ethers.getSigner(owner.address)).removePoolContract(poolContract);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "VerifiedContractAddressUpdated");
+    
+        if (!event) throw new Error("VerifiedContractAddressUpdated event not found");
+    
+        // Assertions
+        expect(await token.poolContracts(poolContract)).to.be.false;
+        expect(event.args.contractAddr).to.equal(poolContract);
+        expect(event.args.contractType).to.equal(0); // ContractType.Pool
+        expect(event.args.status).to.be.false;
+    });
+    
+    it("should add a proof contract", async () => {
+        const proofContract = users[0].address;
+    
+        // Add proof contract
+        const tx = await token.connect(await ethers.getSigner(owner.address)).addProofContract(proofContract);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "VerifiedContractAddressUpdated");
+    
+        if (!event) throw new Error("VerifiedContractAddressUpdated event not found");
+    
+        // Assertions
+        expect(await token.proofContracts(proofContract)).to.be.true;
+        expect(event.args.contractAddr).to.equal(proofContract);
+        expect(event.args.contractType).to.equal(1); // ContractType.Proof
+        expect(event.args.status).to.be.true;
+    });
+
+    it("should revert when transferring tokens to a non-whitelisted address", async () => {
+        const wallet = users[0].address;
+        const transferAmount = INITIAL_MINTED_TOKENS / BigInt(2);
+    
+        // Attempt to transfer tokens from contract to non-whitelisted address
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).transferFromContract(wallet, transferAmount)
+        ).to.be.revertedWith("Recipient not whitelisted");
+    });
+    it("should revert when minting tokens exceeding maximum supply", async () => {
+        const sourceChain = 1; // Example source chain ID
+        const excessiveAmount = BigInt(2) * MAX_SUPPLY; // Exceeds total supply
+    
+        // Set the source chain as supported
+        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(sourceChain, true);
+    
+        // Attempt to mint excessive tokens
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).bridgeMint(excessiveAmount, sourceChain)
+        ).to.be.revertedWithCustomError(token, "ExceedsMaximumSupply");
+    });
+
+    it("should revert when burning tokens without sufficient balance", async () => {
+        const targetChain = 2; // Example target chain ID
+        const burnAmount = BigInt(2) * INITIAL_MINTED_TOKENS; // Excessive amount
+    
+        // Set the target chain as supported
+        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(targetChain, true);
+    
+        // Attempt to burn excessive tokens
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).bridgeBurn(burnAmount, targetChain)
+        ).to.be.revertedWith("Insufficient balance to burn");
+    });
+    
+    it("should only allow admins to add another admin", async () => {
+        const newAdmin = users[0].address;
+    
+        // Attempt to add admin from a non-admin account 
+        await expect(
+            token.connect(await ethers.getSigner(users[1].address)).addAdmin(newAdmin)
+        ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
+    
+        // Add admin from an existing admin account
+        const tx = await token.connect(await ethers.getSigner(owner.address)).addAdmin(newAdmin);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "RoleUpdated");
+    
+        if (!event) throw new Error("RoleUpdated event not found");
+    
+        // Assertions
+        expect(await token.hasRole(await token.ADMIN_ROLE(), newAdmin)).to.be.true;
+        expect(event.args.target).to.equal(newAdmin);
+        expect(event.args.role).to.equal(await token.ADMIN_ROLE());
+        expect(event.args.status).to.be.true;
+    });
+
+    it("should enforce emergency cooldown between pause actions", async () => {
+        // Pause the contract
+        const tx = await token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken();
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "EmergencyAction");
+    
+        if (!event) throw new Error("EmergencyAction event not found");
+    
+        // Assertions
+        expect(event.args.action).to.equal("Contract paused");
+
+        // Attempt to pause again before cooldown expires
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken()
+        ).to.be.revertedWith("Cooldown active");
+    
+        // Advance time by EMERGENCY_COOLDOWN
+        await time.increase(5 * 60); // 5 minutes in seconds
+    
+        // Pause the contract again after cooldown
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken()
+        ).to.be.revertedWithCustomError(token, "EnforcedPause");
+    });
+
+    it("should enforce role change time lock for new bridge operator", async () => {
+        const bridgeOperator = users[0].address;
+        const mintAmount = ethers.parseEther("500");
+        const sourceChain = 1;
+    
+        // Add bridge operator
+        await token.connect(await ethers.getSigner(owner.address)).addBridgeOperator(bridgeOperator);
+    
+        // Set source chain as supported
+        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(sourceChain, true);
+    
+        // Attempt to mint tokens before time lock expires
+        await expect(
+            token.connect(await ethers.getSigner(bridgeOperator)).bridgeMint(mintAmount, sourceChain)
+        ).to.be.revertedWithCustomError(token, "TimeLockActive");
+    
+        // Advance time by ROLE_CHANGE_DELAY
+        await time.increase(8 * 60 * 60); // 8 hours in seconds
+    
+        // Mint tokens successfully after time lock expires
+        const tx = await token.connect(await ethers.getSigner(bridgeOperator)).bridgeMint(mintAmount, sourceChain);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "BridgeOperationDetails");
+    
+        if (!event) throw new Error("BridgeOperationDetails event not found");
+    
+        // Assertions
+        expect(event.args.operator).to.equal(bridgeOperator);
+        expect(event.args.operation).to.equal("MINT");
+        expect(event.args.amount).to.equal(BigInt(mintAmount));
+    });
+    
+    it("should revert when attempting to whitelist the zero address", async () => {
+        const zeroAddress = ethers.ZeroAddress;
+    
+        // Attempt to whitelist the zero address
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).addToWhitelist(zeroAddress)
+        ).to.be.revertedWith("Invalid wallet address");
+    });
+
+    it("should allow removing a whitelisted address before lock expires", async () => {
+        const wallet = users[0].address;
+    
+        // Add wallet to whitelist
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
+    
+        // Remove wallet from whitelist before lock expires
+        const tx = await token.connect(await ethers.getSigner(owner.address)).removeFromWhitelist(wallet);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "WalletRemovedFromWhitelist");
+    
+        if (!event) throw new Error("WalletRemovedFromWhitelist event not found");
+    
+        // Assertions
+        expect(event.args.wallet).to.equal(wallet);
+    });
+
+    it("should revert when unpausing before cooldown expires", async () => {
+        // Pause the contract
+        await token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken();
+    
+        // Attempt to unpause before cooldown expires
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).emergencyUnpauseToken()
+        ).to.be.revertedWith("Cooldown active");
+    });
+
+    it("should allow unpausing after cooldown expires", async () => {
+        // Pause the contract
+        await token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken();
+    
+        // Advance time by EMERGENCY_COOLDOWN
+        await time.increase(5 * 60); // 5 minutes in seconds
+    
+        // Unpause the contract
+        const tx = await token.connect(await ethers.getSigner(owner.address)).emergencyUnpauseToken();
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "EmergencyAction");
+    
+        if (!event) throw new Error("EmergencyAction event not found");
+    
+        // Assertions
+        expect(await token.paused()).to.be.false;
+        expect(event.args.action).to.equal("Contract unpaused");
+    });
+    
+    it("should revert when minting tokens for an unsupported source chain", async () => {
+        const unsupportedChain = 99; // Example unsupported chain ID
+        const mintAmount = ethers.parseEther("1000");
+    
+        // Attempt to mint tokens for an unsupported chain
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).bridgeMint(mintAmount, unsupportedChain)
+        ).to.be.revertedWithCustomError(token, "UnsupportedChain");
+    });
+    it("should revert when burning tokens for an unsupported target chain", async () => {
+        const unsupportedChain = 99; // Example unsupported chain ID
+        const burnAmount = ethers.parseEther("500");
+    
+        // Attempt to burn tokens for an unsupported chain
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).bridgeBurn(burnAmount, unsupportedChain)
+        ).to.be.revertedWithCustomError(token, "UnsupportedChain");
+    });
+    
+    it("should revert when minting zero tokens", async () => {
+        const sourceChain = 1; // Example source chain ID
+    
+        // Set source chain as supported
+        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(sourceChain, true);
+    
+        // Attempt to mint zero tokens
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).bridgeMint(0, sourceChain)
+        ).to.be.revertedWithCustomError(token, "AmountMustBePositive");
+    });
+    it("should revert when minting tokens without BRIDGE_OPERATOR_ROLE", async () => {
+        const sourceChain = 1; // Example source chain ID
+        const mintAmount = ethers.parseEther("1000");
+    
+        // Set source chain as supported
+        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(sourceChain, true);
+    
+        // Attempt to mint tokens without BRIDGE_OPERATOR_ROLE
+        await expect(
+            token.connect(await ethers.getSigner(users[0].address)).bridgeMint(mintAmount, sourceChain)
+        ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
+    });
+                
+    it("should revert when setting an unsupported chain with an invalid chain ID", async () => {
+        const invalidChainId = 0; // Invalid chain ID
+    
+        // Attempt to set an invalid chain ID
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).setSupportedChain(invalidChainId, true)
+        ).to.be.revertedWith("Invalid chain ID");
+    });
+    it("should allow adding and removing a supported chain", async () => {
+        const validChainId = 42; // Example valid chain ID
+    
+        // Add a supported chain
+        const addTx = await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(validChainId, true);
+        const addReceipt = await addTx.wait();
+    
+        // Parse emitted event for adding the chain
+        const addEvent = addReceipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "SupportedChainChanged");
+    
+        if (!addEvent) throw new Error("SupportedChainChanged event not found for adding");
+    
+        // Assertions for adding the chain
+        expect(await token.supportedChains(validChainId)).to.be.true;
+        expect(addEvent.args.chainId).to.equal(validChainId);
+        expect(addEvent.args.supported).to.be.true;
+    
+        // Remove the supported chain
+        const removeTx = await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(validChainId, false);
+        const removeReceipt = await removeTx.wait();
+    
+        // Parse emitted event for removing the chain
+        const removeEvent = removeReceipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "SupportedChainChanged");
+    
+        if (!removeEvent) throw new Error("SupportedChainChanged event not found for removing");
+    
+        // Assertions for removing the chain
+        expect(await token.supportedChains(validChainId)).to.be.false;
+        expect(removeEvent.args.chainId).to.equal(validChainId);
+        expect(removeEvent.args.supported).to.be.false;
+    });
+    it("should revert when transferring tokens to a non-whitelisted address", async () => {
+        const nonWhitelistedAddress = users[0].address;
+        const transferAmount = ethers.parseEther("100");
+    
+        // Attempt to transfer tokens to a non-whitelisted address
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).transferFromContract(nonWhitelistedAddress, transferAmount)
+        ).to.be.revertedWith("Recipient not whitelisted");
+    });
+    it("should revert when transferring tokens before whitelist lock expires", async () => {
+        const wallet = users[0].address;
+        const transferAmount = ethers.parseEther("100");
+    
+        // Add wallet to whitelist
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
+    
+        // Attempt to transfer tokens before lock duration expires
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).transferFromContract(wallet, transferAmount)
+        ).to.be.revertedWith("Recipient is still locked");
+    });
+    it("should revert when minting a zero amount", async () => {
+        const sourceChain = 1; // Example source chain ID
+        const negativeAmount = BigInt(0); // Invalid negative amount
+    
+        // Set source chain as supported
+        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(sourceChain, true);
+    
+        // Attempt to mint a negative amount
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).bridgeMint(negativeAmount, sourceChain)
+        ).to.be.revertedWithCustomError(token, "AmountMustBePositive");
+    });
+
+    it("should revert when transferring more tokens than available in contract balance", async () => {
+        const wallet = users[0].address;
+        const transferAmount = BigInt(2) * INITIAL_MINTED_TOKENS; // Excessive amount
+    
+        // Add wallet to whitelist
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
+        await time.increase(24 * 60 * 60);
+    
+        // Attempt to transfer tokens exceeding contract balance
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).transferFromContract(wallet, transferAmount)
+        ).to.be.revertedWithCustomError(token, "ExceedsAvailableSupply");
+    });
+    it("should revert when transferring zero tokens from contract", async () => {
+        const wallet = users[0].address;
+    
+        // Add wallet to whitelist
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
+        await time.increase(24 * 60 * 60);
+    
+        // Attempt to transfer zero tokens
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).transferFromContract(wallet, 0)
+        ).to.be.revertedWithCustomError(token, "AmountMustBePositive");
+    });
+    it("should revert when adding an admin with an invalid address", async () => {
+        const invalidAdmin = ethers.ZeroAddress;
+    
+        // Attempt to add an admin with an invalid address
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).addAdmin(invalidAdmin)
+        ).to.be.revertedWith("Invalid address");
+    });
+    it("should revert when removing an admin before time lock expires", async () => {
+        const newAdmin = users[0].address;
+        const newAdmin1 = users[1].address;
+    
+        // Add a new admin
+        await token.connect(await ethers.getSigner(owner.address)).addAdmin(newAdmin);
+        await token.connect(await ethers.getSigner(owner.address)).addAdmin(newAdmin1);
+    
+        // Attempt to remove the admin before time lock expires
+        await expect(
+            token.connect(await ethers.getSigner(newAdmin)).removeAdmin(newAdmin1)
+        ).to.be.revertedWithCustomError(token, "TimeLockActive");
+    });
+    it("should revert when removing an admin if removing self", async () => {    
+        // Attempt to remove self
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).removeAdmin(owner.address)
+        ).to.be.revertedWith("Cannot remove self");
+    });
+    it("should revert when burning tokens without BRIDGE_OPERATOR_ROLE", async () => {
+        const targetChain = 2; // Example target chain ID
+        const burnAmount = ethers.parseEther("500");
+    
+        // Set target chain as supported
+        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(targetChain, true);
+    
+        // Attempt to burn tokens without BRIDGE_OPERATOR_ROLE
+        await expect(
+            token.connect(await ethers.getSigner(users[0].address)).bridgeBurn(burnAmount, targetChain)
+        ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
+    });
+               
+    it("should revert when transferring tokens to the zero address", async () => {
+        const transferAmount = ethers.parseEther("100");
+    
+        // Attempt to transfer tokens to the zero address
+        await expect(
+            token.connect(await ethers.getSigner(owner.address)).transfer(ethers.ZeroAddress, transferAmount)
+        ).to.be.revertedWith("ERC20: transfer to the zero address not allowed");
+    });
+
+    it("should allow setting supported chain by authorized bridge operator", async () => {
+        const chainId = 42; // Example chain ID
+        const bridgeOperator = users[0].address;
+    
+        // Grant BRIDGE_OPERATOR_ROLE to user
+        await token.connect(await ethers.getSigner(owner.address)).addBridgeOperator(bridgeOperator);
+    
+        // Advance time by ROLE_CHANGE_DELAY
+        await time.increase(8 * 60 * 60); // 8 hours in seconds
+    
+        // Set supported chain by authorized bridge operator
+        const tx = await token.connect(await ethers.getSigner(users[0].address)).setSupportedChain(chainId, true);
+        const receipt = await tx.wait();
+    
+        // Parse emitted event
+        const event = receipt?.logs?.map((log) => {
+            try {
+                return token.interface.parseLog(log);
+            } catch (e) {
+                return null;
+            }
+        }).find((parsedLog) => parsedLog && parsedLog.name === "SupportedChainChanged");
+    
+        if (!event) throw new Error("SupportedChainChanged event not found");
+    
+        // Assertions
+        expect(await token.supportedChains(chainId)).to.be.true;
+        expect(event.args.chainId).to.equal(chainId);
+        expect(event.args.supported).to.be.true;
+    });
+    it("should allow a pool contract to transfer tokens on behalf of any address", async () => {
+        const poolContract = users[0].address;
+        const sender = users[1];
+        const recipient = users[2];
+        const transferAmount = ethers.parseEther("100");
+    
+        // Add pool contract
+        await token.connect(await ethers.getSigner(owner.address)).addPoolContract(poolContract);
+    
+        // Whitelist sender and recipient
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(sender.address);
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(recipient.address);
+    
+        // Advance time to pass whitelist lock duration
+        await time.increase(24 * 60 * 60); // 1 day in seconds
+    
+        // Transfer tokens from contract to sender
+        await token.connect(await ethers.getSigner(owner.address)).transferFromContract(sender.address, transferAmount);
+    
+        // Verify sender has enough balance
+        expect(await token.balanceOf(sender.address)).to.equal(BigInt(transferAmount));
+    
+        // Transfer tokens from sender to recipient using pool contract
+        const tx = await token.connect(await ethers.getSigner(poolContract)).transferFrom(
+            sender.address,
+            recipient.address,
+            transferAmount
+        );
+        await tx.wait();
+    
+        // Assertions
+        expect(await token.balanceOf(recipient.address)).to.equal(BigInt(transferAmount));
+        expect(await token.balanceOf(sender.address)).to.equal(BigInt(0));
+    });
+    it("should revert transferFrom when called by non-pool/proof contracts", async () => {
+        const sender = users[0];
+        const recipient = users[1];
+        const transferAmount = ethers.parseEther("100");
+    
+        // Whitelist sender and recipient
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(sender.address);
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(recipient.address);
+    
+        // Advance time to pass whitelist lock duration
+        await time.increase(24 * 60 * 60); // 1 day in seconds
+    
+        // Transfer tokens from contract to sender
+        await token.connect(await ethers.getSigner(owner.address)).transferFromContract(sender.address, transferAmount);
+    
+        // Attempt to transfer from sender to recipient by a non-pool/proof contract
+        await expect(
+            token.connect(await ethers.getSigner(users[2].address)).transferFrom(
+                sender.address,
+                recipient.address,
+                transferAmount
+            )
+        ).to.be.revertedWithCustomError(token, "ERC20InsufficientAllowance");
+    });
+
+    it("should allow a proof contract to transfer tokens on behalf of any address", async () => {
+        const proofContract = users[0].address;
+        const sender = users[1];
+        const recipient = users[2];
+        const transferAmount = ethers.parseEther("100");
+    
+        // Add proof contract
+        await token.connect(await ethers.getSigner(owner.address)).addProofContract(proofContract);
+    
+        // Whitelist sender and recipient
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(sender.address);
+        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(recipient.address);
+    
+        // Advance time to pass whitelist lock duration
+        await time.increase(24 * 60 * 60); // 1 day in seconds
+    
+        // Transfer tokens from contract to sender
+        await token.connect(await ethers.getSigner(owner.address)).transferFromContract(sender.address, transferAmount);
+    
+        // Verify sender has enough balance
+        expect(await token.balanceOf(sender.address)).to.equal(BigInt(transferAmount));
+    
+        // Transfer tokens from sender to recipient using proof contract
+        const tx = await token.connect(await ethers.getSigner(proofContract)).transferFrom(
+            sender.address,
+            recipient.address,
+            transferAmount
+        );
+        await tx.wait();
+    
+        // Assertions
+        expect(await token.balanceOf(recipient.address)).to.equal(BigInt(transferAmount));
+        expect(await token.balanceOf(sender.address)).to.equal(BigInt(0));
+    });
+    
+             
+});
