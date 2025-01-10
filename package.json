@@ -11,6 +11,7 @@
     "deploy:deployMultichain": "yarn hardhat run scripts/deployToken.ts --network sepolia --show-stack-traces",
     "deploy:deployMultichainBytecode": "yarn hardhat run scripts/deployMultichainBytecode.ts --network sepolia",
     "deploy:localhost": "yarn hardhat run scripts/localhost.ts",
+    "test:token": "yarn hardhat test test/Storagetoken.test.ts",
     "test:staking": "yarn hardhat test test/stakingEngine.test.ts",
     "test:distribution": "yarn hardhat test test/TokenDistributionEngine.test.ts",
     "test": "yarn hardhat test"
