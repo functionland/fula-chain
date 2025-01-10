@@ -40,7 +40,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     event WalletRemovedFromWhitelist(address indexed wallet);
     event TransferFromContract(address indexed from, address indexed to, uint256 amount);
     event TokensMinted(address indexed to, uint256 amount);
-    event SupportedChainChanged(uint256 indexed chainId, bool status);
+    event SupportedChainChanged(uint256 indexed chainId, bool supported);
 
     error ExceedsMaximumSupply(uint256 requested, uint256 maxSupply);
     error AmountMustBePositive();
