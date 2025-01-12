@@ -9,9 +9,9 @@ import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUp
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 
-contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, PausableUpgradeable, AccessControlUpgradeable, ReentrancyGuardUpgradeable {
+contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, PausableUpgradeable, AccessControlEnumerableUpgradeable, ReentrancyGuardUpgradeable {
     enum ContractType { Pool, Proof }
     uint256 private constant TOKEN_UNIT = 10**18; //Smallest unit for the token
     uint256 private constant TOTAL_SUPPLY = 2_000_000_000 * TOKEN_UNIT; // Maximum number of fixed cap token to be issued
@@ -19,13 +19,14 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     uint256 private constant EMERGENCY_COOLDOWN = 5 minutes; // how much should we wait before allowing the next emergency action
     bytes32 public constant BRIDGE_OPERATOR_ROLE = keccak256("BRIDGE_OPERATOR_ROLE"); // role
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE"); //role
+    bytes32 public constant CONTRACT_OPERATOR_ROLE = keccak256("CONTRACT_OPERATOR_ROLE");
     mapping(address => bool) public poolContracts; // Storage for contract addresses that are verified pool contracts to allow them transfer tokens from/to any address
     mapping(address => bool) public proofContracts; // Storage for contract addresses that are verified proof contracts to allow them transfer tokens from/to any address
     mapping(uint256 => bool) public supportedChains; // Storage for chains that are supported by the contract
 
     // Adding timelock for critical actions
     mapping(address => uint256) private roleChangeTimeLock; // Time holder of a role assignment
-    uint256 private constant ROLE_CHANGE_DELAY = 1 day; // How much we should wait after a role is assigned to allow actions by that role
+    uint256 private constant ROLE_CHANGE_DELAY = 1 days; // How much we should wait after a role is assigned to allow actions by that role
     mapping(address => uint256) private whitelistLockTime; // Lock time for whitelisted addresses to hold the time when an address is whitelisted
     uint256 private constant WHITELIST_LOCK_DURATION = 1 days; // Lock duration after adding to whitelist which should be passed before they can receive the transfer
 
@@ -70,7 +71,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         __Ownable_init(initialOwner);
         __ReentrancyGuard_init();
         __Pausable_init();
-        __AccessControl_init();
+        __AccessControlEnumerable_init();
         _grantRole(ADMIN_ROLE, initialOwner); // Assign admin role to deployer
         _grantRole(BRIDGE_OPERATOR_ROLE, initialOwner); // Assign bridge operator role to deployer
 
@@ -133,68 +134,55 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         emit EmergencyAction("Contract unpaused", block.timestamp);
     }
 
-    // Bridge operator management: Assign and remove the role to an address
-    function addBridgeOperator(address operator) external whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) validateAddress(operator) {
-        require(operator != address(0), "Invalid operator address");
-        roleChangeTimeLock[operator] = block.timestamp + ROLE_CHANGE_DELAY;
-        _grantRole(BRIDGE_OPERATOR_ROLE, operator);
-        emit RoleUpdated(operator, msg.sender, BRIDGE_OPERATOR_ROLE, true);
-    }
-    /**
-     * @dev Removes an operator  after ensuring the time lock has expired.
-     * Uses `_revokeRole` because additional custom logic (time lock) is implemented.
-    */
-    function removeBridgeOperator(address operator) external whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) {
-        require(operator != address(0), "Invalid operator address");
+    // This method add or removes roles except admin which has its separate methods
+    function updateAddressRole(address user, bytes32 role, bool isAdd) external whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) validateAddress(user) {
+        require(user != address(0), "Invalid user address");
+        require(role == BRIDGE_OPERATOR_ROLE || role == CONTRACT_OPERATOR_ROLE, "Invalid role");
+        
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
-        _revokeRole(BRIDGE_OPERATOR_ROLE, operator);
-        emit RoleUpdated(operator, msg.sender, BRIDGE_OPERATOR_ROLE, false);
+        
+        if (isAdd) {
+            roleChangeTimeLock[user] = block.timestamp + ROLE_CHANGE_DELAY;
+            _grantRole(role, user);
+        } else {
+            _revokeRole(role, user);
+        }
+        
+        emit RoleUpdated(user, msg.sender, role, isAdd);
     }
 
     // Admin management: Assign the role to an address
     function addAdmin(address admin) external whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) validateAddress(admin) {
         require(admin != address(0), "Invalid admin address");
+        require(admin != owner(), "Cannot add owner as admin");
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
+        
         roleChangeTimeLock[admin] = block.timestamp + ROLE_CHANGE_DELAY;
         _grantRole(ADMIN_ROLE, admin);
+        
+        // If the caller is the owner, revoke their admin role
+        if (msg.sender == owner()) {
+            _revokeRole(ADMIN_ROLE, owner());
+            emit RoleUpdated(owner(), msg.sender, ADMIN_ROLE, false);
+        }
+        
         emit RoleUpdated(admin, msg.sender, ADMIN_ROLE, true);
     }
     /**
      * @dev Removes an admin after ensuring the time lock has expired.
-     * Uses `_revokeRole` because additional custom logic (time lock) is implemented.
+     * Uses `_revokeRole` because additional custom logic (time lock) is implemented. It also requires at least one admin and the last admin cannot be removed
     */
     function removeAdmin(address admin) external whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) {
         require(admin != msg.sender, "Cannot remove self");
         require(admin != address(0), "Invalid admin address");
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
+        
+        // Get the count of admins before removal
+        uint256 adminCount = getRoleMemberCount(ADMIN_ROLE);
+        require(adminCount > 1, "Cannot remove last admin");
+        
         _revokeRole(ADMIN_ROLE, admin);
         emit RoleUpdated(admin, msg.sender, ADMIN_ROLE, false);
-    }
-
-    // Pool contract management: Add and remove a contract as verified pool contract
-    function addPoolContract(address poolContract) external whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) {
-        require(poolContract != address(0), "Invalid pool contract address");
-        if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
-        poolContracts[poolContract] = true;
-        emit VerifiedContractAddressUpdated(poolContract, ContractType.Pool, true);
-    }
-    function removePoolContract(address poolContract) external whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) {
-        if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
-        poolContracts[poolContract] = false;
-        emit VerifiedContractAddressUpdated(poolContract, ContractType.Pool, false);
-    }
-
-    // Proof contract management: Add and remove a contract as verified pool contract
-    function addProofContract(address proofContract) external whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) {
-        require(proofContract != address(0), "Invalid proof contract address");
-        if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
-        proofContracts[proofContract] = true;
-        emit VerifiedContractAddressUpdated(proofContract, ContractType.Proof, true);
-    }
-    function removeProofContract(address proofContract) external whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) {
-        if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
-        proofContracts[proofContract] = false;
-        emit VerifiedContractAddressUpdated(proofContract, ContractType.Proof, false);
     }
 
     // Transfers tokens from contract to a whitelisted address (after the lock time has passed)
@@ -212,21 +200,6 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         if (amount <= 0) revert AmountMustBePositive();
         require(to != address(0), "ERC20: transfer to the zero address not allowed");
         return super.transfer(to, amount);
-    }
-
-    // Override transfer functions to handle staking, pool and proof contracts to allow them to transfer tokens from/to any address if to is whitelisted
-    function transferFrom(address sender, address recipient, uint256 amount) public virtual whenNotPaused nonReentrant override returns (bool) {
-        require(sender != address(0), "ERC20: transfer from the zero address not allowed");
-        require(recipient != address(0), "ERC20: transfer to the zero address not allowed");
-        if (amount <= 0) revert AmountMustBePositive();
-        if (poolContracts[msg.sender] || proofContracts[msg.sender]) {
-            require(balanceOf(sender) >= amount, "ERC20: transfer amount exceeds balance");
-            require(whitelistLockTime[recipient] > 0, "Recipient not whitelisted");
-            require(block.timestamp >= whitelistLockTime[recipient], "Recipient is still locked");
-            _transfer(sender, recipient, amount);
-            return true;
-        }
-        return super.transferFrom(sender, recipient, amount);
     }
 
     // Mint Tokens to this address if it does not exceed total supply (Tokens should have been burnt on source chain before calling this method). This is for cross-chain transfer of tokens

@@ -156,10 +156,11 @@ describe("StorageToken", function () {
     });
     
     it("should allow admin to add a bridge operator with time lock", async () => {
+        const bridge_operator_role = await token.BRIDGE_OPERATOR_ROLE();
         const operator = users[0].address;
     
         // Add bridge operator
-        const tx = await token.connect(await ethers.getSigner(owner.address)).addBridgeOperator(operator);
+        const tx = await token.connect(await ethers.getSigner(owner.address)).updateAddressRole(operator, bridge_operator_role, true);
         const receipt = await tx.wait();
     
         // Parse emitted event
@@ -183,13 +184,14 @@ describe("StorageToken", function () {
     });
     
     it("should allow admin to remove a bridge operator after time lock", async () => {
+        const bridge_operator_role = await token.BRIDGE_OPERATOR_ROLE();
         const operator = users[0].address;
     
         // Add bridge operator first
-        await token.connect(await ethers.getSigner(owner.address)).addBridgeOperator(operator);
+        await token.connect(await ethers.getSigner(owner.address)).updateAddressRole(operator, bridge_operator_role, true);
     
         // Remove bridge operator
-        const tx = await token.connect(await ethers.getSigner(owner.address)).removeBridgeOperator(operator);
+        const tx = await token.connect(await ethers.getSigner(owner.address)).updateAddressRole(operator, bridge_operator_role, false);
         const receipt = await tx.wait();
     
         // Parse emitted event
@@ -363,84 +365,6 @@ describe("StorageToken", function () {
         expect(event.args.to).to.equal(wallet);
         expect(event.args.amount).to.equal(transferAmount);
     });
-    
-    it("should add a pool contract", async () => {
-        const poolContract = users[0].address;
-    
-        // Add pool contract
-        const tx = await token.connect(await ethers.getSigner(owner.address)).addPoolContract(poolContract);
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "VerifiedContractAddressUpdated");
-    
-        if (!event) throw new Error("VerifiedContractAddressUpdated event not found");
-    
-        // Assertions
-        expect(await token.poolContracts(poolContract)).to.be.true;
-        expect(event.args.contractAddr).to.equal(poolContract);
-        expect(event.args.contractType).to.equal(0); // ContractType.Pool
-        expect(event.args.status).to.be.true;
-    });
-
-    it("should remove a pool contract", async () => {
-        const poolContract = users[0].address;
-    
-        // Add pool contract first
-        await token.connect(await ethers.getSigner(owner.address)).addPoolContract(poolContract);
-    
-        // Remove pool contract
-        const tx = await token.connect(await ethers.getSigner(owner.address)).removePoolContract(poolContract);
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "VerifiedContractAddressUpdated");
-    
-        if (!event) throw new Error("VerifiedContractAddressUpdated event not found");
-    
-        // Assertions
-        expect(await token.poolContracts(poolContract)).to.be.false;
-        expect(event.args.contractAddr).to.equal(poolContract);
-        expect(event.args.contractType).to.equal(0); // ContractType.Pool
-        expect(event.args.status).to.be.false;
-    });
-    
-    it("should add a proof contract", async () => {
-        const proofContract = users[0].address;
-    
-        // Add proof contract
-        const tx = await token.connect(await ethers.getSigner(owner.address)).addProofContract(proofContract);
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "VerifiedContractAddressUpdated");
-    
-        if (!event) throw new Error("VerifiedContractAddressUpdated event not found");
-    
-        // Assertions
-        expect(await token.proofContracts(proofContract)).to.be.true;
-        expect(event.args.contractAddr).to.equal(proofContract);
-        expect(event.args.contractType).to.equal(1); // ContractType.Proof
-        expect(event.args.status).to.be.true;
-    });
 
     it("should revert when transferring tokens to a non-whitelisted address", async () => {
         const wallet = users[0].address;
@@ -489,23 +413,31 @@ describe("StorageToken", function () {
         const tx = await token.connect(await ethers.getSigner(owner.address)).addAdmin(newAdmin);
         const receipt = await tx.wait();
     
-        // Parse emitted event
-        const event = receipt?.logs?.map((log) => {
+        // Parse emitted events
+        const events = receipt?.logs?.map((log) => {
             try {
                 return token.interface.parseLog(log);
             } catch (e) {
                 return null;
             }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "RoleUpdated");
+        }).filter((parsedLog) => parsedLog && parsedLog.name === "RoleUpdated");
     
-        if (!event) throw new Error("RoleUpdated event not found");
+        if (!events || events.length !== 2) throw new Error("Expected two RoleUpdated events");
     
-        // Assertions
+        // Assertions for new admin addition
+        const addEvent = events.find(e => e.args.status === true);
         expect(await token.hasRole(await token.ADMIN_ROLE(), newAdmin)).to.be.true;
-        expect(event.args.target).to.equal(newAdmin);
-        expect(event.args.role).to.equal(await token.ADMIN_ROLE());
-        expect(event.args.status).to.be.true;
-    });
+        expect(addEvent.args.target).to.equal(newAdmin);
+        expect(addEvent.args.role).to.equal(await token.ADMIN_ROLE());
+        expect(addEvent.args.status).to.be.true;
+    
+        // Assertions for owner role removal
+        const removeEvent = events.find(e => e.args.status === false);
+        expect(await token.hasRole(await token.ADMIN_ROLE(), owner.address)).to.be.false;
+        expect(removeEvent.args.target).to.equal(owner.address);
+        expect(removeEvent.args.role).to.equal(await token.ADMIN_ROLE());
+        expect(removeEvent.args.status).to.be.false;
+    });    
 
     it("should enforce emergency cooldown between pause actions", async () => {
         // Pause the contract
@@ -541,12 +473,13 @@ describe("StorageToken", function () {
     });
 
     it("should enforce role change time lock for new bridge operator", async () => {
+        const bridge_operator_role = await token.BRIDGE_OPERATOR_ROLE();
         const bridgeOperator = users[0].address;
         const mintAmount = ethers.parseEther("500");
         const sourceChain = 1;
     
         // Add bridge operator
-        await token.connect(await ethers.getSigner(owner.address)).addBridgeOperator(bridgeOperator);
+        await token.connect(await ethers.getSigner(owner.address)).updateAddressRole(bridgeOperator, bridge_operator_role, true);
     
         // Set source chain as supported
         await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(sourceChain, true);
@@ -557,7 +490,7 @@ describe("StorageToken", function () {
         ).to.be.revertedWithCustomError(token, "TimeLockActive");
     
         // Advance time by ROLE_CHANGE_DELAY
-        await time.increase(8 * 60 * 60); // 8 hours in seconds
+        await time.increase(24 * 60 * 60); // 8 hours in seconds
     
         // Mint tokens successfully after time lock expires
         const tx = await token.connect(await ethers.getSigner(bridgeOperator)).bridgeMint(mintAmount, sourceChain);
@@ -812,17 +745,23 @@ describe("StorageToken", function () {
             token.connect(await ethers.getSigner(owner.address)).addAdmin(invalidAdmin)
         ).to.be.revertedWith("Invalid address");
     });
-    it("should revert when removing an admin before time lock expires", async () => {
+    it("should revert when adding or removing an admin before time lock expires", async () => {
         const newAdmin = users[0].address;
         const newAdmin1 = users[1].address;
     
         // Add a new admin
         await token.connect(await ethers.getSigner(owner.address)).addAdmin(newAdmin);
-        await token.connect(await ethers.getSigner(owner.address)).addAdmin(newAdmin1);
+        await expect(
+            token.connect(await ethers.getSigner(newAdmin)).addAdmin(newAdmin1)
+        ).to.be.revertedWithCustomError(token, "TimeLockActive");
+
+        await time.increase(24 * 60 * 60);
+
+        await token.connect(await ethers.getSigner(newAdmin)).addAdmin(newAdmin1);
     
         // Attempt to remove the admin before time lock expires
         await expect(
-            token.connect(await ethers.getSigner(newAdmin)).removeAdmin(newAdmin1)
+            token.connect(await ethers.getSigner(newAdmin1)).removeAdmin(newAdmin)
         ).to.be.revertedWithCustomError(token, "TimeLockActive");
     });
     it("should revert when removing an admin if removing self", async () => {    
@@ -854,14 +793,15 @@ describe("StorageToken", function () {
     });
 
     it("should allow setting supported chain by authorized bridge operator", async () => {
+        const bridge_operator_role = await token.BRIDGE_OPERATOR_ROLE();
         const chainId = 42; // Example chain ID
         const bridgeOperator = users[0].address;
     
         // Grant BRIDGE_OPERATOR_ROLE to user
-        await token.connect(await ethers.getSigner(owner.address)).addBridgeOperator(bridgeOperator);
+        await token.connect(await ethers.getSigner(owner.address)).updateAddressRole(bridgeOperator, bridge_operator_role, true);
     
         // Advance time by ROLE_CHANGE_DELAY
-        await time.increase(8 * 60 * 60); // 8 hours in seconds
+        await time.increase(24 * 60 * 60); // 8 hours in seconds
     
         // Set supported chain by authorized bridge operator
         const tx = await token.connect(await ethers.getSigner(users[0].address)).setSupportedChain(chainId, true);
@@ -883,99 +823,5 @@ describe("StorageToken", function () {
         expect(event.args.chainId).to.equal(chainId);
         expect(event.args.supported).to.be.true;
     });
-    it("should allow a pool contract to transfer tokens on behalf of any address", async () => {
-        const poolContract = users[0].address;
-        const sender = users[1];
-        const recipient = users[2];
-        const transferAmount = ethers.parseEther("100");
-    
-        // Add pool contract
-        await token.connect(await ethers.getSigner(owner.address)).addPoolContract(poolContract);
-    
-        // Whitelist sender and recipient
-        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(sender.address);
-        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(recipient.address);
-    
-        // Advance time to pass whitelist lock duration
-        await time.increase(24 * 60 * 60); // 1 day in seconds
-    
-        // Transfer tokens from contract to sender
-        await token.connect(await ethers.getSigner(owner.address)).transferFromContract(sender.address, transferAmount);
-    
-        // Verify sender has enough balance
-        expect(await token.balanceOf(sender.address)).to.equal(BigInt(transferAmount));
-    
-        // Transfer tokens from sender to recipient using pool contract
-        const tx = await token.connect(await ethers.getSigner(poolContract)).transferFrom(
-            sender.address,
-            recipient.address,
-            transferAmount
-        );
-        await tx.wait();
-    
-        // Assertions
-        expect(await token.balanceOf(recipient.address)).to.equal(BigInt(transferAmount));
-        expect(await token.balanceOf(sender.address)).to.equal(BigInt(0));
-    });
-    it("should revert transferFrom when called by non-pool/proof contracts", async () => {
-        const sender = users[0];
-        const recipient = users[1];
-        const transferAmount = ethers.parseEther("100");
-    
-        // Whitelist sender and recipient
-        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(sender.address);
-        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(recipient.address);
-    
-        // Advance time to pass whitelist lock duration
-        await time.increase(24 * 60 * 60); // 1 day in seconds
-    
-        // Transfer tokens from contract to sender
-        await token.connect(await ethers.getSigner(owner.address)).transferFromContract(sender.address, transferAmount);
-    
-        // Attempt to transfer from sender to recipient by a non-pool/proof contract
-        await expect(
-            token.connect(await ethers.getSigner(users[2].address)).transferFrom(
-                sender.address,
-                recipient.address,
-                transferAmount
-            )
-        ).to.be.revertedWithCustomError(token, "ERC20InsufficientAllowance");
-    });
-
-    it("should allow a proof contract to transfer tokens on behalf of any address", async () => {
-        const proofContract = users[0].address;
-        const sender = users[1];
-        const recipient = users[2];
-        const transferAmount = ethers.parseEther("100");
-    
-        // Add proof contract
-        await token.connect(await ethers.getSigner(owner.address)).addProofContract(proofContract);
-    
-        // Whitelist sender and recipient
-        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(sender.address);
-        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(recipient.address);
-    
-        // Advance time to pass whitelist lock duration
-        await time.increase(24 * 60 * 60); // 1 day in seconds
-    
-        // Transfer tokens from contract to sender
-        await token.connect(await ethers.getSigner(owner.address)).transferFromContract(sender.address, transferAmount);
-    
-        // Verify sender has enough balance
-        expect(await token.balanceOf(sender.address)).to.equal(BigInt(transferAmount));
-    
-        // Transfer tokens from sender to recipient using proof contract
-        const tx = await token.connect(await ethers.getSigner(proofContract)).transferFrom(
-            sender.address,
-            recipient.address,
-            transferAmount
-        );
-        await tx.wait();
-    
-        // Assertions
-        expect(await token.balanceOf(recipient.address)).to.equal(BigInt(transferAmount));
-        expect(await token.balanceOf(sender.address)).to.equal(BigInt(0));
-    });
-    
              
 });
