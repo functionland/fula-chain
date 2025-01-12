@@ -214,13 +214,15 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         return super.transfer(to, amount);
     }
 
-    // Override transfer functions to handle pool and proof contracts to allow them to transfer tokens from/to any address
+    // Override transfer functions to handle staking, pool and proof contracts to allow them to transfer tokens from/to any address if to is whitelisted
     function transferFrom(address sender, address recipient, uint256 amount) public virtual whenNotPaused nonReentrant override returns (bool) {
         require(sender != address(0), "ERC20: transfer from the zero address not allowed");
         require(recipient != address(0), "ERC20: transfer to the zero address not allowed");
         if (amount <= 0) revert AmountMustBePositive();
         if (poolContracts[msg.sender] || proofContracts[msg.sender]) {
             require(balanceOf(sender) >= amount, "ERC20: transfer amount exceeds balance");
+            require(whitelistLockTime[recipient] > 0, "Recipient not whitelisted");
+            require(block.timestamp >= whitelistLockTime[recipient], "Recipient is still locked");
             _transfer(sender, recipient, amount);
             return true;
         }
