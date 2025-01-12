@@ -32,16 +32,14 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     bool private _initializedMint; // Storage to indicate initial minting is done
 
-    event BridgeTransfer(address indexed from, uint256 amount, uint256 targetChain);
-    event RoleUpdated(address target, address sender, bytes32 role, bool status); //status true: added, status false: removed
-    event VerifiedContractAddressUpdated(address indexed contractAddr, ContractType contractType, bool status);
-    event EmergencyAction(string action, uint256 timestamp);
+    event RoleUpdated(address target, address caller, bytes32 role, bool status); //status true: added, status false: removed
+    event EmergencyAction(string action, uint256 timestamp, address caller);
     event BridgeOperationDetails(address indexed operator, string operation, uint256 amount, uint256 chainId, uint256 timestamp);
-    event WalletWhitelistedWithLock(address indexed wallet, uint256 lockUntil);
-    event WalletRemovedFromWhitelist(address indexed wallet);
-    event TransferFromContract(address indexed from, address indexed to, uint256 amount);
-    event TokensMinted(address indexed to, uint256 amount);
-    event SupportedChainChanged(uint256 indexed chainId, bool supported);
+    event WalletWhitelistedWithLock(address indexed wallet, uint256 lockUntil, address caller);
+    event WalletRemovedFromWhitelist(address indexed wallet, address caller);
+    event TransferFromContract(address indexed from, address indexed to, uint256 amount, address caller);
+    event TokensMinted(address to, uint256 amount);
+    event SupportedChainChanged(uint256 indexed chainId, bool supported, address caller);
 
     error ExceedsMaximumSupply(uint256 requested, uint256 maxSupply);
     error ExceedsAvailableSupply(uint256 requested, uint256 supply);
@@ -106,15 +104,15 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         require(wallet != address(0), "Invalid wallet address");
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
         whitelistLockTime[wallet] = block.timestamp + WHITELIST_LOCK_DURATION;
-        emit WalletWhitelistedWithLock(wallet, block.timestamp + WHITELIST_LOCK_DURATION);
+        emit WalletWhitelistedWithLock(wallet, block.timestamp + WHITELIST_LOCK_DURATION, msg.sender);
     }
 
-    // Remove a wallet from the whitelist to remove hte permission of receiving tokens from contract
+    // Remove a wallet from the whitelist to remove the permission of receiving tokens from contract
     function removeFromWhitelist(address wallet) external whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) {
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
         require(wallet != address(0), "Invalid wallet address");
         delete whitelistLockTime[wallet]; // Remove lock time
-        emit WalletRemovedFromWhitelist(wallet);
+        emit WalletRemovedFromWhitelist(wallet, msg.sender);
     }
 
     // Pausing contract actions in emergency
@@ -123,7 +121,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
         _pause();
         lastEmergencyAction = block.timestamp;
-        emit EmergencyAction("Contract paused", block.timestamp);
+        emit EmergencyAction("Contract paused", block.timestamp, msg.sender);
     }
 
     // UnPausing contract actions after emergency to return to normal
@@ -131,7 +129,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         require(block.timestamp >= lastEmergencyAction + EMERGENCY_COOLDOWN, "Cooldown active");
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
         _unpause();
-        emit EmergencyAction("Contract unpaused", block.timestamp);
+        emit EmergencyAction("Contract unpaused", block.timestamp, msg.sender);
     }
 
     // This method add or removes roles except admin which has its separate methods
@@ -186,12 +184,12 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     }
 
     // Transfers tokens from contract to a whitelisted address (after the lock time has passed)
-    function transferFromContract(address to, uint256 amount) external virtual whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) onlyWhitelisted(to) returns (bool) {
+    function transferFromContract(address to, uint256 amount) external virtual whenNotPaused nonReentrant onlyRole(CONTRACT_OPERATOR_ROLE) onlyWhitelisted(to) returns (bool) {
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
         if (amount <= 0) revert AmountMustBePositive();
         if (amount > balanceOf(address(this))) revert ExceedsAvailableSupply(amount, balanceOf(address(this)));
         _transfer(address(this), to, amount);
-        emit TransferFromContract(address(this), to, amount);
+        emit TransferFromContract(address(this), to, amount, msg.sender);
         return true;
     }
 
@@ -224,15 +222,15 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     }
 
     // Add function to manage supported chains for cross-chain mint and burn
-    function setSupportedChain(uint256 chainId, bool supported) external whenNotPaused nonReentrant onlyRole(BRIDGE_OPERATOR_ROLE) {
+    function setSupportedChain(uint256 chainId, bool supported) external whenNotPaused nonReentrant onlyRole(ADMIN_ROLE) {
         if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
         require(chainId > 0, "Invalid chain ID");
         supportedChains[chainId] = supported;
-        emit SupportedChainChanged(chainId, supported);
+        emit SupportedChainChanged(chainId, supported, msg.sender);
     }
 
     // Only allow contract owner to upgrade the contract
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(CONTRACT_OPERATOR_ROLE) {}
 
     uint256[50] private __gap; // This is empty space for future upgrades
 }
