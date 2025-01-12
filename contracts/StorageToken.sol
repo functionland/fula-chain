@@ -25,7 +25,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     // Adding timelock for critical actions
     mapping(address => uint256) private roleChangeTimeLock; // Time holder of a role assignment
-    uint256 private constant ROLE_CHANGE_DELAY = 8 hours; // How much we should wait after a role is assigned to allow actions by that role
+    uint256 private constant ROLE_CHANGE_DELAY = 1 day; // How much we should wait after a role is assigned to allow actions by that role
     mapping(address => uint256) private whitelistLockTime; // Lock time for whitelisted addresses to hold the time when an address is whitelisted
     uint256 private constant WHITELIST_LOCK_DURATION = 1 days; // Lock duration after adding to whitelist which should be passed before they can receive the transfer
 
