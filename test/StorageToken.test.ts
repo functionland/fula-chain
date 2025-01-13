@@ -2201,6 +2201,5 @@ describe("StorageToken", () => {
             expect(await upgradedToken.version()).to.equal(1);
         });
     });
-    
-    
 });
+
