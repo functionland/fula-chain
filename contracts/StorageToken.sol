@@ -10,6 +10,7 @@ import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import "hardhat/console.sol";
 
 contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, PausableUpgradeable, AccessControlEnumerableUpgradeable, ReentrancyGuardUpgradeable {
     address private _pendingOwner;
@@ -24,6 +25,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     uint256 public constant EMERGENCY_THRESHOLD = 3;
     uint256 public constant INACTIVITY_THRESHOLD = 365 days;
     mapping(uint256 => mapping(uint256 => bool)) private _usedNonces;
+    mapping(address => bytes32) private upgradeProposals;
 
     bytes32 public constant BRIDGE_OPERATOR_ROLE = bytes32(uint256(keccak256("BRIDGE_OPERATOR_ROLE")) - 1); // role
     bytes32 public constant ADMIN_ROLE = bytes32(uint256(keccak256("ADMIN_ROLE")) - 1); // role
@@ -283,8 +285,9 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
             pendingProposals[target].roleChange = true;
         } else if (proposalType == ProposalType.Recovery) {
             pendingProposals[target].recovery = true;
-        } else if (proposalType == ProposalType.Recovery) {
+        } else if (proposalType == ProposalType.Upgrade) {
             pendingProposals[target].upgrade = true;
+            upgradeProposals[target] = proposalId;
         }
 
         proposalRegistry[proposalCount] = proposalId;
@@ -321,6 +324,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
                 pending.recovery = false;
             } else if (proposal.proposalType == ProposalType.Upgrade) {
                 pending.upgrade = false;
+                delete upgradeProposals[proposal.target];
             }
 
             // Delete entire record if all flags are false
@@ -394,18 +398,16 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
             require(token.transfer(proposal.target, proposal.amount), "Transfer failed");
             pending.recovery = false;
         }
-        else if (proposal.proposalType == ProposalType.Recovery) {
-            pending.upgrade = false;
-        }
 
         // Delete entire record if all flags are false
         if (!pending.whitelist && !pending.roleChange && 
             !pending.recovery && !pending.upgrade) {
             delete pendingProposals[proposal.target];
         }
-        
-        proposal.executed = true;
-        emit ProposalExecuted(proposalId, proposal.proposalType, proposal.target);
+        if (!pending.upgrade) {
+            proposal.executed = true;
+            emit ProposalExecuted(proposalId, proposal.proposalType, proposal.target);
+        }
     }
 
     function getProposalDetails(bytes32 proposalId) 
@@ -720,36 +722,49 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         internal 
         override 
         nonReentrant
+        whenNotPaused
         onlyRole(ADMIN_ROLE) 
         updateActivityTimestamp 
     {
+        
         if (newImplementation == address(0)) revert InvalidAddress(newImplementation);
         
         // Check quorum requirements
-        if (roleQuorum[ADMIN_ROLE] < 2) {
-            revert InvalidQuorumErr(ADMIN_ROLE, roleQuorum[ADMIN_ROLE]);
+        if (roleQuorum[CONTRACT_OPERATOR_ROLE] < 2) {
+            revert InvalidQuorumErr(CONTRACT_OPERATOR_ROLE, roleQuorum[CONTRACT_OPERATOR_ROLE]);
         }
         
-        // Generate proposal ID
-        bytes32 proposalId = keccak256(abi.encodePacked(
-            uint8(ProposalType.Upgrade),
-            newImplementation,
-            block.timestamp
-        ));
+        // Find the active upgrade proposal for this implementation
+        bytes32 proposalId;
+        bytes32 currentId = upgradeProposals[newImplementation];
+        
+        if (currentId == 0) revert ProposalNotFoundErr();
+        UnifiedProposal storage currentProposal = proposals[currentId];
+        if (currentProposal.proposalType == ProposalType.Upgrade && 
+            currentProposal.target == newImplementation &&
+            ! currentProposal.executed &&
+            currentProposal.expiryTime > block.timestamp) {
+            proposalId = currentId;
+        } else {
+            revert ProposalNotFoundErr();
+        }
         
         UnifiedProposal storage proposal = proposals[proposalId];
-        require(proposal.target != address(0), "Proposal not found"); // Changed this line
-        require(!proposal.executed, "Already executed");
-        require(proposal.proposalType == ProposalType.Upgrade, "Invalid proposal type");
+        PendingProposals storage pending = pendingProposals[proposal.target];
+        if (proposal.target == address(0)) revert InvalidAddress(proposal.target);
+        if (proposal.executed) revert ProposalAlreadyExecutedErr();
+        if (proposal.proposalType != ProposalType.Upgrade) revert InvalidProposalTypeErr(proposal.proposalType);
         
-        require(
-            proposal.approvals >= roleQuorum[ADMIN_ROLE],
-            "Insufficient approvals for upgrade"
-        );
-        require(
-            block.timestamp >= proposal.executionTime,
-            "Execution delay not met"
-        );
+        if (proposal.approvals < roleQuorum[CONTRACT_OPERATOR_ROLE]) revert InsufficientApprovalsErr(roleQuorum[CONTRACT_OPERATOR_ROLE], proposal.approvals);
+        if (block.timestamp < proposal.executionTime) revert ProposalExecutionDelayNotMetErr(proposal.executionTime);
+        delete upgradeProposals[newImplementation];
+        currentProposal.executed = true;
+        pending.upgrade = false;
+        if (!pending.whitelist && !pending.roleChange && 
+            !pending.recovery && !pending.upgrade) {
+            delete pendingProposals[proposal.target];
+        }
+        emit ProposalExecuted(proposalId, proposal.proposalType, proposal.target);
     }
 
     uint256[45] private __gap; // Reduced gap size to accommodate new storage variables

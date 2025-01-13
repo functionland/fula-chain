@@ -2136,15 +2136,16 @@ describe("StorageToken", () => {
         it("should properly handle contract upgrades with all features", async () => {
             // Create factory with addr1 signer
             const StorageTokenV2 = await ethers.getContractFactory("StorageToken", addr1);
-            
-            // Deploy implementation contract to get its address
-            const implementationContract = await StorageTokenV2.deploy();
-            await implementationContract.waitForDeployment();
-            const implementationAddress = await implementationContract.getAddress();
+        
+            // Get the implementation address that will be used by the upgrade
+            const implementationAddress = await upgrades.prepareUpgrade(
+                await storageToken.getAddress(),
+                StorageTokenV2
+            );
 
             const executionDelay2 = 24 * 60 * 60;
             await ethers.provider.send("evm_increaseTime", [executionDelay2 + 1]);
-    
+
             // Create and execute upgrade proposal first
             const tx = await storageToken.connect(addr1).createProposal(
                 1, // Upgrade
@@ -2168,6 +2169,7 @@ describe("StorageToken", () => {
             
             const proposalId = event?.args?.proposalId;
             console.log(`proposalId=${proposalId}`);
+            console.log(`implementationAddress=${implementationAddress}`);
     
             // Add approval
             await storageToken.connect(admin).approveProposal(proposalId);
