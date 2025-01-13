@@ -1,827 +1,2204 @@
 import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
+import { StorageToken } from "../typechain-types/StorageToken";
 import { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers";
-import { StorageToken } from "../typechain-types/contracts";
-import { time } from "@nomicfoundation/hardhat-network-helpers";
-import { Contract } from "ethers";
+import { ZeroAddress } from "ethers";
 
-const WHITELIST_LOCK_DURATION = 24 * 60 * 60;
-const INITIAL_MINTED_TOKENS = ethers.parseEther("1000000"); // 1M tokens
-const MAX_SUPPLY = ethers.parseEther("2000000000");
-
-describe("StorageToken", function () {
-    let token: StorageToken;
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
     let owner: SignerWithAddress;
-    let bridgeOperator: SignerWithAddress;
-    let user1: SignerWithAddress;
-    let user2: SignerWithAddress;
-    let users: SignerWithAddress[];
-    
-
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
     beforeEach(async () => {
-        [owner, ...users] = await ethers.getSigners();
+      [owner, admin, addr1] = await ethers.getSigners();
+      const StorageToken = await ethers.getContractFactory("StorageToken");
+      storageToken = (await upgrades.deployProxy(StorageToken, [
+        owner.address,
+        admin.address,
+        TOTAL_SUPPLY / BigInt(2)
+      ])) as StorageToken;
+      await storageToken.waitForDeployment();
+    });
+  
+    describe("initialize", () => {
+      it("should properly initialize the contract with all features", async () => {
         const StorageToken = await ethers.getContractFactory("StorageToken");
-        token = await upgrades.deployProxy(StorageToken, [owner.address, INITIAL_MINTED_TOKENS], {
-            initializer: 'initialize'
-        }) as StorageToken;;
-        await token.waitForDeployment();
+        
+        // Test zero address validation
+        await expect(
+          upgrades.deployProxy(StorageToken, [
+            ZeroAddress,
+            admin.address,
+            TOTAL_SUPPLY
+          ])
+        ).to.be.revertedWithCustomError(storageToken, "InvalidAddress");
+  
+        // Test initial supply validation
+        await expect(
+          upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY + BigInt(1)
+          ])
+        ).to.be.revertedWith("Exceeds maximum supply");
+  
+        // Verify initial state
+        expect(await storageToken.name()).to.equal("Placeholder Token");
+        expect(await storageToken.symbol()).to.equal("PLACEHOLDER");
+        expect(await storageToken.totalSupply()).to.equal(TOTAL_SUPPLY / BigInt(2));
+        const contractAddress = await storageToken.getAddress();
+        expect(await storageToken.balanceOf(contractAddress)).to.equal(TOTAL_SUPPLY / BigInt(2));
+  
+        // Verify roles
+        const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+        expect(await storageToken.hasRole(ADMIN_ROLE, owner.address)).to.be.true;
+        expect(await storageToken.hasRole(ADMIN_ROLE, admin.address)).to.be.true;
+  
+        // Verify role timelocks
+        const roleChangeTimeLock = 24 * 60 * 60;
+        
+        // Try to perform an admin action immediately
+        await expect(
+          storageToken.connect(owner).removeAdmin(addr1.address)
+        ).to.be.revertedWithCustomError(storageToken, "TimeLockActive");
+  
+        // Advance time past the timelock
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+  
+        // Verify can't initialize again
+        await expect(
+          storageToken.initialize(owner.address, admin.address, TOTAL_SUPPLY)
+        ).to.be.revertedWithCustomError(storageToken, "InvalidInitialization");
+  
+        // Verify version
+        expect(await storageToken.version()).to.equal(1);
+      });
     });
 
-    it("should initialize correctly", async () => {
-        const deploymentTx = await token.deploymentTransaction();
-        const receipt = await deploymentTx.wait();
-        const logs = receipt?.logs;
-        if (!logs) {
-            throw new Error("TokensMinted logs not found");
-        }
-        const event = logs
-            .map((log) => {
-                try {
-                    return token.interface.parseLog(log);
-                } catch (e) {
-                    return null;
-                }
-            })
-            .find((parsedLog) => parsedLog && parsedLog.name === "TokensMinted");
-        if (!event) {
-            throw new Error("TokensMinted event not found");
-        }
-    
-        expect(await token.name()).to.equal("Placeholder Token");
-        expect(await token.symbol()).to.equal("PLACEHOLDER");
-        expect(await token.hasRole(await token.ADMIN_ROLE(), owner.address)).to.be.true;
-        expect(await token.hasRole(await token.BRIDGE_OPERATOR_ROLE(), owner.address)).to.be.true;
-        expect(await token.totalSupply()).to.equal(INITIAL_MINTED_TOKENS);
-        expect(event?.args?.amount).to.equal(INITIAL_MINTED_TOKENS);
+    describe("transferOwnership", () => {
+        beforeEach(async() => {
+            const roleChangeTimeLock = 24 * 60 * 60;
+            // Advance time past the timelock
+            await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        });
+        it("should properly handle ownership transfer with all features", async () => {
+            // Test transfer when paused
+            await storageToken.connect(owner).emergencyPauseToken();
+            await expect(
+                storageToken.connect(owner).transferOwnership(addr1.address)
+            ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
+
+            // Unpause for further tests
+            await expect(
+                storageToken.connect(owner).emergencyUnpauseToken()
+            ).to.be.revertedWith("Cooldown active");
+
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await storageToken.connect(owner).emergencyUnpauseToken();
+
+            // Test non-owner transfer attempt
+            await expect(
+                storageToken.connect(addr1).transferOwnership(addr1.address)
+            ).to.be.revertedWithCustomError(storageToken, "OwnableUnauthorizedAccount");
+
+            // Test transfer to zero address
+            await expect(
+                storageToken.connect(owner).transferOwnership(ZeroAddress)
+            ).to.be.revertedWithCustomError(storageToken, "InvalidAddress");
+
+            // Test successful transfer initiation
+            await storageToken.connect(owner).transferOwnership(addr1.address);
+
+            // Verify pending owner
+            const contractAddress = await storageToken.getAddress();
+            await expect(
+                storageToken.connect(admin).acceptOwnership()
+            ).to.be.revertedWith("Not pending owner");
+
+            // Test successful ownership acceptance
+            await storageToken.connect(addr1).acceptOwnership();
+            expect(await storageToken.owner()).to.equal(addr1.address);
+
+            // Verify old owner lost ownership
+            await expect(
+                storageToken.connect(owner).transferOwnership(admin.address)
+            ).to.be.revertedWithCustomError(storageToken, "OwnableUnauthorizedAccount");
+        });
     });
-    it("should add wallet to whitelist with lock duration", async () => {
-        const wallet = users[0].address;
-        const tx = await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
-        const receipt = await tx.wait();
-    
-        const event = receipt?.logs
-            .map((log) => {
-                try {
-                    return token.interface.parseLog(log);
-                } catch (e) {
-                    return null;
-                }
-            })
-            .find((parsedLog) => parsedLog && parsedLog.name === "WalletWhitelistedWithLock");
-        if (!event) {
-            throw new Error("TokensMinted event not found");
-        }
-    
-        expect(event?.args?.lockUntil).to.be.closeTo(
-            (await ethers.provider.getBlock("latest")).timestamp + WHITELIST_LOCK_DURATION,
-            5 // Allow slight timestamp difference
+  });
+  
+
+  describe("StorageToken Proposal Creation", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("createProposal", () => {
+        it("should properly handle proposal creation with all features", async () => {
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            
+            // Test proposal creation when paused
+            await storageToken.connect(owner).emergencyPauseToken();
+            await expect(
+                storageToken.connect(owner).createProposal(
+                    3, // ProposalType.Whitelist
+                    addr1.address,
+                    ethers.ZeroHash,
+                    0,
+                    ZeroAddress,
+                    true
+                )
+            ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
+
+            // Unpause with cooldown
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await storageToken.connect(owner).emergencyUnpauseToken();
+
+            // Test non-admin proposal creation
+            await expect(
+                storageToken.connect(addr1).createProposal(
+                    3, //whitelist
+                    addr1.address,
+                    ethers.ZeroHash,
+                    0,
+                    ZeroAddress,
+                    true
+                )
+            ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount");
+
+            // Test zero address target
+            await expect(
+                storageToken.connect(owner).createProposal(
+                    3, //whitelist
+                    ZeroAddress,
+                    ethers.ZeroHash,
+                    0,
+                    ZeroAddress,
+                    true
+                )
+            ).to.be.revertedWith("Invalid target address");
+
+            await expect(
+                storageToken.connect(owner).createProposal(
+                    3, //whitelist
+                    addr1.address,
+                    ethers.ZeroHash,
+                    0,
+                    ZeroAddress,
+                    true
+                )
+            ).to.be.revertedWithCustomError(storageToken, "InvalidQuorumErr");
+
+            // Set quorum for testing
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+
+            // Test successful whitelist proposal
+            const tx = await storageToken.connect(owner).createProposal(
+                3, // Whitelist
+                addr1.address,
+                ethers.ZeroHash,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            // Verify proposal creation
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null; // Ignore logs that don't match the interface
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            expect(event?.args?.proposalType).to.be.eq(3);
+            console.log(`proposalId: ${event?.args?.proposalId}`);
+            
+
+            // Test duplicate proposal
+            await expect(
+                storageToken.connect(owner).createProposal(
+                    3,
+                    addr1.address,
+                    ethers.ZeroHash,
+                    0,
+                    ZeroAddress,
+                    true
+                )
+            ).to.be.revertedWithCustomError(storageToken, "ExistingActiveProposal");
+
+            // Test role change proposal
+            await expect(
+                storageToken.connect(owner).createProposal(
+                    0, //RoleChange
+                    addr1.address,
+                    ethers.ZeroHash,
+                    0,
+                    ZeroAddress,
+                    true
+                )
+            ).to.be.revertedWith("Invalid role");
+
+            const tx2 = await storageToken.connect(owner).createProposal(
+                0, // RoleChange
+                addr1.address,
+                storageToken.ADMIN_ROLE(),
+                0,
+                ZeroAddress,
+                true
+            );
+
+            const receipt2 = await tx2.wait();
+            const event2 = receipt2?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null; // Ignore logs that don't match the interface
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            expect(event2?.args?.proposalType).to.be.eq(0);
+            console.log(`proposalId2: ${event2?.args?.proposalId}`);
+
+            // Verify proposal count increased
+            const proposalDetails = await storageToken.getPendingProposals();
+            expect(proposalDetails.proposalIds.length).to.be.equal(2);
+        });
+    });
+});
+
+describe("StorageToken Proposal Approval", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("approveProposal", () => {
+        let proposalId: string;
+
+        beforeEach(async () => {
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+
+            const tx = await storageToken.connect(owner).createProposal(
+                3, // Whitelist
+                addr1.address,
+                ethers.ZeroHash,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            proposalId = event?.args?.proposalId;
+        });
+
+        it("should properly handle proposal approval with all features", async () => {
+            // Test approval when paused
+            await storageToken.connect(owner).emergencyPauseToken();
+            await expect(
+                storageToken.connect(admin).approveProposal(proposalId)
+            ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
+
+            // Unpause with cooldown
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await storageToken.connect(owner).emergencyUnpauseToken();
+
+            // Test non-admin approval attempt
+            await expect(
+                storageToken.connect(addr1).approveProposal(proposalId)
+            ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount");
+
+            // Test invalid proposal ID
+            await expect(
+                storageToken.connect(admin).approveProposal(ethers.ZeroHash)
+            ).to.be.revertedWithCustomError(storageToken, "ProposalNotFoundErr");
+
+            // Test successful approval
+            const tx = await storageToken.connect(admin).approveProposal(proposalId);
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalApproved");
+            expect(event?.args?.proposalId).to.equal(proposalId);
+
+            // Test duplicate approval
+            await expect(
+                storageToken.connect(admin).approveProposal(proposalId)
+            ).to.be.revertedWith("Already approved");
+
+            // Test proposal expiry
+            const proposalTimeout = 48 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [proposalTimeout + 1]);
+            await ethers.provider.send("evm_mine", []);
+
+            await expect(
+                storageToken.connect(owner).approveProposal(proposalId)
+            ).to.be.revertedWithCustomError(storageToken, "ProposalExpiredErr");
+
+            // Verify proposal was deleted after expiry
+            const proposalDetails = await storageToken.getPendingProposals();
+            expect(proposalDetails.proposalIds.length).to.equal(0);
+        });
+    });
+});
+
+describe("StorageToken Proposal Execution", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("executeProposal", () => {
+        let proposalId: string;
+        
+        beforeEach(async () => {
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+
+            const tx = await storageToken.connect(owner).createProposal(
+                3, // Whitelist
+                addr1.address,
+                ethers.ZeroHash,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            proposalId = event?.args?.proposalId;
+        });
+
+        it("should properly handle proposal execution with all features", async () => {
+            // Test execution when paused
+            await storageToken.connect(owner).emergencyPauseToken();
+            await expect(
+                storageToken.connect(owner).executeProposal(proposalId)
+            ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
+
+            // Unpause with cooldown
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await storageToken.connect(owner).emergencyUnpauseToken();
+
+            // Test non-admin execution attempt
+            await expect(
+                storageToken.connect(addr1).executeProposal(proposalId)
+            ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount");
+
+            // Test invalid proposal ID
+            await expect(
+                storageToken.connect(owner).executeProposal(ethers.ZeroHash)
+            ).to.be.revertedWithCustomError(storageToken, "ProposalNotFoundErr");
+
+            // Test execution without sufficient approvals
+            await expect(
+                storageToken.connect(owner).executeProposal(proposalId)
+            ).to.be.revertedWithCustomError(storageToken, "InsufficientApprovalsErr");
+
+            // Add approval and test execution before delay
+            await storageToken.connect(admin).approveProposal(proposalId);
+            
+            const executionDelay = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+            await ethers.provider.send("evm_mine", []);
+
+            // Test successful execution
+            const tx = await storageToken.connect(owner).executeProposal(proposalId);
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalExecuted");
+            expect(event?.args?.proposalId).to.equal(proposalId);
+
+            // Verify proposal was executed
+            const proposalDetails = await storageToken.getProposalDetails(proposalId);
+            expect(proposalDetails.executed).to.be.true;
+
+            // Test re-execution attempt
+            await expect(
+                storageToken.connect(owner).executeProposal(proposalId)
+            ).to.be.revertedWithCustomError(storageToken, "ProposalAlreadyExecutedErr");
+        });
+    });
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    let operator: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1, operator] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("removeFromWhitelist and transferFromContract", () => {
+        let proposalId: string;
+
+        beforeEach(async () => {
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            const CONTRACT_OPERATOR_ROLE = await storageToken.CONTRACT_OPERATOR_ROLE();
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+            
+            // Create and execute operator role proposal
+            const tx = await storageToken.connect(owner).createProposal(
+                0, // RoleChange
+                operator.address,
+                CONTRACT_OPERATOR_ROLE,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            
+            proposalId = event?.args?.proposalId;
+            await storageToken.connect(admin).approveProposal(proposalId);
+            
+            const executionDelay = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+            await storageToken.connect(owner).executeProposal(proposalId);
+
+            // Set transaction limit for operator
+            await storageToken.connect(owner).setRoleTransactionLimit(CONTRACT_OPERATOR_ROLE, TOKEN_UNIT * BigInt(1000));
+
+            // Create and execute whitelist proposal for addr1
+            const tx2 = await storageToken.connect(owner).createProposal(
+                3, // Whitelist
+                addr1.address,
+                ethers.ZeroHash,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt2 = await tx2.wait();
+            const event2 = receipt2?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            
+            const proposalId2 = event2?.args?.proposalId;
+            await storageToken.connect(admin).approveProposal(proposalId2);
+            
+            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+            await storageToken.connect(owner).executeProposal(proposalId2);
+
+            // Wait for whitelist lock to expire
+            const whitelistLock = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [whitelistLock + 1]);
+        });
+
+        it("should properly handle whitelist removal and transfers", async () => {
+            // Test transfer before removal
+            await storageToken.connect(operator).transferFromContract(addr1.address, TOKEN_UNIT);
+            expect(await storageToken.balanceOf(addr1.address)).to.equal(TOKEN_UNIT);
+
+            // Test removal when paused
+            await storageToken.connect(owner).emergencyPauseToken();
+            await expect(
+                storageToken.connect(owner).removeFromWhitelist(addr1.address)
+            ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
+
+            // Unpause with cooldown
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await storageToken.connect(owner).emergencyUnpauseToken();
+
+            // Test transfer exceeding limit
+            const largeAmount = TOKEN_UNIT * BigInt(1001);
+            await expect(
+                storageToken.connect(operator).transferFromContract(addr1.address, largeAmount)
+            ).to.be.revertedWith("Exceeds role transaction limit");
+
+            // Remove from whitelist
+            await storageToken.connect(owner).removeFromWhitelist(addr1.address);
+
+            // Verify transfer fails after removal
+            await expect(
+                storageToken.connect(operator).transferFromContract(addr1.address, TOKEN_UNIT)
+            ).to.be.revertedWithCustomError(storageToken, "NotWhitelisted");
+            
+        });
+    });
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    let bridgeOperator: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1, bridgeOperator] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("bridgeMint", () => {
+        beforeEach(async () => {
+            // Setup bridge operator role
+            const BRIDGE_OPERATOR_ROLE = await storageToken.BRIDGE_OPERATOR_ROLE();
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+            
+            const tx = await storageToken.connect(owner).createProposal(
+                0, // RoleChange
+                bridgeOperator.address,
+                BRIDGE_OPERATOR_ROLE,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            
+            const proposalId = event?.args?.proposalId;
+            await storageToken.connect(admin).approveProposal(proposalId);
+            
+            const executionDelay = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+            await storageToken.connect(owner).executeProposal(proposalId);
+
+            // Set transaction limit for bridge operator
+            await storageToken.connect(owner).setRoleTransactionLimit(BRIDGE_OPERATOR_ROLE, TOKEN_UNIT * BigInt(1000));
+
+            // Set supported chain
+            await storageToken.connect(owner).setSupportedChain(1, true);
+        });
+
+        it("should properly handle bridge minting with all features", async () => {
+            // Test mint when paused
+            await storageToken.connect(owner).emergencyPauseToken();
+            await expect(
+                storageToken.connect(bridgeOperator).bridgeMint(TOKEN_UNIT, 1, 1)
+            ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
+
+            // Unpause with cooldown
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await storageToken.connect(owner).emergencyUnpauseToken();
+
+            // Test non-bridge operator mint attempt
+            await expect(
+                storageToken.connect(addr1).bridgeMint(TOKEN_UNIT, 1, 1)
+            ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount");
+
+            // Test unsupported chain
+            await expect(
+                storageToken.connect(bridgeOperator).bridgeMint(TOKEN_UNIT, 2, 1)
+            ).to.be.revertedWithCustomError(storageToken, "UnsupportedChain");
+
+            // Test timelock
+            await expect(
+                storageToken.connect(bridgeOperator).bridgeMint(TOTAL_SUPPLY + BigInt(1), 1, 1)
+            ).to.be.revertedWithCustomError(storageToken, "TimeLockActive");
+
+            const timeLockDelay = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [timeLockDelay + 1]); 
+
+            // Test exceeding total supply
+            await expect(
+                storageToken.connect(bridgeOperator).bridgeMint(TOTAL_SUPPLY + BigInt(1), 1, 1)
+            ).to.be.revertedWithCustomError(storageToken, "ExceedsMaximumSupply");
+
+            // Test exceeding transaction limit
+            await expect(
+                storageToken.connect(bridgeOperator).bridgeMint(TOKEN_UNIT * BigInt(1001), 1, 1)
+            ).to.be.revertedWithCustomError(storageToken, "LowAllowance");
+
+            // Test successful mint
+            const mintAmount = TOKEN_UNIT * BigInt(100);
+            const tx = await storageToken.connect(bridgeOperator).bridgeMint(mintAmount, 1, 1);
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "BridgeOperationDetails");
+
+            expect(event?.args?.operation).to.equal("MINT");
+            expect(event?.args?.amount).to.equal(mintAmount);
+            expect(event?.args?.chainId).to.equal(1);
+
+            // Test duplicate nonce
+            await expect(
+                storageToken.connect(bridgeOperator).bridgeMint(TOKEN_UNIT, 1, 1)
+            ).to.be.revertedWith("Used nonce");
+
+            // Verify contract balance increased
+            const contractAddress = await storageToken.getAddress();
+            expect(await storageToken.balanceOf(contractAddress)).to.equal(
+                (TOTAL_SUPPLY / BigInt(2)) + mintAmount
+            );
+        });
+    });
+});
+
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    let bridgeOperator: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1, bridgeOperator] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("bridgeBurn", () => {
+        beforeEach(async () => {
+            // Setup bridge operator role
+            const BRIDGE_OPERATOR_ROLE = await storageToken.BRIDGE_OPERATOR_ROLE();
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+            
+            const tx = await storageToken.connect(owner).createProposal(
+                0, // RoleChange
+                bridgeOperator.address,
+                BRIDGE_OPERATOR_ROLE,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            
+            const proposalId = event?.args?.proposalId;
+            await storageToken.connect(admin).approveProposal(proposalId);
+            
+            const executionDelay = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+            await storageToken.connect(owner).executeProposal(proposalId);
+
+            // Set transaction limit for bridge operator
+            await storageToken.connect(owner).setRoleTransactionLimit(BRIDGE_OPERATOR_ROLE, TOKEN_UNIT * BigInt(1000));
+
+            // Set supported chain
+            await storageToken.connect(owner).setSupportedChain(1, true);
+        });
+
+        it("should properly handle bridge burning with all features", async () => {
+            // Test burn when paused
+            await storageToken.connect(owner).emergencyPauseToken();
+            await expect(
+                storageToken.connect(bridgeOperator).bridgeBurn(TOKEN_UNIT, 1, 1)
+            ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
+
+            // Unpause with cooldown
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await storageToken.connect(owner).emergencyUnpauseToken();
+
+            // Test non-bridge operator burn attempt
+            await expect(
+                storageToken.connect(addr1).bridgeBurn(TOKEN_UNIT, 1, 1)
+            ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount");
+
+            // Test unsupported chain
+            await expect(
+                storageToken.connect(bridgeOperator).bridgeBurn(TOKEN_UNIT, 2, 1)
+            ).to.be.revertedWithCustomError(storageToken, "UnsupportedChain");
+
+            // Test time lock
+            await expect(
+                storageToken.connect(bridgeOperator).bridgeBurn(TOKEN_UNIT * BigInt(1001), 1, 1)
+            ).to.be.revertedWithCustomError(storageToken, "TimeLockActive");
+
+            const timeLockDelay = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [timeLockDelay + 1]); 
+
+            // Test exceeding transaction limit
+            await expect(
+                storageToken.connect(bridgeOperator).bridgeBurn(TOKEN_UNIT * BigInt(1001), 1, 1)
+            ).to.be.revertedWithCustomError(storageToken, "LowAllowance");
+
+            // Test successful burn
+            const burnAmount = TOKEN_UNIT * BigInt(100);
+            const initialBalance = await storageToken.balanceOf(await storageToken.getAddress());
+            
+            const tx = await storageToken.connect(bridgeOperator).bridgeBurn(burnAmount, 1, 1);
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "BridgeOperationDetails");
+
+            expect(event?.args?.operation).to.equal("BURN");
+            expect(event?.args?.amount).to.equal(burnAmount);
+            expect(event?.args?.chainId).to.equal(1);
+
+            // Verify balance decreased
+            const contractAddress = await storageToken.getAddress();
+            expect(await storageToken.balanceOf(contractAddress)).to.equal(
+                initialBalance - burnAmount
+            );
+
+            // Test duplicate nonce
+            await expect(
+                storageToken.connect(bridgeOperator).bridgeBurn(TOKEN_UNIT, 1, 1)
+            ).to.be.revertedWith("Used nonce");
+        });
+    });
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("setSupportedChain", () => {
+        it("should properly handle chain support settings with all features", async () => {
+            // Test when paused
+            await storageToken.connect(owner).emergencyPauseToken();
+            await expect(
+                storageToken.connect(owner).setSupportedChain(1, true)
+            ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
+
+            // Unpause with cooldown
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await storageToken.connect(owner).emergencyUnpauseToken();
+
+            // Test non-admin attempt
+            await expect(
+                storageToken.connect(addr1).setSupportedChain(1, true)
+            ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount");
+
+            // Test invalid chain ID
+            await expect(
+                storageToken.connect(owner).setSupportedChain(0, true)
+            ).to.be.revertedWith("Invalid chain ID");
+
+            // Test successful chain support setting
+            const tx = await storageToken.connect(owner).setSupportedChain(1, true);
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "SupportedChainChanged");
+
+            expect(event?.args?.chainId).to.equal(1);
+            expect(event?.args?.supported).to.be.true;
+            expect(event?.args?.caller).to.equal(owner.address);
+
+            // Verify chain support status
+            expect(await storageToken.supportedChains(1)).to.be.true;
+
+            // Test chain support removal
+            await storageToken.connect(owner).setSupportedChain(1, false);
+            expect(await storageToken.supportedChains(1)).to.be.false;
+
+            // Test timelock restriction
+            const newAdmin = addr1;
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            
+            // Grant admin role to new address
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+            const tx2 = await storageToken.connect(owner).createProposal(
+                0, // RoleChange
+                newAdmin.address,
+                ADMIN_ROLE,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt2 = await tx2.wait();
+            const event2 = receipt2?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            
+            const proposalId = event2?.args?.proposalId;
+            await storageToken.connect(admin).approveProposal(proposalId);
+            
+            const executionDelay = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+            await storageToken.connect(owner).executeProposal(proposalId);
+
+            // Try to set chain support before timelock expires
+            await expect(
+                storageToken.connect(newAdmin).setSupportedChain(2, true)
+            ).to.be.revertedWithCustomError(storageToken, "TimeLockActive");
+        });
+    });
+});
+
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("emergencyPauseToken and emergencyUnpauseToken", () => {
+        it("should properly handle emergency actions with all features", async () => {
+            // Test non-admin pause attempt
+            await expect(
+                storageToken.connect(addr1).emergencyPauseToken()
+            ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount");
+
+            // Test successful pause
+            const tx = await storageToken.connect(owner).emergencyPauseToken();
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "EmergencyAction");
+
+            expect(event?.args?.action).to.equal("Contract paused");
+            expect(event?.args?.caller).to.equal(owner.address);
+
+            // Test pause when already paused
+            await expect(
+                storageToken.connect(owner).emergencyPauseToken()
+            ).to.be.revertedWith("Cooldown active");
+
+            // Test unpause before cooldown
+            await expect(
+                storageToken.connect(owner).emergencyUnpauseToken()
+            ).to.be.revertedWith("Cooldown active");
+
+            // Advance time past cooldown
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await ethers.provider.send("evm_mine", []);
+
+            // Test successful unpause
+            const tx2 = await storageToken.connect(owner).emergencyUnpauseToken();
+            const receipt2 = await tx2.wait();
+            const event2 = receipt2?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "EmergencyAction");
+
+            expect(event2?.args?.action).to.equal("Contract unpaused");
+            expect(event2?.args?.caller).to.equal(owner.address);
+
+            // Test contract functionality after unpause
+            await storageToken.connect(owner).setSupportedChain(1, true);
+
+            // Test pause with new admin
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+            
+            const tx3 = await storageToken.connect(owner).createProposal(
+                0, // RoleChange
+                addr1.address,
+                ADMIN_ROLE,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt3 = await tx3.wait();
+            const event3 = receipt3?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            
+            const proposalId = event3?.args?.proposalId;
+            await storageToken.connect(admin).approveProposal(proposalId);
+            
+            const executionDelay = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+            await storageToken.connect(owner).executeProposal(proposalId);
+
+            // Test pause with new admin before timelock expires
+            await expect(
+                storageToken.connect(addr1).emergencyPauseToken()
+            ).to.be.revertedWithCustomError(storageToken, "TimeLockActive");
+        });
+    });
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let admin2: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, admin2, addr1] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+
+        // Add another admin for testing removal
+        const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+        await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        
+        const tx = await storageToken.connect(owner).createProposal(
+            0, // RoleChange
+            admin2.address,
+            ADMIN_ROLE,
+            0,
+            ZeroAddress,
+            true
         );
-        expect(event?.args?.wallet).to.equal(wallet);
-    });
-    
-    it("should allow admin to pause the contract in an emergency", async () => {
-        const tx = await token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken();
+        
         const receipt = await tx.wait();
-    
-        // Parse emitted event
         const event = receipt?.logs
             .map((log) => {
                 try {
-                    return token.interface.parseLog(log);
+                    return storageToken.interface.parseLog(log);
                 } catch (e) {
                     return null;
                 }
             })
-            .find((parsedLog) => parsedLog && parsedLog.name === "EmergencyAction");
-    
-        if (!event) throw new Error("EmergencyAction event not found");
-    
-        // Assertions
-        expect(await token.paused()).to.be.true;
-        expect(event.args.action).to.equal("Contract paused");
+            .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+        
+        const proposalId = event?.args?.proposalId;
+        await storageToken.connect(admin).approveProposal(proposalId);
+        
+        const executionDelay = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+        await storageToken.connect(owner).executeProposal(proposalId);
     });
 
-    it("should allow admin to unpause the contract after an emergency", async () => {
-        // Pause the contract first
-        await token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken();
-        await time.increase(5 * 60); 
-    
-        // Unpause the contract
-        const tx = await token.connect(await ethers.getSigner(owner.address)).emergencyUnpauseToken();
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs
-            .map((log) => {
-                try {
-                    return token.interface.parseLog(log);
-                } catch (e) {
-                    return null;
-                }
-            })
-            .find((parsedLog) => parsedLog && parsedLog.name === "EmergencyAction");
-    
-        if (!event) throw new Error("EmergencyAction event not found");
-    
-        // Assertions
-        expect(await token.paused()).to.be.false;
-        expect(event.args.action).to.equal("Contract unpaused");
-    });
+    describe("removeAdmin", () => {
+        it("should properly handle admin removal with all features", async () => {
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
 
-    it("should remove a wallet from whitelist", async () => {
-        const wallet = users[0].address;
-    
-        // Add wallet to whitelist
-        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
-    
-        // Remove wallet from whitelist
-        const tx = await token.connect(await ethers.getSigner(owner.address)).removeFromWhitelist(wallet);
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs
-            .map((log) => {
-                try {
-                    return token.interface.parseLog(log);
-                } catch (e) {
-                    return null;
-                }
-            })
-            .find((parsedLog) => parsedLog && parsedLog.name === "WalletRemovedFromWhitelist");
-    
-        if (!event) throw new Error("WalletRemovedFromWhitelist event not found");
-    
-        // Assertions
-        expect(event.args.wallet).to.equal(wallet);
-    });
-    
-    it("should allow admin to add a bridge operator with time lock", async () => {
-        const bridge_operator_role = await token.BRIDGE_OPERATOR_ROLE();
-        const operator = users[0].address;
-    
-        // Add bridge operator
-        const tx = await token.connect(await ethers.getSigner(owner.address)).updateAddressRole(operator, bridge_operator_role, true);
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs
-            .map((log) => {
-                try {
-                    return token.interface.parseLog(log);
-                } catch (e) {
-                    return null;
-                }
-            })
-            .find((parsedLog) => parsedLog && parsedLog.name === "RoleUpdated");
-    
-        if (!event) throw new Error("RoleUpdated event not found");
-    
-        // Assertions
-        expect(await token.hasRole(await token.BRIDGE_OPERATOR_ROLE(), operator)).to.be.true;
-        expect(event.args.target).to.equal(operator);
-        expect(event.args.role).to.equal(await token.BRIDGE_OPERATOR_ROLE());
-        expect(event.args.status).to.be.true;
-    });
-    
-    it("should allow admin to remove a bridge operator after time lock", async () => {
-        const bridge_operator_role = await token.BRIDGE_OPERATOR_ROLE();
-        const operator = users[0].address;
-    
-        // Add bridge operator first
-        await token.connect(await ethers.getSigner(owner.address)).updateAddressRole(operator, bridge_operator_role, true);
-    
-        // Remove bridge operator
-        const tx = await token.connect(await ethers.getSigner(owner.address)).updateAddressRole(operator, bridge_operator_role, false);
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs
-            .map((log) => {
-                try {
-                    return token.interface.parseLog(log);
-                } catch (e) {
-                    return null;
-                }
-            })
-            .find((parsedLog) => parsedLog && parsedLog.name === "RoleUpdated");
-    
-        if (!event) throw new Error("RoleUpdated event not found");
-    
-        // Assertions
-        expect(await token.hasRole(await token.BRIDGE_OPERATOR_ROLE(), operator)).to.be.false;
-        expect(event.args.target).to.equal(operator);
-        expect(event.args.role).to.equal(await token.BRIDGE_OPERATOR_ROLE());
-        expect(event.args.status).to.be.false;
-    });
-    
-    it("should mint tokens for cross-chain transfers", async () => {
-        const sourceChain = 1; // Example source chain ID
-        const mintAmount = ethers.parseEther("1000");
-    
-        // Set the source chain as supported
-        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(sourceChain, true);
-    
-        // Mint tokens
-        const tx = await token.connect(await ethers.getSigner(owner.address)).bridgeMint(mintAmount, sourceChain);
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs
-            .map((log) => {
-                try {
-                    return token.interface.parseLog(log);
-                } catch (e) {
-                    return null;
-                }
-            })
-            .find((parsedLog) => parsedLog && parsedLog.name === "BridgeOperationDetails");
-    
-        if (!event) throw new Error("BridgeOperationDetails event not found");
-    
-        // Assertions
-        expect(await token.totalSupply()).to.equal(INITIAL_MINTED_TOKENS + BigInt(mintAmount));
-        expect(await token.balanceOf(await token.getAddress())).to.equal(INITIAL_MINTED_TOKENS + BigInt(mintAmount));
-        expect(event.args.operator).to.equal(owner.address);
-        expect(event.args.operation).to.equal("MINT");
-        expect(event.args.amount).to.equal(mintAmount);
-        expect(event.args.chainId).to.equal(sourceChain);
-    });
-    
-    it("should burn tokens for cross-chain transfers", async () => {
-        const targetChain = 2; // Example target chain ID
-        const burnAmount = ethers.parseEther("500");
-    
-        // Set the target chain as supported
-        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(targetChain, true);
-    
-        // Burn tokens
-        const tx = await token.connect(await ethers.getSigner(owner.address)).bridgeBurn(burnAmount, targetChain);
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs
-            .map((log) => {
-                try {
-                    return token.interface.parseLog(log);
-                } catch (e) {
-                    return null;
-                }
-            })
-            .find((parsedLog) => parsedLog && parsedLog.name === "BridgeOperationDetails");
-    
-        if (!event) throw new Error("BridgeOperationDetails event not found");
-    
-        // Assertions
-        expect(await token.totalSupply()).to.equal(INITIAL_MINTED_TOKENS - BigInt(burnAmount));
-        expect(await token.balanceOf(await token.getAddress())).to.equal(INITIAL_MINTED_TOKENS - BigInt(burnAmount));
-        expect(event.args.operator).to.equal(owner.address);
-        expect(event.args.operation).to.equal("BURN");
-        expect(event.args.amount).to.equal(burnAmount);
-        expect(event.args.chainId).to.equal(targetChain);
-    });
+            // Test removal when paused
+            await storageToken.connect(owner).emergencyPauseToken();
+            await expect(
+                storageToken.connect(owner).removeAdmin(admin.address)
+            ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
 
-    it("should add a supported chain", async () => {
-        const chainId = 42; // Example chain ID
-    
-        // Add supported chain
-        const tx = await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(chainId, true);
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "SupportedChainChanged");
-    
-        if (!event) throw new Error("SupportedChainChanged event not found");
-    
-        // Assertions
-        expect(await token.supportedChains(chainId)).to.be.true;
-        expect(event.args.chainId).to.equal(chainId);
-        expect(event.args.supported).to.be.true;
-    });
+            // Unpause with cooldown
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await storageToken.connect(owner).emergencyUnpauseToken();
 
-    it("should remove a supported chain", async () => {
-        const chainId = 42; // Example chain ID
-    
-        // Add supported chain first
-        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(chainId, true);
-    
-        // Remove supported chain
-        const tx = await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(chainId, false);
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "SupportedChainChanged");
-    
-        if (!event) throw new Error("SupportedChainChanged event not found");
-    
-        // Assertions
-        expect(await token.supportedChains(chainId)).to.be.false;
-        expect(event.args.chainId).to.equal(chainId);
-        expect(event.args.supported).to.be.false;
+            // Test non-admin removal attempt
+            await expect(
+                storageToken.connect(addr1).removeAdmin(admin.address)
+            ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount");
+
+            // Test zero address removal
+            await expect(
+                storageToken.connect(owner).removeAdmin(ZeroAddress)
+            ).to.be.revertedWithCustomError(storageToken, "InvalidAddress");
+
+            // Test self-removal
+            await expect(
+                storageToken.connect(owner).removeAdmin(owner.address)
+            ).to.be.revertedWith("Cannot remove self");
+
+            // Test successful admin removal
+            const tx = await storageToken.connect(owner).removeAdmin(admin2.address);
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "RoleUpdated");
+
+            expect(event?.args?.target).to.equal(admin2.address);
+            expect(event?.args?.role).to.equal(ADMIN_ROLE);
+            expect(event?.args?.status).to.be.false;
+
+            // Verify admin was removed
+            expect(await storageToken.hasRole(ADMIN_ROLE, admin2.address)).to.be.false;
+
+            // Test removing last two admins
+            await expect(
+                storageToken.connect(owner).removeAdmin(admin.address)
+            ).to.be.revertedWith("Cannot remove last two admins");
+        });
     });
-    
-    it("should transfer tokens from contract to whitelisted address", async () => {
-        const wallet = users[0].address;
-        const transferAmount = ethers.parseEther("500");
-    
-        // Add wallet to whitelist
-        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
-    
-        // Advance time by whitelist lock duration
-        await time.increase(WHITELIST_LOCK_DURATION);
-    
-        // Transfer tokens from contract
-        const tx = await token.connect(await ethers.getSigner(owner.address)).transferFromContract(wallet, transferAmount);
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "TransferFromContract");
-    
-        if (!event) throw new Error("TransferFromContract event not found");
-    
-        // Assertions
-        expect(await token.balanceOf(wallet)).to.equal(BigInt(transferAmount));
-        expect(await token.balanceOf(await token.getAddress())).to.equal(
-            BigInt(INITIAL_MINTED_TOKENS) - BigInt(transferAmount)
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    let addr2: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1, addr2] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+
+        // Setup initial token balance for testing transfers
+        const CONTRACT_OPERATOR_ROLE = await storageToken.CONTRACT_OPERATOR_ROLE();
+        const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+        
+        // Set quorum for admin role
+        await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+
+        // Create and execute operator role proposal
+        const tx = await storageToken.connect(owner).createProposal(
+            0, // RoleChange
+            addr1.address,
+            CONTRACT_OPERATOR_ROLE,
+            0,
+            ZeroAddress,
+            true
         );
-        expect(event.args.from).to.equal(await token.getAddress());
-        expect(event.args.to).to.equal(wallet);
-        expect(event.args.amount).to.equal(transferAmount);
-    });
-
-    it("should revert when transferring tokens to a non-whitelisted address", async () => {
-        const wallet = users[0].address;
-        const transferAmount = INITIAL_MINTED_TOKENS / BigInt(2);
-    
-        // Attempt to transfer tokens from contract to non-whitelisted address
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).transferFromContract(wallet, transferAmount)
-        ).to.be.revertedWith("Recipient not whitelisted");
-    });
-    it("should revert when minting tokens exceeding maximum supply", async () => {
-        const sourceChain = 1; // Example source chain ID
-        const excessiveAmount = BigInt(2) * MAX_SUPPLY; // Exceeds total supply
-    
-        // Set the source chain as supported
-        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(sourceChain, true);
-    
-        // Attempt to mint excessive tokens
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).bridgeMint(excessiveAmount, sourceChain)
-        ).to.be.revertedWithCustomError(token, "ExceedsMaximumSupply");
-    });
-
-    it("should revert when burning tokens without sufficient balance", async () => {
-        const targetChain = 2; // Example target chain ID
-        const burnAmount = BigInt(2) * INITIAL_MINTED_TOKENS; // Excessive amount
-    
-        // Set the target chain as supported
-        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(targetChain, true);
-    
-        // Attempt to burn excessive tokens
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).bridgeBurn(burnAmount, targetChain)
-        ).to.be.revertedWith("Insufficient balance to burn");
-    });
-    
-    it("should only allow admins to add another admin", async () => {
-        const newAdmin = users[0].address;
-    
-        // Attempt to add admin from a non-admin account 
-        await expect(
-            token.connect(await ethers.getSigner(users[1].address)).addAdmin(newAdmin)
-        ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
-    
-        // Add admin from an existing admin account
-        const tx = await token.connect(await ethers.getSigner(owner.address)).addAdmin(newAdmin);
+        
         const receipt = await tx.wait();
-    
-        // Parse emitted events
-        const events = receipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).filter((parsedLog) => parsedLog && parsedLog.name === "RoleUpdated");
-    
-        if (!events || events.length !== 2) throw new Error("Expected two RoleUpdated events");
-    
-        // Assertions for new admin addition
-        const addEvent = events.find(e => e.args.status === true);
-        expect(await token.hasRole(await token.ADMIN_ROLE(), newAdmin)).to.be.true;
-        expect(addEvent.args.target).to.equal(newAdmin);
-        expect(addEvent.args.role).to.equal(await token.ADMIN_ROLE());
-        expect(addEvent.args.status).to.be.true;
-    
-        // Assertions for owner role removal
-        const removeEvent = events.find(e => e.args.status === false);
-        expect(await token.hasRole(await token.ADMIN_ROLE(), owner.address)).to.be.false;
-        expect(removeEvent.args.target).to.equal(owner.address);
-        expect(removeEvent.args.role).to.equal(await token.ADMIN_ROLE());
-        expect(removeEvent.args.status).to.be.false;
-    });    
+        const event = receipt?.logs
+            .map((log) => {
+                try {
+                    return storageToken.interface.parseLog(log);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+        
+        const proposalId = event?.args?.proposalId;
+        await storageToken.connect(admin).approveProposal(proposalId);
+        
+        const executionDelay = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+        await storageToken.connect(owner).executeProposal(proposalId);
 
-    it("should enforce emergency cooldown between pause actions", async () => {
-        // Pause the contract
-        const tx = await token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken();
+        // Set transaction limit for operator
+        await storageToken.connect(owner).setRoleTransactionLimit(CONTRACT_OPERATOR_ROLE, TOKEN_UNIT * BigInt(1000));
+
+        // Create and execute whitelist proposal for addr2
+        const tx2 = await storageToken.connect(owner).createProposal(
+            3, // Whitelist
+            addr2.address,
+            ethers.ZeroHash,
+            0,
+            ZeroAddress,
+            true
+        );
+        
+        const receipt2 = await tx2.wait();
+        const event2 = receipt2?.logs
+            .map((log) => {
+                try {
+                    return storageToken.interface.parseLog(log);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+        
+        const proposalId2 = event2?.args?.proposalId;
+        await storageToken.connect(admin).approveProposal(proposalId2);
+        
+        await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+        await storageToken.connect(owner).executeProposal(proposalId2);
+
+        // Wait for whitelist lock to expire
+        const whitelistLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [whitelistLock + 1]);
+    });
+
+    describe("transfer", () => {
+        it("should properly handle token transfers with all features", async () => {
+            // Test transfer when paused
+            await storageToken.connect(owner).emergencyPauseToken();
+            await expect(
+                storageToken.connect(addr1).transfer(addr2.address, TOKEN_UNIT)
+            ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
+
+            // Unpause with cooldown
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await storageToken.connect(owner).emergencyUnpauseToken();
+
+            // Test zero amount transfer
+            await expect(
+                storageToken.connect(addr1).transfer(addr2.address, 0)
+            ).to.be.revertedWithCustomError(storageToken, "AmountMustBePositive");
+
+            // Test transfer to zero address
+            await expect(
+                storageToken.connect(addr1).transfer(ZeroAddress, TOKEN_UNIT)
+            ).to.be.revertedWithCustomError(storageToken, "InvalidAddress");
+
+            // Test successful transfer from contract to whitelisted address
+            const transferAmount = TOKEN_UNIT * BigInt(50);
+            await storageToken.connect(addr1).transferFromContract(addr2.address, transferAmount);
+
+            // Test normal transfer between accounts
+            await storageToken.connect(addr2).transfer(addr1.address, transferAmount);
+
+            // Verify balances
+            expect(await storageToken.balanceOf(addr1.address)).to.equal(transferAmount);
+            expect(await storageToken.balanceOf(addr2.address)).to.equal(0);
+
+            // Verify activity timestamp updated
+            const lastActivity = await storageToken.lastActivityTime(addr2.address);
+            const blockTimestamp = (await ethers.provider.getBlock("latest"))?.timestamp;
+            expect(lastActivity).to.equal(blockTimestamp);
+        });
+    });
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("setRoleQuorum", () => {
+        it("should properly handle role quorum settings with all features", async () => {
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            const CONTRACT_OPERATOR_ROLE = await storageToken.CONTRACT_OPERATOR_ROLE();
+            const BRIDGE_OPERATOR_ROLE = await storageToken.BRIDGE_OPERATOR_ROLE();
+
+            // Test when paused
+            await storageToken.connect(owner).emergencyPauseToken();
+            await expect(
+                storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2)
+            ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
+
+            // Unpause with cooldown
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await storageToken.connect(owner).emergencyUnpauseToken();
+
+            // Test non-admin attempt
+            await expect(
+                storageToken.connect(addr1).setRoleQuorum(ADMIN_ROLE, 2)
+            ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount");
+
+            // Test invalid quorum (less than 2)
+            await expect(
+                storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 1)
+            ).to.be.revertedWith("Invalid quorum");
+
+            // Test successful quorum setting for all roles
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+            await storageToken.connect(owner).setRoleQuorum(CONTRACT_OPERATOR_ROLE, 3);
+            await storageToken.connect(owner).setRoleQuorum(BRIDGE_OPERATOR_ROLE, 4);
+
+            // Verify quorum values
+            expect(await storageToken.getRoleQuorum(ADMIN_ROLE)).to.equal(2);
+            expect(await storageToken.getRoleQuorum(CONTRACT_OPERATOR_ROLE)).to.equal(3);
+            expect(await storageToken.getRoleQuorum(BRIDGE_OPERATOR_ROLE)).to.equal(4);
+
+            // Test quorum update
+            const tx = await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 5);
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "QuorumUpdated");
+
+            expect(event?.args?.role).to.equal(ADMIN_ROLE);
+            expect(event?.args?.newQuorum).to.equal(5);
+        });
+    });
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("checkRoleActivity", () => {
+        it("should properly track role activity with all features", async () => {
+            // Test initial state (no activity)
+            expect(await storageToken.checkRoleActivity(addr1.address)).to.be.false;
+
+            // Setup contract operator role
+            const CONTRACT_OPERATOR_ROLE = await storageToken.CONTRACT_OPERATOR_ROLE();
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+            
+            // Create and execute operator role proposal
+            const tx = await storageToken.connect(owner).createProposal(
+                0, // RoleChange
+                addr1.address,
+                CONTRACT_OPERATOR_ROLE,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            
+            const proposalId = event?.args?.proposalId;
+            await storageToken.connect(admin).approveProposal(proposalId);
+            
+            const executionDelay = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+            await storageToken.connect(owner).executeProposal(proposalId);
+
+            // Create and execute whitelist proposal for addr1
+            const tx2 = await storageToken.connect(owner).createProposal(
+                3, // Whitelist
+                addr1.address,
+                ethers.ZeroHash,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt2 = await tx2.wait();
+            const event2 = receipt2?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            
+            const proposalId2 = event2?.args?.proposalId;
+            await storageToken.connect(admin).approveProposal(proposalId2);
+            
+            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+            await storageToken.connect(owner).executeProposal(proposalId2);
+
+            // Wait for whitelist lock to expire
+            const whitelistLock = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [whitelistLock + 1]);
+
+            // Set transaction limit and perform action
+            await storageToken.connect(owner).setRoleTransactionLimit(CONTRACT_OPERATOR_ROLE, TOKEN_UNIT * BigInt(1000));
+            await storageToken.connect(addr1).transferFromContract(addr1.address, TOKEN_UNIT);
+            expect(await storageToken.checkRoleActivity(addr1.address)).to.be.true;
+
+            // Test activity after inactivity period
+            const inactivityThreshold = 365 * 24 * 60 * 60; // 365 days in seconds
+            await ethers.provider.send("evm_increaseTime", [inactivityThreshold + 1]);
+            await ethers.provider.send("evm_mine", []);
+
+            expect(await storageToken.checkRoleActivity(addr1.address)).to.be.false;
+        });
+    });
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("setRoleTransactionLimit", () => {
+        it("should properly handle role transaction limits with all features", async () => {
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            const CONTRACT_OPERATOR_ROLE = await storageToken.CONTRACT_OPERATOR_ROLE();
+            const BRIDGE_OPERATOR_ROLE = await storageToken.BRIDGE_OPERATOR_ROLE();
+
+            // Test when paused
+            await storageToken.connect(owner).emergencyPauseToken();
+            await expect(
+                storageToken.connect(owner).setRoleTransactionLimit(CONTRACT_OPERATOR_ROLE, TOKEN_UNIT * BigInt(1000))
+            ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
+
+            // Unpause with cooldown
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await storageToken.connect(owner).emergencyUnpauseToken();
+
+            // Test non-admin attempt
+            await expect(
+                storageToken.connect(addr1).setRoleTransactionLimit(CONTRACT_OPERATOR_ROLE, TOKEN_UNIT * BigInt(1000))
+            ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount");
+
+            // Test setting limits for different roles
+            const tx = await storageToken.connect(owner).setRoleTransactionLimit(CONTRACT_OPERATOR_ROLE, TOKEN_UNIT * BigInt(1000));
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "TransactionLimitUpdated");
+
+            expect(event?.args?.role).to.equal(CONTRACT_OPERATOR_ROLE);
+            expect(event?.args?.newLimit).to.equal(TOKEN_UNIT * BigInt(1000));
+
+            // Set and verify limits for other roles
+            await storageToken.connect(owner).setRoleTransactionLimit(BRIDGE_OPERATOR_ROLE, TOKEN_UNIT * BigInt(2000));
+            await storageToken.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, TOKEN_UNIT * BigInt(3000));
+
+            // Verify limits were set correctly
+            expect(await storageToken.getRoleTransactionLimit(CONTRACT_OPERATOR_ROLE)).to.equal(TOKEN_UNIT * BigInt(1000));
+            expect(await storageToken.getRoleTransactionLimit(BRIDGE_OPERATOR_ROLE)).to.equal(TOKEN_UNIT * BigInt(2000));
+            expect(await storageToken.getRoleTransactionLimit(ADMIN_ROLE)).to.equal(TOKEN_UNIT * BigInt(3000));
+
+            // Verify activity timestamp updated
+            const lastActivity = await storageToken.lastActivityTime(owner.address);
+            const blockTimestamp = (await ethers.provider.getBlock("latest"))?.timestamp;
+            expect(lastActivity).to.equal(blockTimestamp);
+        });
+    });
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    let addr2: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1, addr2] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("getPendingProposals", () => {
+        it("should properly handle pending proposals retrieval with all features", async () => {
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+
+            // Create multiple proposals of different types
+            const tx1 = await storageToken.connect(owner).createProposal(
+                3, // Whitelist
+                addr1.address,
+                ethers.ZeroHash,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt1 = await tx1.wait();
+            const event1 = receipt1?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            
+            const proposalId1 = event1?.args?.proposalId;
+
+            // Create another proposal
+            const tx2 = await storageToken.connect(owner).createProposal(
+                0, // RoleChange
+                addr2.address,
+                ADMIN_ROLE,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt2 = await tx2.wait();
+            const event2 = receipt2?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            
+            const proposalId2 = event2?.args?.proposalId;
+
+            // Get pending proposals
+            const pendingProposals = await storageToken.getPendingProposals();
+            
+            // Verify number of pending proposals
+            expect(pendingProposals.proposalIds.length).to.equal(2);
+            expect(pendingProposals.types.length).to.equal(2);
+            expect(pendingProposals.targets.length).to.equal(2);
+            expect(pendingProposals.expiryTimes.length).to.equal(2);
+            expect(pendingProposals.executed.length).to.equal(2);
+
+            // Verify proposal details
+            expect(pendingProposals.targets).to.include(addr1.address);
+            expect(pendingProposals.targets).to.include(addr2.address);
+            expect(pendingProposals.types).to.include(BigInt(3)); // Whitelist
+            expect(pendingProposals.types).to.include(BigInt(0)); // RoleChange
+            expect(pendingProposals.executed).to.deep.equal([false, false]);
+
+            // Execute one proposal
+            await storageToken.connect(admin).approveProposal(proposalId1);
+            const executionDelay = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+            await storageToken.connect(owner).executeProposal(proposalId1);
+
+            // Verify updated pending proposals
+            const updatedPendingProposals = await storageToken.getPendingProposals();
+            expect(updatedPendingProposals.proposalIds.length).to.equal(1);
+            expect(updatedPendingProposals.targets[0]).to.equal(addr2.address);
+            expect(updatedPendingProposals.types[0]).to.equal(0); // RoleChange
+
+            // Let a proposal expire
+            const proposalTimeout = 48 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [proposalTimeout + 1]);
+            await ethers.provider.send("evm_mine", []);
+
+            // Verify no pending proposals after expiry
+            const finalPendingProposals = await storageToken.getPendingProposals();
+            expect(finalPendingProposals.proposalIds.length).to.equal(0);
+        });
+    });
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("getProposalDetails", () => {
+        let proposalId: string;
+
+        beforeEach(async () => {
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+            
+            // Create a test proposal
+            const tx = await storageToken.connect(owner).createProposal(
+                3, // Whitelist
+                addr1.address,
+                ethers.ZeroHash,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            
+            proposalId = event?.args?.proposalId;
+        });
+
+        it("should properly retrieve proposal details with all features", async () => {
+            // Test non-existent proposal
+            await expect(
+                storageToken.getProposalDetails(ethers.ZeroHash)
+            ).to.be.revertedWithCustomError(storageToken, "ProposalNotFoundErr");
+
+            // Get proposal details
+            const details = await storageToken.connect(addr1).getProposalDetails(proposalId);
+            
+            // Verify proposal details
+            expect(details.proposalType).to.equal(3); // Whitelist
+            expect(details.target).to.equal(addr1.address);
+            expect(details.role).to.equal(ethers.ZeroHash);
+            expect(details.amount).to.equal(0);
+            expect(details.tokenAddress).to.equal(ZeroAddress);
+            expect(details.isAdd).to.be.true;
+            expect(details.approvals).to.equal(1);
+            expect(details.executed).to.be.false;
+            expect(details.hasApproved).to.be.false; // For non-creator caller
+
+            // Get details as proposal creator
+            const creatorDetails = await storageToken.connect(owner).getProposalDetails(proposalId);
+            expect(creatorDetails.hasApproved).to.be.true;
+
+            // Approve proposal and verify updated details
+            await storageToken.connect(admin).approveProposal(proposalId);
+            const updatedDetails = await storageToken.getProposalDetails(proposalId);
+            expect(updatedDetails.approvals).to.equal(2);
+
+            // Execute proposal and verify final state
+            const executionDelay = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+            await storageToken.connect(owner).executeProposal(proposalId);
+
+            const finalDetails = await storageToken.getProposalDetails(proposalId);
+            expect(finalDetails.executed).to.be.true;
+        });
+    });
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("hasApprovedProposal", () => {
+        let proposalId: string;
+
+        beforeEach(async () => {
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+            
+            // Create a test proposal
+            const tx = await storageToken.connect(owner).createProposal(
+                3, // Whitelist
+                addr1.address,
+                ethers.ZeroHash,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            
+            proposalId = event?.args?.proposalId;
+        });
+
+        it("should properly check proposal approvals with all features", async () => {
+            // Check creator's approval status
+            expect(await storageToken.hasApprovedProposal(proposalId, owner.address)).to.be.true;
+
+            // Check non-approver's status
+            expect(await storageToken.hasApprovedProposal(proposalId, addr1.address)).to.be.false;
+
+            // Add another approval
+            await storageToken.connect(admin).approveProposal(proposalId);
+            expect(await storageToken.hasApprovedProposal(proposalId, admin.address)).to.be.true;
+
+            // Check non-existent proposal
+            expect(await storageToken.hasApprovedProposal(ethers.ZeroHash, owner.address)).to.be.false;
+
+            // Execute proposal and verify approvals still exist
+            const executionDelay = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+            await storageToken.connect(owner).executeProposal(proposalId);
+
+            expect(await storageToken.hasApprovedProposal(proposalId, owner.address)).to.be.true;
+            expect(await storageToken.hasApprovedProposal(proposalId, admin.address)).to.be.true;
+        });
+    });
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+    });
+
+    describe("getRoleTransactionLimit and getRoleQuorum", () => {
+        it("should properly handle role limits and quorums with all features", async () => {
+            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+            const CONTRACT_OPERATOR_ROLE = await storageToken.CONTRACT_OPERATOR_ROLE();
+            const BRIDGE_OPERATOR_ROLE = await storageToken.BRIDGE_OPERATOR_ROLE();
+
+            // Test initial values
+            expect(await storageToken.getRoleTransactionLimit(ADMIN_ROLE)).to.equal(0);
+            expect(await storageToken.getRoleTransactionLimit(CONTRACT_OPERATOR_ROLE)).to.equal(0);
+            expect(await storageToken.getRoleTransactionLimit(BRIDGE_OPERATOR_ROLE)).to.equal(0);
+            expect(await storageToken.getRoleQuorum(ADMIN_ROLE)).to.equal(0);
+            expect(await storageToken.getRoleQuorum(CONTRACT_OPERATOR_ROLE)).to.equal(0);
+            expect(await storageToken.getRoleQuorum(BRIDGE_OPERATOR_ROLE)).to.equal(0);
+
+            // Set and verify transaction limits
+            await storageToken.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, TOKEN_UNIT * BigInt(1000));
+            await storageToken.connect(owner).setRoleTransactionLimit(CONTRACT_OPERATOR_ROLE, TOKEN_UNIT * BigInt(500));
+            await storageToken.connect(owner).setRoleTransactionLimit(BRIDGE_OPERATOR_ROLE, TOKEN_UNIT * BigInt(2000));
+
+            expect(await storageToken.getRoleTransactionLimit(ADMIN_ROLE)).to.equal(TOKEN_UNIT * BigInt(1000));
+            expect(await storageToken.getRoleTransactionLimit(CONTRACT_OPERATOR_ROLE)).to.equal(TOKEN_UNIT * BigInt(500));
+            expect(await storageToken.getRoleTransactionLimit(BRIDGE_OPERATOR_ROLE)).to.equal(TOKEN_UNIT * BigInt(2000));
+
+            // Set and verify quorums
+            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+            await storageToken.connect(owner).setRoleQuorum(CONTRACT_OPERATOR_ROLE, 3);
+            await storageToken.connect(owner).setRoleQuorum(BRIDGE_OPERATOR_ROLE, 4);
+
+            expect(await storageToken.getRoleQuorum(ADMIN_ROLE)).to.equal(2);
+            expect(await storageToken.getRoleQuorum(CONTRACT_OPERATOR_ROLE)).to.equal(3);
+            expect(await storageToken.getRoleQuorum(BRIDGE_OPERATOR_ROLE)).to.equal(4);
+
+            // Test non-existent role
+            const FAKE_ROLE = ethers.id("FAKE_ROLE");
+            expect(await storageToken.getRoleTransactionLimit(FAKE_ROLE)).to.equal(0);
+            expect(await storageToken.getRoleQuorum(FAKE_ROLE)).to.equal(0);
+        });
+    });
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+    });
+
+    describe("tokenUnit and maxSupply", () => {
+        it("should return correct token unit and max supply values", async () => {
+            // Test tokenUnit
+            const unit = await storageToken.tokenUnit();
+            expect(unit).to.equal(TOKEN_UNIT);
+            
+            // Verify unit is 10^18
+            expect(unit).to.equal(ethers.parseEther("1"));
+
+            // Test maxSupply
+            const max = await storageToken.maxSupply();
+            expect(max).to.equal(TOTAL_SUPPLY);
+            
+            // Verify max supply is 2 billion tokens
+            expect(max).to.equal(ethers.parseEther("2000000000"));
+
+            // Verify max supply calculation
+            const expectedMaxSupply = BigInt(2000000000) * TOKEN_UNIT;
+            expect(max).to.equal(expectedMaxSupply);
+
+            // Verify current total supply is half of max supply
+            expect(await storageToken.totalSupply()).to.equal(TOTAL_SUPPLY / BigInt(2));
+        });
+    });
+});
+
+describe("StorageToken", () => {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let addr1: SignerWithAddress;
+    let operator: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  
+    beforeEach(async () => {
+        [owner, admin, addr1, operator] = await ethers.getSigners();
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            TOTAL_SUPPLY / BigInt(2)
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Handle timelock
+        const roleChangeTimeLock = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
+        await ethers.provider.send("evm_mine", []);
+
+        // Set quorums for both roles first
+        const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+        const CONTRACT_OPERATOR_ROLE = await storageToken.CONTRACT_OPERATOR_ROLE();
+        await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        await storageToken.connect(owner).setRoleQuorum(CONTRACT_OPERATOR_ROLE, 2);
+
+        // Setup operator role through proposal
+        const tx = await storageToken.connect(owner).createProposal(
+            0, // RoleChange
+            addr1.address,
+            ADMIN_ROLE,
+            0,
+            ZeroAddress,
+            true
+        );
+        
         const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "EmergencyAction");
-    
-        if (!event) throw new Error("EmergencyAction event not found");
-    
-        // Assertions
-        expect(event.args.action).to.equal("Contract paused");
-
-        // Attempt to pause again before cooldown expires
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken()
-        ).to.be.revertedWith("Cooldown active");
-    
-        // Advance time by EMERGENCY_COOLDOWN
-        await time.increase(5 * 60); // 5 minutes in seconds
-    
-        // Pause the contract again after cooldown
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken()
-        ).to.be.revertedWithCustomError(token, "EnforcedPause");
+        const event = receipt?.logs
+            .map((log) => {
+                try {
+                    return storageToken.interface.parseLog(log);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+        
+        const proposalId = event?.args?.proposalId;
+        await storageToken.connect(admin).approveProposal(proposalId);
+        
+        const executionDelay = 24 * 60 * 60;
+        await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+        await storageToken.connect(owner).executeProposal(proposalId);
     });
 
-    it("should enforce role change time lock for new bridge operator", async () => {
-        const bridge_operator_role = await token.BRIDGE_OPERATOR_ROLE();
-        const bridgeOperator = users[0].address;
-        const mintAmount = ethers.parseEther("500");
-        const sourceChain = 1;
-    
-        // Add bridge operator
-        await token.connect(await ethers.getSigner(owner.address)).updateAddressRole(bridgeOperator, bridge_operator_role, true);
-    
-        // Set source chain as supported
-        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(sourceChain, true);
-    
-        // Attempt to mint tokens before time lock expires
-        await expect(
-            token.connect(await ethers.getSigner(bridgeOperator)).bridgeMint(mintAmount, sourceChain)
-        ).to.be.revertedWithCustomError(token, "TimeLockActive");
-    
-        // Advance time by ROLE_CHANGE_DELAY
-        await time.increase(24 * 60 * 60); // 8 hours in seconds
-    
-        // Mint tokens successfully after time lock expires
-        const tx = await token.connect(await ethers.getSigner(bridgeOperator)).bridgeMint(mintAmount, sourceChain);
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "BridgeOperationDetails");
-    
-        if (!event) throw new Error("BridgeOperationDetails event not found");
-    
-        // Assertions
-        expect(event.args.operator).to.equal(bridgeOperator);
-        expect(event.args.operation).to.equal("MINT");
-        expect(event.args.amount).to.equal(BigInt(mintAmount));
-    });
-    
-    it("should revert when attempting to whitelist the zero address", async () => {
-        const zeroAddress = ethers.ZeroAddress;
-    
-        // Attempt to whitelist the zero address
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).addToWhitelist(zeroAddress)
-        ).to.be.revertedWith("Invalid wallet address");
-    });
+    describe("upgrade", () => {
+        it("should properly handle contract upgrades with all features", async () => {
+            // Create factory with addr1 signer
+            const StorageTokenV2 = await ethers.getContractFactory("StorageToken", addr1);
+            
+            // Deploy implementation contract to get its address
+            const implementationContract = await StorageTokenV2.deploy();
+            await implementationContract.waitForDeployment();
+            const implementationAddress = await implementationContract.getAddress();
 
-    it("should allow removing a whitelisted address before lock expires", async () => {
-        const wallet = users[0].address;
+            const executionDelay2 = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [executionDelay2 + 1]);
     
-        // Add wallet to whitelist
-        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
+            // Create and execute upgrade proposal first
+            const tx = await storageToken.connect(addr1).createProposal(
+                1, // Upgrade
+                implementationAddress,
+                ethers.ZeroHash,
+                0,
+                ZeroAddress,
+                true
+            );
+            
+            const receipt = await tx.wait();
+            const event = receipt?.logs
+                .map((log) => {
+                    try {
+                        return storageToken.interface.parseLog(log);
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+            
+            const proposalId = event?.args?.proposalId;
+            console.log(`proposalId=${proposalId}`);
     
-        // Remove wallet from whitelist before lock expires
-        const tx = await token.connect(await ethers.getSigner(owner.address)).removeFromWhitelist(wallet);
-        const receipt = await tx.wait();
+            // Add approval
+            await storageToken.connect(admin).approveProposal(proposalId);
+            
+            const executionDelay = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
     
-        // Parse emitted event
-        const event = receipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "WalletRemovedFromWhitelist");
+            // Now test upgrade when paused
+            await storageToken.connect(owner).emergencyPauseToken();
+            await expect(
+                upgrades.upgradeProxy(
+                    await storageToken.getAddress(),
+                    StorageTokenV2,
+                    { kind: 'uups' }
+                )
+            ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
     
-        if (!event) throw new Error("WalletRemovedFromWhitelist event not found");
+            // Unpause with cooldown
+            const coolDownLock = 30 * 60;
+            await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
+            await storageToken.connect(owner).emergencyUnpauseToken();
     
-        // Assertions
-        expect(event.args.wallet).to.equal(wallet);
-    });
-
-    it("should revert when unpausing before cooldown expires", async () => {
-        // Pause the contract
-        await token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken();
-    
-        // Attempt to unpause before cooldown expires
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).emergencyUnpauseToken()
-        ).to.be.revertedWith("Cooldown active");
-    });
-
-    it("should allow unpausing after cooldown expires", async () => {
-        // Pause the contract
-        await token.connect(await ethers.getSigner(owner.address)).emergencyPauseToken();
-    
-        // Advance time by EMERGENCY_COOLDOWN
-        await time.increase(5 * 60); // 5 minutes in seconds
-    
-        // Unpause the contract
-        const tx = await token.connect(await ethers.getSigner(owner.address)).emergencyUnpauseToken();
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "EmergencyAction");
-    
-        if (!event) throw new Error("EmergencyAction event not found");
-    
-        // Assertions
-        expect(await token.paused()).to.be.false;
-        expect(event.args.action).to.equal("Contract unpaused");
+            // Test successful upgrade
+            const upgradedToken = await upgrades.upgradeProxy(
+                await storageToken.getAddress(),
+                StorageTokenV2,
+                { kind: 'uups' }
+            );
+            expect(await upgradedToken.version()).to.equal(1);
+        });
     });
     
-    it("should revert when minting tokens for an unsupported source chain", async () => {
-        const unsupportedChain = 99; // Example unsupported chain ID
-        const mintAmount = ethers.parseEther("1000");
     
-        // Attempt to mint tokens for an unsupported chain
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).bridgeMint(mintAmount, unsupportedChain)
-        ).to.be.revertedWithCustomError(token, "UnsupportedChain");
-    });
-    it("should revert when burning tokens for an unsupported target chain", async () => {
-        const unsupportedChain = 99; // Example unsupported chain ID
-        const burnAmount = ethers.parseEther("500");
-    
-        // Attempt to burn tokens for an unsupported chain
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).bridgeBurn(burnAmount, unsupportedChain)
-        ).to.be.revertedWithCustomError(token, "UnsupportedChain");
-    });
-    
-    it("should revert when minting zero tokens", async () => {
-        const sourceChain = 1; // Example source chain ID
-    
-        // Set source chain as supported
-        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(sourceChain, true);
-    
-        // Attempt to mint zero tokens
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).bridgeMint(0, sourceChain)
-        ).to.be.revertedWithCustomError(token, "AmountMustBePositive");
-    });
-    it("should revert when minting tokens without BRIDGE_OPERATOR_ROLE", async () => {
-        const sourceChain = 1; // Example source chain ID
-        const mintAmount = ethers.parseEther("1000");
-    
-        // Set source chain as supported
-        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(sourceChain, true);
-    
-        // Attempt to mint tokens without BRIDGE_OPERATOR_ROLE
-        await expect(
-            token.connect(await ethers.getSigner(users[0].address)).bridgeMint(mintAmount, sourceChain)
-        ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
-    });
-                
-    it("should revert when setting an unsupported chain with an invalid chain ID", async () => {
-        const invalidChainId = 0; // Invalid chain ID
-    
-        // Attempt to set an invalid chain ID
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).setSupportedChain(invalidChainId, true)
-        ).to.be.revertedWith("Invalid chain ID");
-    });
-    it("should allow adding and removing a supported chain", async () => {
-        const validChainId = 42; // Example valid chain ID
-    
-        // Add a supported chain
-        const addTx = await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(validChainId, true);
-        const addReceipt = await addTx.wait();
-    
-        // Parse emitted event for adding the chain
-        const addEvent = addReceipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "SupportedChainChanged");
-    
-        if (!addEvent) throw new Error("SupportedChainChanged event not found for adding");
-    
-        // Assertions for adding the chain
-        expect(await token.supportedChains(validChainId)).to.be.true;
-        expect(addEvent.args.chainId).to.equal(validChainId);
-        expect(addEvent.args.supported).to.be.true;
-    
-        // Remove the supported chain
-        const removeTx = await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(validChainId, false);
-        const removeReceipt = await removeTx.wait();
-    
-        // Parse emitted event for removing the chain
-        const removeEvent = removeReceipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "SupportedChainChanged");
-    
-        if (!removeEvent) throw new Error("SupportedChainChanged event not found for removing");
-    
-        // Assertions for removing the chain
-        expect(await token.supportedChains(validChainId)).to.be.false;
-        expect(removeEvent.args.chainId).to.equal(validChainId);
-        expect(removeEvent.args.supported).to.be.false;
-    });
-    it("should revert when transferring tokens to a non-whitelisted address", async () => {
-        const nonWhitelistedAddress = users[0].address;
-        const transferAmount = ethers.parseEther("100");
-    
-        // Attempt to transfer tokens to a non-whitelisted address
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).transferFromContract(nonWhitelistedAddress, transferAmount)
-        ).to.be.revertedWith("Recipient not whitelisted");
-    });
-    it("should revert when transferring tokens before whitelist lock expires", async () => {
-        const wallet = users[0].address;
-        const transferAmount = ethers.parseEther("100");
-    
-        // Add wallet to whitelist
-        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
-    
-        // Attempt to transfer tokens before lock duration expires
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).transferFromContract(wallet, transferAmount)
-        ).to.be.revertedWith("Recipient is still locked");
-    });
-    it("should revert when minting a zero amount", async () => {
-        const sourceChain = 1; // Example source chain ID
-        const negativeAmount = BigInt(0); // Invalid negative amount
-    
-        // Set source chain as supported
-        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(sourceChain, true);
-    
-        // Attempt to mint a negative amount
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).bridgeMint(negativeAmount, sourceChain)
-        ).to.be.revertedWithCustomError(token, "AmountMustBePositive");
-    });
-
-    it("should revert when transferring more tokens than available in contract balance", async () => {
-        const wallet = users[0].address;
-        const transferAmount = BigInt(2) * INITIAL_MINTED_TOKENS; // Excessive amount
-    
-        // Add wallet to whitelist
-        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
-        await time.increase(24 * 60 * 60);
-    
-        // Attempt to transfer tokens exceeding contract balance
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).transferFromContract(wallet, transferAmount)
-        ).to.be.revertedWithCustomError(token, "ExceedsAvailableSupply");
-    });
-    it("should revert when transferring zero tokens from contract", async () => {
-        const wallet = users[0].address;
-    
-        // Add wallet to whitelist
-        await token.connect(await ethers.getSigner(owner.address)).addToWhitelist(wallet);
-        await time.increase(24 * 60 * 60);
-    
-        // Attempt to transfer zero tokens
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).transferFromContract(wallet, 0)
-        ).to.be.revertedWithCustomError(token, "AmountMustBePositive");
-    });
-    it("should revert when adding an admin with an invalid address", async () => {
-        const invalidAdmin = ethers.ZeroAddress;
-    
-        // Attempt to add an admin with an invalid address
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).addAdmin(invalidAdmin)
-        ).to.be.revertedWith("Invalid address");
-    });
-    it("should revert when adding or removing an admin before time lock expires", async () => {
-        const newAdmin = users[0].address;
-        const newAdmin1 = users[1].address;
-    
-        // Add a new admin
-        await token.connect(await ethers.getSigner(owner.address)).addAdmin(newAdmin);
-        await expect(
-            token.connect(await ethers.getSigner(newAdmin)).addAdmin(newAdmin1)
-        ).to.be.revertedWithCustomError(token, "TimeLockActive");
-
-        await time.increase(24 * 60 * 60);
-
-        await token.connect(await ethers.getSigner(newAdmin)).addAdmin(newAdmin1);
-    
-        // Attempt to remove the admin before time lock expires
-        await expect(
-            token.connect(await ethers.getSigner(newAdmin1)).removeAdmin(newAdmin)
-        ).to.be.revertedWithCustomError(token, "TimeLockActive");
-    });
-    it("should revert when removing an admin if removing self", async () => {    
-        // Attempt to remove self
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).removeAdmin(owner.address)
-        ).to.be.revertedWith("Cannot remove self");
-    });
-    it("should revert when burning tokens without BRIDGE_OPERATOR_ROLE", async () => {
-        const targetChain = 2; // Example target chain ID
-        const burnAmount = ethers.parseEther("500");
-    
-        // Set target chain as supported
-        await token.connect(await ethers.getSigner(owner.address)).setSupportedChain(targetChain, true);
-    
-        // Attempt to burn tokens without BRIDGE_OPERATOR_ROLE
-        await expect(
-            token.connect(await ethers.getSigner(users[0].address)).bridgeBurn(burnAmount, targetChain)
-        ).to.be.revertedWithCustomError(token, "AccessControlUnauthorizedAccount");
-    });
-               
-    it("should revert when transferring tokens to the zero address", async () => {
-        const transferAmount = ethers.parseEther("100");
-    
-        // Attempt to transfer tokens to the zero address
-        await expect(
-            token.connect(await ethers.getSigner(owner.address)).transfer(ethers.ZeroAddress, transferAmount)
-        ).to.be.revertedWith("ERC20: transfer to the zero address not allowed");
-    });
-
-    it("should allow setting supported chain by authorized bridge operator", async () => {
-        const bridge_operator_role = await token.BRIDGE_OPERATOR_ROLE();
-        const chainId = 42; // Example chain ID
-        const bridgeOperator = users[0].address;
-    
-        // Grant BRIDGE_OPERATOR_ROLE to user
-        await token.connect(await ethers.getSigner(owner.address)).updateAddressRole(bridgeOperator, bridge_operator_role, true);
-    
-        // Advance time by ROLE_CHANGE_DELAY
-        await time.increase(24 * 60 * 60); // 8 hours in seconds
-    
-        // Set supported chain by authorized bridge operator
-        const tx = await token.connect(await ethers.getSigner(users[0].address)).setSupportedChain(chainId, true);
-        const receipt = await tx.wait();
-    
-        // Parse emitted event
-        const event = receipt?.logs?.map((log) => {
-            try {
-                return token.interface.parseLog(log);
-            } catch (e) {
-                return null;
-            }
-        }).find((parsedLog) => parsedLog && parsedLog.name === "SupportedChainChanged");
-    
-        if (!event) throw new Error("SupportedChainChanged event not found");
-    
-        // Assertions
-        expect(await token.supportedChains(chainId)).to.be.true;
-        expect(event.args.chainId).to.equal(chainId);
-        expect(event.args.supported).to.be.true;
-    });
-             
 });
