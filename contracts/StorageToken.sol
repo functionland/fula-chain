@@ -143,6 +143,14 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     error AlreadyWhitelisted(address target);
     error AlreadyOwnsRole(address target);
     error INVALIDFLAG(uint8 flags);
+    error InvalidChainId(uint256 chainId);
+    error UsedNonce(uint256 nonce);
+    error MinimumRoleNoRequired();
+    error CannotRemoveSelf();
+    error Failed();
+    error AlreadyUpgraded();
+    error InvalidRole(bytes32 role);
+    error UseTransferFromContractInstead();
 
     // Ensures address is not zero
     modifier validateAddress(address _address) {
@@ -295,14 +303,14 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         } else if (proposalType == ProposalType.RoleChange) {
             TimeConfig storage targetTimeConfig = timeConfigs[target];
             if (targetTimeConfig.roleChangeTimeLock != 0) revert AlreadyOwnsRole(target);
-            require(role == ADMIN_ROLE || role == CONTRACT_OPERATOR_ROLE || role == BRIDGE_OPERATOR_ROLE, "Invalid role");
+            if (role != ADMIN_ROLE && role != CONTRACT_OPERATOR_ROLE && role != BRIDGE_OPERATOR_ROLE) revert InvalidRole(role);
             if (pendingProposals[target].flags & ROLE_CHANGE_FLAG != 0) revert ExistingActiveProposal(target);
         } else if (proposalType == ProposalType.Recovery) {
-            require(tokenAddress != address(this), "Cannot recover native tokens");
-            require(amount > 0, "Invalid amount");
+            if(tokenAddress == address(this)) revert UseTransferFromContractInstead();
+            if (amount <= 0) revert AmountMustBePositive();
             if (pendingProposals[target].flags & RECOVERY_FLAG != 0) revert ExistingActiveProposal(target);
         } else if (proposalType == ProposalType.Upgrade) {
-            require(target != address(this), "Already upgraded");
+            if (target == address(this)) revert AlreadyUpgraded();
             if (pendingProposals[target].flags & UPGRADE_FLAG != 0) revert ExistingActiveProposal(target);
         } else {
             revert InvalidProposalTypeErr(proposalType);
@@ -319,8 +327,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         ));
 
         UnifiedProposal storage proposal = proposals[proposalId];
-        require(proposal.executionTime == 0, "Proposal already exists");
-        if (proposal.executionTime > 0) revert DuplicateProposalErr(proposalType, target);
+        if (proposal.executionTime != 0) revert DuplicateProposalErr(proposalType, target);
 
         // Pack the proposal data
         proposal.target = target;
@@ -486,7 +493,8 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         }
         else if (proposalTypeVal == uint8(ProposalType.Recovery)) {
             IERC20 token = IERC20(proposal.tokenAddress);
-            require(token.transfer(target, proposal.amount), "Transfer failed");
+            bool success = token.transfer(target, proposal.amount);
+            if ( !success ) revert Failed();
             pending.flags &= ~RECOVERY_FLAG;
         }
 
@@ -710,7 +718,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         onlyRole(ADMIN_ROLE)
         updateActivityTimestamp 
     {
-        require(admin != msg.sender, "Cannot remove self");
+        if (admin == msg.sender) revert CannotRemoveSelf();
         if (admin == address(0)) revert InvalidAddress(admin);
         
         // Use TimeConfig struct for time-related values
@@ -718,7 +726,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         if (block.timestamp < senderTimeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
         
         uint256 adminCount = getRoleMemberCount(ADMIN_ROLE);
-        require(adminCount > 2, "Cannot remove last two admins");
+        if(adminCount <= 2) revert MinimumRoleNoRequired();
         
         _revokeRole(ADMIN_ROLE, admin);
         
@@ -754,7 +762,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         
         // Use RoleConfig struct for role-related values
         RoleConfig storage roleConfig = roleConfigs[CONTRACT_OPERATOR_ROLE];
-        require(amount <= roleConfig.transactionLimit, "Exceeds role transaction limit");
+        if (amount > roleConfig.transactionLimit) revert LowAllowance(roleConfig.transactionLimit, amount);
         
         _transfer(address(this), to, amount);
         emit TransferFromContract(address(this), to, amount, msg.sender);
@@ -791,7 +799,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         updateActivityTimestamp 
     {
         // Cache storage reads
-        require(!_usedNonces[sourceChain][nonce], "Used nonce");
+        if (_usedNonces[sourceChain][nonce]) revert UsedNonce(nonce);
         if (!supportedChains[sourceChain]) revert UnsupportedChain(sourceChain);
         
         // Use TimeConfig struct for time-related values
@@ -825,7 +833,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         onlyRole(BRIDGE_OPERATOR_ROLE)
         updateActivityTimestamp 
     {
-        require(!_usedNonces[targetChain][nonce], "Used nonce");
+        if (_usedNonces[targetChain][nonce]) revert UsedNonce(nonce);
         if (!supportedChains[targetChain]) revert UnsupportedChain(targetChain);
         
         // Use TimeConfig struct for time-related values
@@ -860,7 +868,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         TimeConfig storage timeConfig = timeConfigs[msg.sender];
         if (block.timestamp < timeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
         
-        require(chainId > 0, "Invalid chain ID");
+        if (chainId <= 0) revert InvalidChainId(chainId);
         
         // Update supported chains mapping
         supportedChains[chainId] = supported;
