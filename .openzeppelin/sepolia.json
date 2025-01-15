@@ -1207,7 +1207,7 @@
       "address": "0xC85a3855F3933dbebb4116c9b9fc3826402Ec602",
       "txHash": "0x4cfd4c99873dc1acad5057f63f99c188f167011c123d7c21a1708632e346acc7",
       "layout": {
-        "solcVersion": "0.8.28",
+        "solcVersion": "0.8.24",
         "storage": [
           {
             "label": "pools",
@@ -1710,7 +1710,7 @@
       "address": "0x68990131bAFD84742118A088a53EB4b271c94433",
       "txHash": "0x8be54ce2e2ab8c184dbbb005006fb9d6b1d0fcc9e478d81070a42dba19ff045f",
       "layout": {
-        "solcVersion": "0.8.28",
+        "solcVersion": "0.8.24",
         "storage": [
           {
             "label": "pools",

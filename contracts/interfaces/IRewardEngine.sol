@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.24;
 
 interface IRewardEngine {
     function distributeRewards(string[] memory cid, uint256 totalStoredSize, address storer, uint32 poolId) external;

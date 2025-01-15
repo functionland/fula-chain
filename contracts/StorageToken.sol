@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
@@ -15,6 +15,10 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     address private _pendingOwner;
     enum ContractType { Pool, Proof, Staking, Distribution, Reward } // related contracts
     enum ProposalType { RoleChange, Upgrade, Recovery, Whitelist } // multi-sig proposals
+    uint8 constant WHITELIST_FLAG = 1;
+    uint8 constant ROLE_CHANGE_FLAG = 2;
+    uint8 constant RECOVERY_FLAG = 4;
+    uint8 constant UPGRADE_FLAG = 8;
 
     uint256 private constant TOKEN_UNIT = 10**18; //Smallest unit for the token
     uint256 private constant TOTAL_SUPPLY = 2_000_000_000 * TOKEN_UNIT; // Maximum number of fixed cap token to be issued
@@ -32,16 +36,19 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     // Multi-sig related structures
     struct UnifiedProposal {
-        ProposalType proposalType;
-        address target;
         bytes32 role;        // for role changes
         uint256 amount;      // for recoveries
-        bool isAdd;          // for role changes/whitelist
-        uint32 approvals;
-        mapping(address => bool) hasApproved;
-        address tokenAddress;
         uint256 expiryTime;
         uint256 executionTime;
+
+        address target;
+        address tokenAddress;
+
+        uint32 approvals;
+
+        ProposalType proposalType;
+        bool isAdd;          // for role changes/whitelist
+        mapping(address => bool) hasApproved;
         bool executed;
     }
     uint256 public proposalTimeout;
@@ -49,11 +56,9 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     mapping(bytes32 => UnifiedProposal) public proposals;
 
     struct PendingProposals {
-        bool whitelist;
-        bool roleChange; 
-        bool recovery;
-        bool upgrade;
+        uint8 flags; // Pack all bools into single uint8 for struct PendingProposals {bool whitelist;bool roleChange;bool recovery;bool upgrade;}
     }
+
     mapping(address => PendingProposals) public pendingProposals;
     mapping(bytes32 => uint32) public roleQuorum;
     mapping(bytes32 => uint256) public roleTransactionLimit;
@@ -237,18 +242,18 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         // Validate based on proposal type also ensure no duplicate proposal is created for a property if needed
         if (proposalType == ProposalType.Whitelist) {
             require(whitelistLockTime[target] == 0, "Already whitelisted");
-            if (pendingProposals[target].whitelist) revert ExistingActiveProposal(target);
+            if ((pendingProposals[target].flags & WHITELIST_FLAG) != 0) revert ExistingActiveProposal(target);
         } else if (proposalType == ProposalType.RoleChange) {
             require(roleChangeTimeLock[target] == 0, "Already owns a role");
             require(role == ADMIN_ROLE || role == CONTRACT_OPERATOR_ROLE || role == BRIDGE_OPERATOR_ROLE, "Invalid role");
-            if (pendingProposals[target].roleChange) revert ExistingActiveProposal(target);
+            if ((pendingProposals[target].flags & ROLE_CHANGE_FLAG) != 0) revert ExistingActiveProposal(target);
         } else if (proposalType == ProposalType.Recovery) {
             require(tokenAddress != address(this), "Cannot recover native tokens");
             require(amount > 0, "Invalid amount");
-            if (pendingProposals[target].recovery) revert ExistingActiveProposal(target);
+            if ((pendingProposals[target].flags & RECOVERY_FLAG) != 0) revert ExistingActiveProposal(target);
         } else if (proposalType == ProposalType.Upgrade) {
             require(target != address(this), "Already upgraded");
-            if (pendingProposals[target].upgrade) revert ExistingActiveProposal(target);
+            if ((pendingProposals[target].flags & UPGRADE_FLAG) != 0) revert ExistingActiveProposal(target);
         } else {
             revert InvalidProposalTypeErr(proposalType);
         }
@@ -279,13 +284,13 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         proposal.approvals = 1;
 
         if (proposalType == ProposalType.Whitelist) {
-            pendingProposals[target].whitelist = true;
+            pendingProposals[target].flags |= WHITELIST_FLAG;
         } else if(proposalType == ProposalType.RoleChange) {
-            pendingProposals[target].roleChange = true;
+            pendingProposals[target].flags |= ROLE_CHANGE_FLAG;
         } else if (proposalType == ProposalType.Recovery) {
-            pendingProposals[target].recovery = true;
+            pendingProposals[target].flags |= RECOVERY_FLAG;
         } else if (proposalType == ProposalType.Upgrade) {
-            pendingProposals[target].upgrade = true;
+            pendingProposals[target].flags |= UPGRADE_FLAG;
             upgradeProposals[target] = proposalId;
         }
 
@@ -316,19 +321,23 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
             PendingProposals storage pending = pendingProposals[proposal.target];
     
             if (proposal.proposalType == ProposalType.Whitelist) {
-                pending.whitelist = false;
+                pending.flags &= ~WHITELIST_FLAG;
             } else if (proposal.proposalType == ProposalType.RoleChange) {
-                pending.roleChange = false;
+                pending.flags &= ~ROLE_CHANGE_FLAG;
             } else if (proposal.proposalType == ProposalType.Recovery) {
-                pending.recovery = false;
+                pending.flags &= ~RECOVERY_FLAG;
             } else if (proposal.proposalType == ProposalType.Upgrade) {
-                pending.upgrade = false;
+                pending.flags &= ~UPGRADE_FLAG;
                 delete upgradeProposals[proposal.target];
             }
 
             // Delete entire record if all flags are false
-            if (!pending.whitelist && !pending.roleChange && 
-                !pending.recovery && !pending.upgrade) {
+            bool isWhitelisted = (pending.flags & WHITELIST_FLAG) != 0;
+            bool isRoleChange = (pending.flags & ROLE_CHANGE_FLAG) != 0;
+            bool isRecovery = (pending.flags & RECOVERY_FLAG) != 0;
+            bool isUpgrade = (pending.flags & UPGRADE_FLAG) != 0;
+            if (!isWhitelisted && !isRoleChange && 
+                !isRecovery && !isUpgrade) {
                 delete pendingProposals[proposal.target];
             }
             delete proposals[proposalId];
@@ -380,7 +389,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         
         if (proposal.proposalType == ProposalType.Whitelist) {
             whitelistLockTime[proposal.target] = block.timestamp + WHITELIST_LOCK_DURATION;
-            pending.whitelist = false;
+            pending.flags &= ~WHITELIST_FLAG;
         } 
         else if (proposal.proposalType == ProposalType.RoleChange) {
             if (proposal.isAdd) {
@@ -390,20 +399,24 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
                 _revokeRole(proposal.role, proposal.target);
                 if (roleChangeTimeLock[proposal.target] > 0) delete roleChangeTimeLock[proposal.target];
             }
-            pending.roleChange = false;
+            pending.flags &= ~ROLE_CHANGE_FLAG;
         }
         else if (proposal.proposalType == ProposalType.Recovery) {
             IERC20 token = IERC20(proposal.tokenAddress);
             require(token.transfer(proposal.target, proposal.amount), "Transfer failed");
-            pending.recovery = false;
+            pending.flags &= ~RECOVERY_FLAG;
         }
 
         // Delete entire record if all flags are false
-        if (!pending.whitelist && !pending.roleChange && 
-            !pending.recovery && !pending.upgrade) {
+        bool isWhitelisted = (pending.flags & WHITELIST_FLAG) != 0;
+        bool isRoleChange = (pending.flags & ROLE_CHANGE_FLAG) != 0;
+        bool isRecovery = (pending.flags & RECOVERY_FLAG) != 0;
+        bool isUpgrade = (pending.flags & UPGRADE_FLAG) != 0;
+        if (!isWhitelisted && !isRoleChange && 
+            !isRecovery && !isUpgrade) {
             delete pendingProposals[proposal.target];
         }
-        if (!pending.upgrade) {
+        if (!isUpgrade) {
             proposal.executed = true;
             emit ProposalExecuted(proposalId, proposal.proposalType, proposal.target);
         }
@@ -758,9 +771,13 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         if (block.timestamp < proposal.executionTime) revert ProposalExecutionDelayNotMetErr(proposal.executionTime);
         delete upgradeProposals[newImplementation];
         currentProposal.executed = true;
-        pending.upgrade = false;
-        if (!pending.whitelist && !pending.roleChange && 
-            !pending.recovery && !pending.upgrade) {
+        pending.flags &= ~UPGRADE_FLAG;
+        bool isWhitelisted = (pending.flags & WHITELIST_FLAG) != 0;
+        bool isRoleChange = (pending.flags & ROLE_CHANGE_FLAG) != 0;
+        bool isRecovery = (pending.flags & RECOVERY_FLAG) != 0;
+        bool isUPgrade = (pending.flags & UPGRADE_FLAG) != 0;
+        if (!isWhitelisted && !isRoleChange && 
+            !isRecovery && !isUPgrade) {
             delete pendingProposals[proposal.target];
         }
         emit ProposalExecuted(proposalId, proposal.proposalType, proposal.target);

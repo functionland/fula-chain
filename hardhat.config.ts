@@ -8,12 +8,13 @@ import '@openzeppelin/hardhat-upgrades';
 
 const config: HardhatUserConfig = {
     solidity: {
-        version: "0.8.28",  // Updated from 0.8.19
+        version: "0.8.24",  // Updated from 0.8.19
         settings: {
             optimizer: {
                 enabled: true,
                 runs: 100
-            }
+            },
+            viaIR: true
         }
     },
     sourcify: {
