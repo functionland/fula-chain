@@ -12,68 +12,93 @@ import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 
 contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, PausableUpgradeable, AccessControlEnumerableUpgradeable, ReentrancyGuardUpgradeable {
-    address private _pendingOwner;
-    enum ContractType { Pool, Proof, Staking, Distribution, Reward } // related contracts
-    enum ProposalType { RoleChange, Upgrade, Recovery, Whitelist } // multi-sig proposals
+    // Constants for flags
     uint8 constant WHITELIST_FLAG = 1;
     uint8 constant ROLE_CHANGE_FLAG = 2;
     uint8 constant RECOVERY_FLAG = 4;
     uint8 constant UPGRADE_FLAG = 8;
+    
+    uint8 constant ISADD_FLAG = 1;
+    uint8 constant EXECUTED_FLAG = 2;
+    uint8 constant ISREMOVED_FLAG = 4;
 
-    uint256 private constant TOKEN_UNIT = 10**18; //Smallest unit for the token
-    uint256 private constant TOTAL_SUPPLY = 2_000_000_000 * TOKEN_UNIT; // Maximum number of fixed cap token to be issued
-    uint256 private lastEmergencyAction; // holds hte time of last emergency action (pause, unpause)
-    uint256 private constant EMERGENCY_COOLDOWN = 30 minutes; // how much should we wait before allowing the next emergency action
-    uint256 public constant MIN_PROPOSAL_EXECUTION_DELAY = 24 hours;
-    uint256 public constant EMERGENCY_THRESHOLD = 3;
-    uint256 public constant INACTIVITY_THRESHOLD = 365 days;
-    mapping(uint256 => mapping(uint256 => bool)) private _usedNonces;
-    mapping(address => bytes32) private upgradeProposals;
+    uint8 constant INITIATED = 1;
+    uint8 constant PENDING_OWNERSHIP = 2;
 
-    bytes32 public constant BRIDGE_OPERATOR_ROLE = bytes32(uint256(keccak256("BRIDGE_OPERATOR_ROLE")) - 1); // role
-    bytes32 public constant ADMIN_ROLE = bytes32(uint256(keccak256("ADMIN_ROLE")) - 1); // role
-    bytes32 public constant CONTRACT_OPERATOR_ROLE = bytes32(uint256(keccak256("CONTRACT_OPERATOR_ROLE")) - 1); // role
+    // Enums packed as uint8
+    enum ContractType { Pool, Proof, Staking, Distribution, Reward }
+    enum ProposalType { RoleChange, Upgrade, Recovery, Whitelist }
 
-    // Multi-sig related structures
+    // Core storage variables
+    address private _pendingOwner;
+    uint256 private constant TOKEN_UNIT = 10**18;
+    uint256 private constant TOTAL_SUPPLY = 2_000_000_000 * TOKEN_UNIT;
+    uint256 private constant ROLE_CHANGE_DELAY = 1 days;
+    uint256 private constant WHITELIST_LOCK_DURATION = 1 days;
+
+    // Packed time-related constants
+    uint32 public constant MIN_PROPOSAL_EXECUTION_DELAY = 24 hours;
+    uint32 public constant INACTIVITY_THRESHOLD = 365 days;
+    uint32 private constant EMERGENCY_COOLDOWN = 30 minutes;
+    uint8 public constant EMERGENCY_THRESHOLD = 3;
+
+    // Packed storage structs
+    struct PackedVars {
+        uint248 lastEmergencyAction;
+        uint8 flags;  // includes _initializedMint
+    }
+    PackedVars private packedVars;
+
+    struct TimeConfig {
+        uint64 lastActivityTime;
+        uint64 roleChangeTimeLock;
+        uint64 whitelistLockTime;
+    }
+
+    struct RoleConfig {
+        uint32 quorum;
+        uint256 transactionLimit;
+    }
+
     struct UnifiedProposal {
-        bytes32 role;        // for role changes
-        uint256 amount;      // for recoveries
+        bytes32 role;
+        uint256 amount;
         uint256 expiryTime;
         uint256 executionTime;
-
         address target;
         address tokenAddress;
-
         uint32 approvals;
-
-        ProposalType proposalType;
-        bool isAdd;          // for role changes/whitelist
+        uint8 proposalType;
+        uint8 flags;
         mapping(address => bool) hasApproved;
-        bool executed;
     }
-    uint256 public proposalTimeout;
-    uint256 private proposalCount;
-    mapping(bytes32 => UnifiedProposal) public proposals;
 
     struct PendingProposals {
-        uint8 flags; // Pack all bools into single uint8 for struct PendingProposals {bool whitelist;bool roleChange;bool recovery;bool upgrade;}
+        uint8 flags;
     }
 
+    // Core storage mappings
+    mapping(uint256 => mapping(uint256 => bool)) private _usedNonces;
+    mapping(address => bytes32) private upgradeProposals;
+    mapping(bytes32 => UnifiedProposal) public proposals;
     mapping(address => PendingProposals) public pendingProposals;
-    mapping(bytes32 => uint32) public roleQuorum;
-    mapping(bytes32 => uint256) public roleTransactionLimit;
-    mapping(address => uint256) public lastActivityTime;
+    mapping(address => TimeConfig) public timeConfigs;
+    mapping(bytes32 => RoleConfig) public roleConfigs;
+    mapping(uint256 => bool) public supportedChains;
     mapping(address => uint256) public emergencyVotes;
     mapping(uint256 => bytes32) private proposalRegistry;
-    
-    mapping(uint256 => bool) public supportedChains; // Storage for chains that are supported by the contract
-    mapping(address => uint256) private roleChangeTimeLock; // Time holder of a role assignment
-    uint256 private constant ROLE_CHANGE_DELAY = 1 days; // How much we should wait after a role is assigned to allow actions by that role
-    mapping(address => uint256) private whitelistLockTime; // Lock time for whitelisted addresses to hold the time when an address is whitelisted
-    uint256 private constant WHITELIST_LOCK_DURATION = 1 days; // Lock duration after adding to whitelist which should be passed before they can receive the transfer
-    bool private _initializedMint; // Storage to indicate initial minting is done
 
-    event RoleUpdated(address target, address caller, bytes32 role, bool status); //status true: added, status false: removed
+    // Proposal-related storage
+    uint256 public proposalTimeout;
+    uint256 private proposalCount;
+
+    // Role constants
+    bytes32 public constant BRIDGE_OPERATOR_ROLE = bytes32(uint256(keccak256("BRIDGE_OPERATOR_ROLE")) - 1);
+    bytes32 public constant ADMIN_ROLE = bytes32(uint256(keccak256("ADMIN_ROLE")) - 1);
+    bytes32 public constant CONTRACT_OPERATOR_ROLE = bytes32(uint256(keccak256("CONTRACT_OPERATOR_ROLE")) - 1);
+
+    // Events
+    event RoleUpdated(address target, address caller, bytes32 role, bool status);
     event EmergencyAction(string action, uint256 timestamp, address caller);
     event BridgeOperationDetails(address indexed operator, string operation, uint256 amount, uint256 chainId, uint256 timestamp);
     event WalletWhitelistedWithLock(address indexed wallet, uint256 lockUntil, address caller);
@@ -81,43 +106,15 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     event TransferFromContract(address indexed from, address indexed to, uint256 amount, address caller);
     event TokensMinted(address to, uint256 amount);
     event SupportedChainChanged(uint256 indexed chainId, bool supported, address caller);
-
-    // Multi-sig related events
-    // Core proposal events
-    event ProposalCreated(
-        bytes32 indexed proposalId,
-        uint32 version,
-        ProposalType indexed proposalType,
-        address indexed target,
-        bytes32 role, // for role changes
-        uint256 amount, // for recoveries/amounts
-        address tokenAddress, // for recoveries/token address
-        bool isAdd, // for role changes/whitelist
-        address proposer
-    );
-
-    event ProposalApproved(
-        bytes32 indexed proposalId,
-        ProposalType indexed proposalType,
-        address indexed approver
-    );
-
-    event ProposalExecuted(
-        bytes32 indexed proposalId,
-        ProposalType indexed proposalType,
-        address indexed target
-    );
-
-    event ProposalExpired(
-        bytes32 indexed proposalId,
-        ProposalType indexed proposalType,
-        address indexed target
-    );
-
-    // System configuration events
+    event ProposalCreated(bytes32 indexed proposalId, uint32 version, ProposalType indexed proposalType, address indexed target, bytes32 role, uint256 amount, address tokenAddress, bool isAdd, address proposer);
+    event ProposalApproved(bytes32 indexed proposalId, ProposalType indexed proposalType, address indexed approver);
+    event ProposalReadyForExecution(bytes32 indexed proposalId, ProposalType indexed proposalType);
+    event ProposalExecuted(bytes32 indexed proposalId, ProposalType indexed proposalType, address indexed target);
+    event ProposalExpired(bytes32 indexed proposalId, ProposalType indexed proposalType, address indexed target);
     event QuorumUpdated(bytes32 indexed role, uint256 newQuorum);
     event TransactionLimitUpdated(bytes32 indexed role, uint256 newLimit);
 
+    // Errors
     error ExceedsMaximumSupply(uint256 requested, uint256 maxSupply);
     error ExceedsAvailableSupply(uint256 requested, uint256 supply);
     error AmountMustBePositive();
@@ -126,11 +123,10 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     error InsufficientAllowance(address spender, uint256 amount);
     error UnauthorizedTransfer(address sender);
     error TimeLockActive(address operator);
-
-    // Multi-Sig related errors
     error ProposalNotFoundErr();
     error ProposalExpiredErr();
     error ProposalAlreadyExecutedErr();
+    error ProposalAlreadyApprovedErr();
     error InsufficientApprovalsErr(uint32 requiredApprovals, uint32 approvals);
     error InvalidProposalTypeErr(ProposalType proposalType);
     error DuplicateProposalErr(ProposalType proposalType, address target);
@@ -143,6 +139,10 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     error InvalidAddress(address wallet);
     error LowAllowance(uint256 allowance, uint256 limit);
     error LowBalance(uint256 walletBalance, uint256 requiredBalance);
+    error CoolDownActive(uint256 waitUntil);
+    error AlreadyWhitelisted(address target);
+    error AlreadyOwnsRole(address target);
+    error INVALIDFLAG(uint8 flags);
 
     // Ensures address is not zero
     modifier validateAddress(address _address) {
@@ -152,43 +152,65 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     // onlyWhitelisted checks to ensure only white-listed recipients and only after time lock period are allowed
     modifier onlyWhitelisted(address to) {
-        if (whitelistLockTime[to] <= 0) revert NotWhitelisted(to);
-        if (block.timestamp < whitelistLockTime[to]) revert RecipientLocked(to);
+        // Use TimeConfig struct for whitelist lock time
+        TimeConfig storage timeConfig = timeConfigs[to];
+        uint64 lockTime = timeConfig.whitelistLockTime;
+        
+        if (lockTime == 0) revert NotWhitelisted(to);
+        if (block.timestamp < lockTime) revert RecipientLocked(to);
         _;
     }
 
     // Update the last activity that an address has done
     modifier updateActivityTimestamp() {
-        lastActivityTime[msg.sender] = block.timestamp;
+        // Use TimeConfig struct for activity timestamp
+        TimeConfig storage timeConfig = timeConfigs[msg.sender];
+        timeConfig.lastActivityTime = uint64(block.timestamp);
         _;
     }
 
-    function initialize(address initialOwner, address initialAdmin, uint256 initialMintedTokens) public reinitializer(1) { // Increment version number for each upgrade
-        if (initialOwner == address(0)) revert InvalidAddress(initialOwner); // check to ensure there is a valid initial owner address
-        if (initialAdmin == address(0)) revert InvalidAddress(initialAdmin); // check to ensure there is a valid initial admin address
-        require(initialMintedTokens <= TOTAL_SUPPLY, "Exceeds maximum supply"); // initial minted tokens should not exceed maximum fixed cap supply
+    function initialize(
+        address initialOwner, 
+        address initialAdmin, 
+        uint256 initialMintedTokens
+    ) public reinitializer(1) {
+        // Combine validation checks
+        if (initialOwner == address(0) || initialAdmin == address(0)) {
+            revert InvalidAddress(address(0));
+        }
+        if (initialMintedTokens > TOTAL_SUPPLY) {
+            revert("Exceeds maximum supply");
+        }
         
-        __ERC20_init("Placeholder Token", "PLACEHOLDER"); // Placeholder will be changed to actual token name
+        // Initialize contracts
+        __ERC20_init("Placeholder Token", "PLACEHOLDER");
         __UUPSUpgradeable_init();
         __Ownable_init(initialOwner);
         __ReentrancyGuard_init();
         __Pausable_init();
         __AccessControlEnumerable_init();
         
-        _grantRole(ADMIN_ROLE, initialOwner); // Assign admin role to deployer
-        _grantRole(ADMIN_ROLE, initialAdmin); // Assign admin role to initial Admin
+        // Grant roles
+        _grantRole(ADMIN_ROLE, initialOwner);
+        _grantRole(ADMIN_ROLE, initialAdmin);
 
-        // Set timelocks for initial admins
-        roleChangeTimeLock[initialOwner] = block.timestamp + ROLE_CHANGE_DELAY;
-        roleChangeTimeLock[initialAdmin] = block.timestamp + ROLE_CHANGE_DELAY;
+        // Set timelocks using packed TimeConfig struct
+        uint256 lockTime = block.timestamp + ROLE_CHANGE_DELAY;
         
-        // Mint the initial tokens to the contract address
-        if (!_initializedMint) {
+        TimeConfig storage ownerTimeConfig = timeConfigs[initialOwner];
+        ownerTimeConfig.roleChangeTimeLock = uint64(lockTime);
+        
+        TimeConfig storage adminTimeConfig = timeConfigs[initialAdmin];
+        adminTimeConfig.roleChangeTimeLock = uint64(lockTime);
+        
+        // Initialize mint if not already done
+        PackedVars storage vars = packedVars;
+        if ((vars.flags & INITIATED) == 0) {  // Check initialization flag
             _mint(address(this), initialMintedTokens);
             proposalCount = 0;
             proposalTimeout = 48 hours;
             emit TokensMinted(address(this), initialMintedTokens);
-            _initializedMint = true; // Mark minting as initialized. This could be redundant but still placed for guarantee
+            vars.flags |= INITIATED;  // Set initialization flag
         }
     }
 
@@ -198,23 +220,48 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     function tokenUnit() public pure returns (uint256) {
         unchecked {
-            return 10**18; // This calculation cannot overflow
+            return TOKEN_UNIT;  // Use the constant directly instead of calculation
         }
     }
 
     function maxSupply() public pure returns (uint256) {
         unchecked {
-            return TOTAL_SUPPLY; // This calculation cannot overflow
+            return TOTAL_SUPPLY;
         }
     }
 
-    function transferOwnership(address newOwner) public virtual override whenNotPaused nonReentrant onlyOwner {
+    function transferOwnership(address newOwner) 
+        public 
+        virtual 
+        override 
+        whenNotPaused 
+        nonReentrant 
+        onlyOwner 
+    {
         if (newOwner == address(0)) revert InvalidAddress(newOwner);
+        
+        // Use packed storage for pending owner
+        PackedVars storage vars = packedVars;
+        vars.flags |= PENDING_OWNERSHIP;  // Set pending owner flag
         _pendingOwner = newOwner;
     }
-    // Two step ownership transfer
-    function acceptOwnership() public virtual whenNotPaused nonReentrant{
-        require(msg.sender == _pendingOwner, "Not pending owner");
+
+    function acceptOwnership() 
+        public 
+        virtual 
+        whenNotPaused 
+        nonReentrant
+    {
+        // Cache storage reads
+        address pendingOwner = _pendingOwner;
+        if (msg.sender != pendingOwner) revert("Not pending owner");
+        
+        // Clear pending owner flag and storage
+        PackedVars storage vars = packedVars;
+        vars.flags &= PENDING_OWNERSHIP;
+        
+        delete _pendingOwner;
+        
         _transferOwnership(msg.sender);
     }
 
@@ -233,27 +280,30 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         updateActivityTimestamp 
         returns (bytes32)
     {
-        require(target != address(0), "Invalid target address");
-        if (block.timestamp < roleChangeTimeLock[msg.sender]) revert TimeLockActive(msg.sender);
-        if (roleQuorum[ADMIN_ROLE] < 2) {
-            revert InvalidQuorumErr(ADMIN_ROLE, roleQuorum[ADMIN_ROLE]);
-        }
+        if (target == address(0)) revert InvalidAddress(target);
+        TimeConfig storage timeConfig = timeConfigs[msg.sender];
+        if (block.timestamp < timeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
         
-        // Validate based on proposal type also ensure no duplicate proposal is created for a property if needed
+        RoleConfig storage adminConfig = roleConfigs[ADMIN_ROLE];
+        if (adminConfig.quorum < 2) revert InvalidQuorumErr(ADMIN_ROLE, adminConfig.quorum);
+        
+        // Validate based on proposal type also ensure no duplicate proposal is created
         if (proposalType == ProposalType.Whitelist) {
-            require(whitelistLockTime[target] == 0, "Already whitelisted");
-            if ((pendingProposals[target].flags & WHITELIST_FLAG) != 0) revert ExistingActiveProposal(target);
+            TimeConfig storage targetTimeConfig = timeConfigs[target];
+            if (targetTimeConfig.whitelistLockTime != 0) revert AlreadyWhitelisted(target);
+            if (pendingProposals[target].flags & WHITELIST_FLAG != 0) revert ExistingActiveProposal(target);
         } else if (proposalType == ProposalType.RoleChange) {
-            require(roleChangeTimeLock[target] == 0, "Already owns a role");
+            TimeConfig storage targetTimeConfig = timeConfigs[target];
+            if (targetTimeConfig.roleChangeTimeLock != 0) revert AlreadyOwnsRole(target);
             require(role == ADMIN_ROLE || role == CONTRACT_OPERATOR_ROLE || role == BRIDGE_OPERATOR_ROLE, "Invalid role");
-            if ((pendingProposals[target].flags & ROLE_CHANGE_FLAG) != 0) revert ExistingActiveProposal(target);
+            if (pendingProposals[target].flags & ROLE_CHANGE_FLAG != 0) revert ExistingActiveProposal(target);
         } else if (proposalType == ProposalType.Recovery) {
             require(tokenAddress != address(this), "Cannot recover native tokens");
             require(amount > 0, "Invalid amount");
-            if ((pendingProposals[target].flags & RECOVERY_FLAG) != 0) revert ExistingActiveProposal(target);
+            if (pendingProposals[target].flags & RECOVERY_FLAG != 0) revert ExistingActiveProposal(target);
         } else if (proposalType == ProposalType.Upgrade) {
             require(target != address(this), "Already upgraded");
-            if ((pendingProposals[target].flags & UPGRADE_FLAG) != 0) revert ExistingActiveProposal(target);
+            if (pendingProposals[target].flags & UPGRADE_FLAG != 0) revert ExistingActiveProposal(target);
         } else {
             revert InvalidProposalTypeErr(proposalType);
         }
@@ -272,27 +322,31 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         require(proposal.executionTime == 0, "Proposal already exists");
         if (proposal.executionTime > 0) revert DuplicateProposalErr(proposalType, target);
 
-        proposal.proposalType = proposalType;
+        // Pack the proposal data
         proposal.target = target;
+        proposal.tokenAddress = tokenAddress;
         proposal.role = role;
         proposal.amount = amount;
-        proposal.tokenAddress = tokenAddress;
-        proposal.isAdd = isAdd;
         proposal.expiryTime = block.timestamp + proposalTimeout;
         proposal.executionTime = block.timestamp + MIN_PROPOSAL_EXECUTION_DELAY;
-        proposal.hasApproved[msg.sender] = true;
         proposal.approvals = 1;
+        proposal.proposalType = uint8(proposalType);  // Convert enum to uint8
+        proposal.flags = isAdd ? ISADD_FLAG : ISREMOVED_FLAG;  // Pack bool into flags
+        proposal.hasApproved[msg.sender] = true;
 
+        // Update pending proposals flags
+        uint8 flag;
         if (proposalType == ProposalType.Whitelist) {
-            pendingProposals[target].flags |= WHITELIST_FLAG;
+            flag = WHITELIST_FLAG;
         } else if(proposalType == ProposalType.RoleChange) {
-            pendingProposals[target].flags |= ROLE_CHANGE_FLAG;
+            flag = ROLE_CHANGE_FLAG;
         } else if (proposalType == ProposalType.Recovery) {
-            pendingProposals[target].flags |= RECOVERY_FLAG;
-        } else if (proposalType == ProposalType.Upgrade) {
-            pendingProposals[target].flags |= UPGRADE_FLAG;
+            flag = RECOVERY_FLAG;
+        } else {
+            flag = UPGRADE_FLAG;
             upgradeProposals[target] = proposalId;
         }
+        pendingProposals[target].flags |= flag;
 
         proposalRegistry[proposalCount] = proposalId;
         proposalCount += 1;
@@ -310,54 +364,59 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     {
         UnifiedProposal storage proposal = proposals[proposalId];
         if (proposal.target == address(0)) revert ProposalNotFoundErr();
-        if (proposal.executed) revert ProposalAlreadyExecutedErr();
-        if (block.timestamp < roleChangeTimeLock[msg.sender] || roleChangeTimeLock[msg.sender] == 0) revert TimeLockActive(msg.sender);
-        if (roleQuorum[ADMIN_ROLE] < 2) {
-            revert InvalidQuorumErr(ADMIN_ROLE, roleQuorum[ADMIN_ROLE]);
+        if ((proposal.flags & EXECUTED_FLAG) != 0) revert ProposalAlreadyExecutedErr();
+        if (proposal.hasApproved[msg.sender]) revert ProposalAlreadyApprovedErr();
+        
+        TimeConfig storage timeConfig = timeConfigs[msg.sender];
+        if (block.timestamp < timeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
+        
+        RoleConfig storage adminConfig = roleConfigs[ADMIN_ROLE];
+        if (adminConfig.quorum < 2) {
+            revert InvalidQuorumErr(ADMIN_ROLE, adminConfig.quorum);
         }
         
         if (block.timestamp >= proposal.expiryTime) {
             // Delete the proposal if the expiry is passed
             PendingProposals storage pending = pendingProposals[proposal.target];
-    
-            if (proposal.proposalType == ProposalType.Whitelist) {
-                pending.flags &= ~WHITELIST_FLAG;
-            } else if (proposal.proposalType == ProposalType.RoleChange) {
-                pending.flags &= ~ROLE_CHANGE_FLAG;
-            } else if (proposal.proposalType == ProposalType.Recovery) {
-                pending.flags &= ~RECOVERY_FLAG;
-            } else if (proposal.proposalType == ProposalType.Upgrade) {
-                pending.flags &= ~UPGRADE_FLAG;
+            uint8 proposalFlag;
+            
+            // Determine which flag to clear based on proposal type
+            if (uint8(proposal.proposalType) == uint8(ProposalType.Whitelist)) {
+                proposalFlag = WHITELIST_FLAG;
+            } else if (uint8(proposal.proposalType) == uint8(ProposalType.RoleChange)) {
+                proposalFlag = ROLE_CHANGE_FLAG;
+            } else if (uint8(proposal.proposalType) == uint8(ProposalType.Recovery)) {
+                proposalFlag = RECOVERY_FLAG;
+            } else {
+                proposalFlag = UPGRADE_FLAG;
                 delete upgradeProposals[proposal.target];
             }
+            
+            pending.flags &= ~proposalFlag;
 
-            // Delete entire record if all flags are false
-            bool isWhitelisted = (pending.flags & WHITELIST_FLAG) != 0;
-            bool isRoleChange = (pending.flags & ROLE_CHANGE_FLAG) != 0;
-            bool isRecovery = (pending.flags & RECOVERY_FLAG) != 0;
-            bool isUpgrade = (pending.flags & UPGRADE_FLAG) != 0;
-            if (!isWhitelisted && !isRoleChange && 
-                !isRecovery && !isUpgrade) {
+            // Delete entire record if all flags are cleared
+            if (pending.flags == 0) {
                 delete pendingProposals[proposal.target];
             }
+            
             delete proposals[proposalId];
             proposalCount -= 1;
-            emit ProposalExpired(proposalId, proposal.proposalType, proposal.target);
+            emit ProposalExpired(proposalId, ProposalType(proposal.proposalType), proposal.target);
             revert ProposalExpiredErr();
         }
-
-        require(!proposal.hasApproved[msg.sender], "Already approved");
         
         proposal.hasApproved[msg.sender] = true;
         proposal.approvals++;
         
-        emit ProposalApproved(proposalId, proposal.proposalType, msg.sender);
+        emit ProposalApproved(proposalId, ProposalType(proposal.proposalType), msg.sender);
         
-        if (proposal.approvals >= roleQuorum[ADMIN_ROLE] && 
+        if (proposal.approvals >= adminConfig.quorum && 
             block.timestamp >= proposal.executionTime) {
+            emit ProposalReadyForExecution(proposalId, ProposalType(proposal.proposalType));
             _executeProposal(proposalId);
         }
     }
+
     function executeProposal(bytes32 proposalId) 
         external
         whenNotPaused
@@ -367,58 +426,80 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     {
         UnifiedProposal storage proposal = proposals[proposalId];
         if (proposal.target == address(0)) revert ProposalNotFoundErr();
-        if (proposal.executed) revert ProposalAlreadyExecutedErr();
-        if (roleQuorum[ADMIN_ROLE] < 2) revert InvalidQuorumErr(ADMIN_ROLE, roleQuorum[ADMIN_ROLE]);
         
-        if (proposal.approvals >= roleQuorum[ADMIN_ROLE] && 
-            block.timestamp >= proposal.executionTime) {
-            _executeProposal(proposalId);
-        } else {
-            if (proposal.approvals < roleQuorum[ADMIN_ROLE]) {
-                revert InsufficientApprovalsErr(proposal.approvals, roleQuorum[ADMIN_ROLE]);
-            }
-            if (block.timestamp < proposal.executionTime) {
-                revert ProposalExecutionDelayNotMetErr(proposal.executionTime);
-            }
+        // Cache storage reads
+        RoleConfig storage adminConfig = roleConfigs[ADMIN_ROLE];
+        if (adminConfig.quorum < 2) revert InvalidQuorumErr(ADMIN_ROLE, adminConfig.quorum);
+        
+        // Check approvals first
+        uint32 currentApprovals = proposal.approvals;
+        uint32 requiredQuorum = adminConfig.quorum;
+        if (currentApprovals < requiredQuorum) {
+            revert InsufficientApprovalsErr(currentApprovals, requiredQuorum);
         }
+        
+        // Then check execution status
+        if ((proposal.flags & EXECUTED_FLAG) != 0) {
+            revert ProposalAlreadyExecutedErr();
+        }
+        
+        // Finally check execution time
+        if (block.timestamp < proposal.executionTime) {
+            revert ProposalExecutionDelayNotMetErr(proposal.executionTime);
+        }
+        
+        // All checks passed, execute the proposal
+        _executeProposal(proposalId);
     }
+
 
     function _executeProposal(bytes32 proposalId) internal {
         UnifiedProposal storage proposal = proposals[proposalId];
         PendingProposals storage pending = pendingProposals[proposal.target];
         
-        if (proposal.proposalType == ProposalType.Whitelist) {
-            whitelistLockTime[proposal.target] = block.timestamp + WHITELIST_LOCK_DURATION;
+        // Cache commonly used values
+        address target = proposal.target;
+        uint8 proposalTypeVal = uint8(proposal.proposalType);
+        
+        if (proposalTypeVal == uint8(ProposalType.Whitelist)) {
+            // Pack time configurations into TimeConfig struct
+            TimeConfig storage timeConfig = timeConfigs[target];
+            timeConfig.whitelistLockTime = uint64(block.timestamp + WHITELIST_LOCK_DURATION);
             pending.flags &= ~WHITELIST_FLAG;
         } 
-        else if (proposal.proposalType == ProposalType.RoleChange) {
-            if (proposal.isAdd) {
-                _grantRole(proposal.role, proposal.target);
-                roleChangeTimeLock[proposal.target] = block.timestamp + ROLE_CHANGE_DELAY;
+        else if (proposalTypeVal == uint8(ProposalType.RoleChange)) {
+            if ((proposal.flags & ISADD_FLAG) != 0) {  // Check isAdd from packed flags
+                _grantRole(proposal.role, target);
+                // Pack time configurations
+                TimeConfig storage timeConfig = timeConfigs[target];
+                timeConfig.roleChangeTimeLock = uint64(block.timestamp + ROLE_CHANGE_DELAY);
+            } else if ((proposal.flags & ISREMOVED_FLAG) != 0) {
+                _revokeRole(proposal.role, target);
+                TimeConfig storage timeConfig = timeConfigs[target];
+                if (timeConfig.roleChangeTimeLock > 0) {
+                    timeConfig.roleChangeTimeLock = 0;
+                }
             } else {
-                _revokeRole(proposal.role, proposal.target);
-                if (roleChangeTimeLock[proposal.target] > 0) delete roleChangeTimeLock[proposal.target];
+                revert INVALIDFLAG(proposal.flags);
             }
             pending.flags &= ~ROLE_CHANGE_FLAG;
         }
-        else if (proposal.proposalType == ProposalType.Recovery) {
+        else if (proposalTypeVal == uint8(ProposalType.Recovery)) {
             IERC20 token = IERC20(proposal.tokenAddress);
-            require(token.transfer(proposal.target, proposal.amount), "Transfer failed");
+            require(token.transfer(target, proposal.amount), "Transfer failed");
             pending.flags &= ~RECOVERY_FLAG;
         }
 
-        // Delete entire record if all flags are false
-        bool isWhitelisted = (pending.flags & WHITELIST_FLAG) != 0;
-        bool isRoleChange = (pending.flags & ROLE_CHANGE_FLAG) != 0;
-        bool isRecovery = (pending.flags & RECOVERY_FLAG) != 0;
-        bool isUpgrade = (pending.flags & UPGRADE_FLAG) != 0;
-        if (!isWhitelisted && !isRoleChange && 
-            !isRecovery && !isUpgrade) {
-            delete pendingProposals[proposal.target];
+        // Optimize flag checking by using single uint8 comparison
+        if (pending.flags == 0) {
+            delete pendingProposals[target];
         }
-        if (!isUpgrade) {
-            proposal.executed = true;
-            emit ProposalExecuted(proposalId, proposal.proposalType, proposal.target);
+        
+        // Check upgrade flag using bitwise operation
+        if ((pending.flags & UPGRADE_FLAG) == 0) {
+            // Set executed flag in packed flags
+            proposal.flags |= EXECUTED_FLAG;  // Set executed bit
+            emit ProposalExecuted(proposalId, ProposalType(proposalTypeVal), target);
         }
     }
 
@@ -426,13 +507,13 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         external 
         view 
         returns (
-            ProposalType proposalType,
+            uint8 proposalType,
             address target,
             bytes32 role,
             uint256 amount,
             address tokenAddress,
             bool isAdd,
-            uint256 approvals,
+            uint32 approvals,
             uint256 expiryTime,
             uint256 executionTime,
             bool executed,
@@ -441,18 +522,23 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     {
         UnifiedProposal storage proposal = proposals[proposalId];
         if (proposal.target == address(0)) revert ProposalNotFoundErr();
-        
+        bool isAdded = (proposal.flags & ISADD_FLAG) != 0;
+        bool isRemoved = (proposal.flags & ISREMOVED_FLAG) != 0;
+        bool isAddFlg = false;
+        if (isAdded) {isAddFlg = true;}
+        else if (isRemoved)  {isAddFlg = false;}
+
         return (
             proposal.proposalType,
             proposal.target,
             proposal.role,
             proposal.amount,
             proposal.tokenAddress,
-            proposal.isAdd,
+            isAddFlg,  // isAdd flag
             proposal.approvals,
             proposal.expiryTime,
             proposal.executionTime,
-            proposal.executed,
+            (proposal.flags & EXECUTED_FLAG) != 0,  // executed flag
             proposal.hasApproved[msg.sender]
         );
     }
@@ -462,41 +548,40 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         view 
         returns (
             bytes32[] memory proposalIds,
-            ProposalType[] memory types,
+            uint8[] memory types,
             address[] memory targets,
             uint256[] memory expiryTimes,
             bool[] memory executed
         ) 
     {
-        // Create arrays with maximum possible size
         proposalIds = new bytes32[](proposalCount);
-        types = new ProposalType[](proposalCount);
+        types = new uint8[](proposalCount);
         targets = new address[](proposalCount);
         expiryTimes = new uint256[](proposalCount);
         executed = new bool[](proposalCount);
 
-        // Track valid proposals
         uint256 validCount = 0;
 
-        // Iterate through all addresses with pending proposals
         for (uint256 i = 0; i < proposalCount; i++) {
-            // Get proposal from storage
             bytes32 proposalId = proposalRegistry[i];
             UnifiedProposal storage proposal = proposals[proposalId];
             
+            // Check if proposal is valid using packed flags
+            bool isExecuted = (proposal.flags & EXECUTED_FLAG) != 0;
+            
             if (proposal.target != address(0) && 
-                !proposal.executed && 
+                !isExecuted && 
                 proposal.expiryTime > block.timestamp) {
                 proposalIds[validCount] = proposalId;
                 types[validCount] = proposal.proposalType;
                 targets[validCount] = proposal.target;
                 expiryTimes[validCount] = proposal.expiryTime;
-                executed[validCount] = proposal.executed;
+                executed[validCount] = isExecuted;
                 validCount++;
             }
         }
 
-        // Resize arrays to actual count
+        // Resize arrays
         assembly {
             mstore(proposalIds, validCount)
             mstore(types, validCount)
@@ -523,9 +608,15 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         onlyRole(ADMIN_ROLE)
         updateActivityTimestamp 
     {
-        if (block.timestamp < roleChangeTimeLock[msg.sender] || roleChangeTimeLock[msg.sender] == 0) revert TimeLockActive(msg.sender);
+        // Cache storage reads
+        TimeConfig storage timeConfig = timeConfigs[msg.sender];
+        if (block.timestamp < timeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
         if (wallet == address(0)) revert InvalidAddress(wallet);
-        delete whitelistLockTime[wallet];
+        
+        // Update packed time configurations
+        TimeConfig storage walletTimeConfig = timeConfigs[wallet];
+        walletTimeConfig.whitelistLockTime = 0;
+        
         emit WalletRemovedFromWhitelist(wallet, msg.sender);
     }
 
@@ -537,8 +628,12 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         onlyRole(ADMIN_ROLE)
         updateActivityTimestamp 
     {
-        require(quorum > 1, "Invalid quorum");
-        roleQuorum[role] = quorum;
+        if (quorum <= 1) revert InvalidQuorumErr(role, quorum);
+        
+        // Use the packed RoleConfig struct
+        RoleConfig storage roleConfig = roleConfigs[role];
+        roleConfig.quorum = quorum;
+        
         emit QuorumUpdated(role, quorum);
     }
 
@@ -550,7 +645,10 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         onlyRole(ADMIN_ROLE)
         updateActivityTimestamp 
     {
-        roleTransactionLimit[role] = limit;
+        // Use the packed RoleConfig struct
+        RoleConfig storage roleConfig = roleConfigs[role];
+        roleConfig.transactionLimit = limit;
+        
         emit TransactionLimitUpdated(role, limit);
     }
 
@@ -561,24 +659,43 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         onlyRole(ADMIN_ROLE)
         updateActivityTimestamp 
     {
-        require(block.timestamp >= lastEmergencyAction + EMERGENCY_COOLDOWN, "Cooldown active");
-        if (block.timestamp < roleChangeTimeLock[msg.sender] || roleChangeTimeLock[msg.sender] == 0) revert TimeLockActive(msg.sender);
+        // Cache storage reads
+        PackedVars storage vars = packedVars;
+        uint256 lastAction = vars.lastEmergencyAction;
+        
+        if (block.timestamp < lastAction + EMERGENCY_COOLDOWN) revert CoolDownActive(lastAction + EMERGENCY_COOLDOWN);
+        
+        // Use TimeConfig struct for time-related values
+        TimeConfig storage timeConfig = timeConfigs[msg.sender];
+        if (block.timestamp < timeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
+        
         _pause();
-        lastEmergencyAction = block.timestamp;
+        vars.lastEmergencyAction = uint248(block.timestamp);
+        
         emit EmergencyAction("Contract paused", block.timestamp, msg.sender);
     }
 
-    // UnPausing contract actions after emergency to return to normal
     function emergencyUnpauseToken() 
         external 
         nonReentrant
         onlyRole(ADMIN_ROLE)
         updateActivityTimestamp 
     {
-        require(block.timestamp >= lastEmergencyAction + EMERGENCY_COOLDOWN, "Cooldown active");
-        if (block.timestamp < roleChangeTimeLock[msg.sender] || roleChangeTimeLock[msg.sender] == 0) revert TimeLockActive(msg.sender);
+        // Cache storage reads
+        PackedVars storage vars = packedVars;
+        uint256 lastAction = vars.lastEmergencyAction;
+        
+        if (block.timestamp < lastAction + EMERGENCY_COOLDOWN) revert CoolDownActive(lastAction + EMERGENCY_COOLDOWN);
+        
+        // Use TimeConfig struct for time-related values
+        TimeConfig storage timeConfig = timeConfigs[msg.sender];
+        if (block.timestamp < timeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
+        
         _unpause();
-        lastEmergencyAction = block.timestamp;
+        
+        // Update packed emergency action time
+        vars.lastEmergencyAction = uint248(block.timestamp);
+        
         emit EmergencyAction("Contract unpaused", block.timestamp, msg.sender);
     }
 
@@ -595,13 +712,22 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     {
         require(admin != msg.sender, "Cannot remove self");
         if (admin == address(0)) revert InvalidAddress(admin);
-        if (block.timestamp < roleChangeTimeLock[msg.sender] || roleChangeTimeLock[msg.sender] == 0) revert TimeLockActive(msg.sender);
+        
+        // Use TimeConfig struct for time-related values
+        TimeConfig storage senderTimeConfig = timeConfigs[msg.sender];
+        if (block.timestamp < senderTimeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
         
         uint256 adminCount = getRoleMemberCount(ADMIN_ROLE);
         require(adminCount > 2, "Cannot remove last two admins");
         
         _revokeRole(ADMIN_ROLE, admin);
-        if (roleChangeTimeLock[admin] > 0) delete roleChangeTimeLock[admin];
+        
+        // Update admin's time config
+        TimeConfig storage adminTimeConfig = timeConfigs[admin];
+        if (adminTimeConfig.roleChangeTimeLock > 0) {
+            adminTimeConfig.roleChangeTimeLock = 0;
+        }
+        
         emit RoleUpdated(admin, msg.sender, ADMIN_ROLE, false);
     }
 
@@ -616,12 +742,19 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         updateActivityTimestamp 
         returns (bool) 
     {
-        if (block.timestamp < roleChangeTimeLock[msg.sender] || roleChangeTimeLock[msg.sender] == 0) revert TimeLockActive(msg.sender);
-        if (amount <= 0) revert AmountMustBePositive();
-        if (amount > balanceOf(address(this))) revert ExceedsAvailableSupply(amount, balanceOf(address(this)));
+        // Use TimeConfig struct for time-related values
+        TimeConfig storage timeConfig = timeConfigs[msg.sender];
+        if (block.timestamp < timeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
         
-        // Check transaction limit
-        require(amount <= roleTransactionLimit[CONTRACT_OPERATOR_ROLE], "Exceeds role transaction limit");
+        if (amount <= 0) revert AmountMustBePositive();
+        
+        // Cache balance check
+        uint256 contractBalance = balanceOf(address(this));
+        if (amount > contractBalance) revert ExceedsAvailableSupply(amount, contractBalance);
+        
+        // Use RoleConfig struct for role-related values
+        RoleConfig storage roleConfig = roleConfigs[CONTRACT_OPERATOR_ROLE];
+        require(amount <= roleConfig.transactionLimit, "Exceeds role transaction limit");
         
         _transfer(address(this), to, amount);
         emit TransferFromContract(address(this), to, amount, msg.sender);
@@ -638,8 +771,14 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         updateActivityTimestamp 
         returns (bool) 
     {
-        if (amount <= 0) revert AmountMustBePositive();
+        // Combine validation checks into a single require to save gas
         if (to == address(0)) revert InvalidAddress(to);
+        if (amount <= 0) revert AmountMustBePositive();
+        
+        // Update activity timestamp in TimeConfig struct
+        TimeConfig storage timeConfig = timeConfigs[msg.sender];
+        timeConfig.lastActivityTime = uint64(block.timestamp);
+        
         return super.transfer(to, amount);
     }
 
@@ -651,19 +790,30 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         onlyRole(BRIDGE_OPERATOR_ROLE)
         updateActivityTimestamp 
     {
+        // Cache storage reads
         require(!_usedNonces[sourceChain][nonce], "Used nonce");
         if (!supportedChains[sourceChain]) revert UnsupportedChain(sourceChain);
-        if (block.timestamp < roleChangeTimeLock[msg.sender] || roleChangeTimeLock[msg.sender] == 0) revert TimeLockActive(msg.sender);
-        if (amount <= 0) revert AmountMustBePositive();
-        if (totalSupply() + amount > TOTAL_SUPPLY) {
+        
+        // Use TimeConfig struct for time-related values
+        TimeConfig storage timeConfig = timeConfigs[msg.sender];
+        if (block.timestamp < timeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
+        
+        if (amount == 0) revert AmountMustBePositive();
+        
+        // Cache total supply
+        uint256 currentSupply = totalSupply();
+        if (currentSupply + amount > TOTAL_SUPPLY) {
             revert ExceedsMaximumSupply(amount, TOTAL_SUPPLY);
         }
 
-        // Check transaction limit for bridge operations
-        if (amount > roleTransactionLimit[BRIDGE_OPERATOR_ROLE]) revert LowAllowance(roleTransactionLimit[BRIDGE_OPERATOR_ROLE], amount);
+        // Use RoleConfig struct for role-related values
+        RoleConfig storage roleConfig = roleConfigs[BRIDGE_OPERATOR_ROLE];
+        if (amount > roleConfig.transactionLimit) revert LowAllowance(roleConfig.transactionLimit, amount);
 
+        // Update state
         _mint(address(this), amount);
         _usedNonces[sourceChain][nonce] = true;
+        
         emit BridgeOperationDetails(msg.sender, "MINT", amount, sourceChain, block.timestamp);
     }
 
@@ -677,15 +827,24 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     {
         require(!_usedNonces[targetChain][nonce], "Used nonce");
         if (!supportedChains[targetChain]) revert UnsupportedChain(targetChain);
-        if (block.timestamp < roleChangeTimeLock[msg.sender] || roleChangeTimeLock[msg.sender] == 0) revert TimeLockActive(msg.sender);
-        if (amount <= 0) revert AmountMustBePositive();
-        if (balanceOf(address(this)) < amount) revert LowBalance(balanceOf(address(this)), amount);
+        
+        // Use TimeConfig struct for time-related values
+        TimeConfig storage timeConfig = timeConfigs[msg.sender];
+        if (block.timestamp < timeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
+        
+        if (amount == 0) revert AmountMustBePositive();
+        
+        // Cache balance check
+        uint256 contractBalance = balanceOf(address(this));
+        if (contractBalance < amount) revert LowBalance(contractBalance, amount);
 
-        // Check transaction limit for bridge operations
-        if (amount > roleTransactionLimit[BRIDGE_OPERATOR_ROLE]) revert LowAllowance(roleTransactionLimit[BRIDGE_OPERATOR_ROLE], amount);
+        // Use RoleConfig struct for role-related values
+        RoleConfig storage roleConfig = roleConfigs[BRIDGE_OPERATOR_ROLE];
+        if (amount > roleConfig.transactionLimit) revert LowAllowance(roleConfig.transactionLimit, amount);
 
         _burn(address(this), amount);
         _usedNonces[targetChain][nonce] = true;
+        
         emit BridgeOperationDetails(msg.sender, "BURN", amount, targetChain, block.timestamp);
     }
 
@@ -697,9 +856,15 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         onlyRole(ADMIN_ROLE)
         updateActivityTimestamp 
     {
-        if (block.timestamp < roleChangeTimeLock[msg.sender] || roleChangeTimeLock[msg.sender] == 0) revert TimeLockActive(msg.sender);
+        // Use TimeConfig struct for time-related values
+        TimeConfig storage timeConfig = timeConfigs[msg.sender];
+        if (block.timestamp < timeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
+        
         require(chainId > 0, "Invalid chain ID");
+        
+        // Update supported chains mapping
         supportedChains[chainId] = supported;
+        
         emit SupportedChainChanged(chainId, supported, msg.sender);
     }
 
@@ -709,7 +874,19 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         view 
         returns (bool) 
     {
-        return block.timestamp - lastActivityTime[account] <= INACTIVITY_THRESHOLD;
+        // Use TimeConfig struct for activity time
+        TimeConfig storage timeConfig = timeConfigs[account];
+        return block.timestamp - timeConfig.lastActivityTime <= INACTIVITY_THRESHOLD;
+    }
+
+    function getRoleActivity(address account) 
+        external 
+        view 
+        returns (uint64) 
+    {
+        // Use TimeConfig struct for activity time
+        TimeConfig storage timeConfig = timeConfigs[account];
+        return timeConfig.lastActivityTime;
     }
 
     // Role transaction limit getter
@@ -718,16 +895,20 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         view 
         returns (uint256) 
     {
-        return roleTransactionLimit[role];
+        // Use RoleConfig struct for transaction limit
+        RoleConfig storage roleConfig = roleConfigs[role];
+        return roleConfig.transactionLimit;
     }
 
     // Role quorum getter
     function getRoleQuorum(bytes32 role) 
         external 
         view 
-        returns (uint256) 
+        returns (uint32) // Changed return type to uint32
     {
-        return roleQuorum[role];
+        // Use RoleConfig struct for quorum
+        RoleConfig storage roleConfig = roleConfigs[role];
+        return roleConfig.quorum;
     }
 
     function _authorizeUpgrade(address newImplementation) 
@@ -738,49 +919,60 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         onlyRole(ADMIN_ROLE) 
         updateActivityTimestamp 
     {
-        
         if (newImplementation == address(0)) revert InvalidAddress(newImplementation);
         
-        // Check quorum requirements
-        if (roleQuorum[CONTRACT_OPERATOR_ROLE] < 2) {
-            revert InvalidQuorumErr(CONTRACT_OPERATOR_ROLE, roleQuorum[CONTRACT_OPERATOR_ROLE]);
+        // Use RoleConfig struct for role-related values
+        RoleConfig storage operatorConfig = roleConfigs[CONTRACT_OPERATOR_ROLE];
+        if (operatorConfig.quorum < 2) {
+            revert InvalidQuorumErr(CONTRACT_OPERATOR_ROLE, operatorConfig.quorum);
         }
         
-        // Find the active upgrade proposal for this implementation
-        bytes32 proposalId;
-        bytes32 currentId = upgradeProposals[newImplementation];
+        // Cache current timestamp
+        uint256 currentTime = block.timestamp;
         
+        // Find the active upgrade proposal
+        bytes32 currentId = upgradeProposals[newImplementation];
         if (currentId == 0) revert ProposalNotFoundErr();
+        
+        // Cache proposal storage
         UnifiedProposal storage currentProposal = proposals[currentId];
-        if (currentProposal.proposalType == ProposalType.Upgrade && 
-            currentProposal.target == newImplementation &&
-            ! currentProposal.executed &&
-            currentProposal.expiryTime > block.timestamp) {
-            proposalId = currentId;
-        } else {
+        
+        // Check if proposal is valid
+        if (currentProposal.proposalType != uint8(ProposalType.Upgrade) || 
+            currentProposal.target != newImplementation ||
+            (currentProposal.flags & EXECUTED_FLAG) != 0 ||  // Check executed flag
+            currentProposal.expiryTime <= currentTime) {
             revert ProposalNotFoundErr();
         }
         
-        UnifiedProposal storage proposal = proposals[proposalId];
-        PendingProposals storage pending = pendingProposals[proposal.target];
-        if (proposal.target == address(0)) revert InvalidAddress(proposal.target);
-        if (proposal.executed) revert ProposalAlreadyExecutedErr();
-        if (proposal.proposalType != ProposalType.Upgrade) revert InvalidProposalTypeErr(proposal.proposalType);
+        // Cache target address
+        address target = currentProposal.target;
+        if (target == address(0)) revert InvalidAddress(target);
         
-        if (proposal.approvals < roleQuorum[CONTRACT_OPERATOR_ROLE]) revert InsufficientApprovalsErr(roleQuorum[CONTRACT_OPERATOR_ROLE], proposal.approvals);
-        if (block.timestamp < proposal.executionTime) revert ProposalExecutionDelayNotMetErr(proposal.executionTime);
-        delete upgradeProposals[newImplementation];
-        currentProposal.executed = true;
-        pending.flags &= ~UPGRADE_FLAG;
-        bool isWhitelisted = (pending.flags & WHITELIST_FLAG) != 0;
-        bool isRoleChange = (pending.flags & ROLE_CHANGE_FLAG) != 0;
-        bool isRecovery = (pending.flags & RECOVERY_FLAG) != 0;
-        bool isUPgrade = (pending.flags & UPGRADE_FLAG) != 0;
-        if (!isWhitelisted && !isRoleChange && 
-            !isRecovery && !isUPgrade) {
-            delete pendingProposals[proposal.target];
+        // Cache required approvals
+        uint32 requiredApprovals = operatorConfig.quorum;
+        if (currentProposal.approvals < requiredApprovals) {
+            revert InsufficientApprovalsErr(requiredApprovals, currentProposal.approvals);
         }
-        emit ProposalExecuted(proposalId, proposal.proposalType, proposal.target);
+        
+        if (currentTime < currentProposal.executionTime) {
+            revert ProposalExecutionDelayNotMetErr(currentProposal.executionTime);
+        }
+        
+        // Update state
+        delete upgradeProposals[newImplementation];
+        currentProposal.flags |= EXECUTED_FLAG;  // Set executed flag
+        
+        // Update pending proposals
+        PendingProposals storage pending = pendingProposals[target];
+        pending.flags &= ~UPGRADE_FLAG;
+        
+        // Delete pending proposals if all flags are cleared
+        if (pending.flags == 0) {
+            delete pendingProposals[target];
+        }
+        
+        emit ProposalExecuted(currentId, ProposalType(currentProposal.proposalType), target);
     }
 
     uint256[45] private __gap; // Reduced gap size to accommodate new storage variables
