@@ -287,7 +287,7 @@ describe("StorageToken", () => {
             expect(event2?.args?.proposalType).to.be.eq(0);
 
             // Verify proposal count with packed structs
-            const proposalDetails = await storageToken.getPendingProposals();
+            const proposalDetails = await storageToken.getPendingProposals(0, 10);
             expect(proposalDetails.proposalIds.length).to.be.equal(2);
         });
     });
@@ -434,7 +434,7 @@ describe("StorageToken Proposal Approval", () => {
             ).to.be.revertedWithCustomError(storageToken, "ProposalExpiredErr");
     
             // Verify proposal was deleted after expiry
-            const proposalDetails = await storageToken.getPendingProposals();
+            const proposalDetails = await storageToken.getPendingProposals(0, 10);
             expect(proposalDetails.proposalIds.length).to.equal(0);
         });
     });
@@ -1739,96 +1739,136 @@ describe("StorageToken", () => {
         await ethers.provider.send("evm_mine", []);
     });
 
-    describe("getPendingProposals", () => {
-        it("should properly handle pending proposals retrieval with all features", async () => {
-            const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
-            await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
-
-            // Create multiple proposals of different types
-            const tx1 = await storageToken.connect(owner).createProposal(
-                3, // Whitelist
-                addr1.address,
-                ethers.ZeroHash,
-                0,
-                ZeroAddress,
-                true
-            );
-            
-            const receipt1 = await tx1.wait();
-            const event1 = receipt1?.logs
-                .map((log) => {
-                    try {
-                        return storageToken.interface.parseLog(log);
-                    } catch (e) {
-                        return null;
-                    }
-                })
-                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
-            
-            const proposalId1 = event1?.args?.proposalId;
-
-            // Create another proposal
-            const tx2 = await storageToken.connect(owner).createProposal(
-                0, // RoleChange
-                addr2.address,
-                ADMIN_ROLE,
-                0,
-                ZeroAddress,
-                true
-            );
-            
-            const receipt2 = await tx2.wait();
-            const event2 = receipt2?.logs
-                .map((log) => {
-                    try {
-                        return storageToken.interface.parseLog(log);
-                    } catch (e) {
-                        return null;
-                    }
-                })
-                .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
-            
-            const proposalId2 = event2?.args?.proposalId;
-
-            // Get pending proposals
-            const pendingProposals = await storageToken.getPendingProposals();
-            
-            // Verify number of pending proposals
-            expect(pendingProposals.proposalIds.length).to.equal(2);
-            expect(pendingProposals.types.length).to.equal(2);
-            expect(pendingProposals.targets.length).to.equal(2);
-            expect(pendingProposals.expiryTimes.length).to.equal(2);
-            expect(pendingProposals.executed.length).to.equal(2);
-
-            // Verify proposal details
-            expect(pendingProposals.targets).to.include(addr1.address);
-            expect(pendingProposals.targets).to.include(addr2.address);
-            expect(pendingProposals.types).to.include(BigInt(3)); // Whitelist
-            expect(pendingProposals.types).to.include(BigInt(0)); // RoleChange
-            expect(pendingProposals.executed).to.deep.equal([false, false]);
-
-            // Execute one proposal
-            await storageToken.connect(admin).approveProposal(proposalId1);
-            const executionDelay = 24 * 60 * 60;
-            await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
-            await storageToken.connect(owner).executeProposal(proposalId1);
-
-            // Verify updated pending proposals
-            const updatedPendingProposals = await storageToken.getPendingProposals();
-            expect(updatedPendingProposals.proposalIds.length).to.equal(1);
-            expect(updatedPendingProposals.targets[0]).to.equal(addr2.address);
-            expect(updatedPendingProposals.types[0]).to.equal(0); // RoleChange
-
-            // Let a proposal expire
-            const proposalTimeout = 48 * 60 * 60;
-            await ethers.provider.send("evm_increaseTime", [proposalTimeout + 1]);
+    describe("StorageToken", () => {
+        let storageToken: StorageToken;
+        let owner: SignerWithAddress;
+        let admin: SignerWithAddress;
+        let addr1: SignerWithAddress;
+        let addr2: SignerWithAddress;
+        const TOKEN_UNIT = ethers.parseEther("1");
+        const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+      
+        beforeEach(async () => {
+            [owner, admin, addr1, addr2] = await ethers.getSigners();
+            const StorageToken = await ethers.getContractFactory("StorageToken");
+            storageToken = (await upgrades.deployProxy(StorageToken, [
+                owner.address,
+                admin.address,
+                TOTAL_SUPPLY / BigInt(2)
+            ])) as StorageToken;
+            await storageToken.waitForDeployment();
+    
+            // Handle timelock
+            const roleChangeTimeLock = 24 * 60 * 60;
+            await ethers.provider.send("evm_increaseTime", [roleChangeTimeLock + 1]);
             await ethers.provider.send("evm_mine", []);
-
-            // Verify no pending proposals after expiry
-            const finalPendingProposals = await storageToken.getPendingProposals();
-            expect(finalPendingProposals.proposalIds.length).to.equal(0);
         });
-    });
+    
+        describe("getPendingProposals", () => {
+            it("should properly handle pending proposals retrieval with all features", async () => {
+                const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
+                await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+    
+                // Create multiple proposals of different types
+                const tx1 = await storageToken.connect(owner).createProposal(
+                    3, // Whitelist
+                    addr1.address,
+                    ethers.ZeroHash,
+                    0,
+                    ZeroAddress,
+                    true
+                );
+                
+                const receipt1 = await tx1.wait();
+                const event1 = receipt1?.logs
+                    .map((log) => {
+                        try {
+                            return storageToken.interface.parseLog(log);
+                        } catch (e) {
+                            return null;
+                        }
+                    })
+                    .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+                
+                const proposalId1 = event1?.args?.proposalId;
+    
+                // Create another proposal
+                const tx2 = await storageToken.connect(owner).createProposal(
+                    0, // RoleChange
+                    addr2.address,
+                    ADMIN_ROLE,
+                    0,
+                    ZeroAddress,
+                    true
+                );
+                
+                const receipt2 = await tx2.wait();
+                const event2 = receipt2?.logs
+                    .map((log) => {
+                        try {
+                            return storageToken.interface.parseLog(log);
+                        } catch (e) {
+                            return null;
+                        }
+                    })
+                    .find((parsedLog) => parsedLog && parsedLog.name === "ProposalCreated");
+                
+                const proposalId2 = event2?.args?.proposalId;
+    
+                // Get pending proposals with pagination
+                const pendingProposals = await storageToken.getPendingProposals(0, 10);
+                
+                // Verify number of pending proposals
+                expect(pendingProposals.proposalIds.length).to.equal(2);
+                expect(pendingProposals.types.length).to.equal(2);
+                expect(pendingProposals.targets.length).to.equal(2);
+                expect(pendingProposals.expiryTimes.length).to.equal(2);
+                expect(pendingProposals.executed.length).to.equal(2);
+                expect(pendingProposals.total).to.equal(2);
+    
+                // Verify proposal details
+                expect(pendingProposals.targets).to.include(addr1.address);
+                expect(pendingProposals.targets).to.include(addr2.address);
+                expect(pendingProposals.types).to.include(BigInt(3)); // Whitelist
+                expect(pendingProposals.types).to.include(BigInt(0)); // RoleChange
+                expect(pendingProposals.executed).to.deep.equal([false, false]);
+    
+                // Test pagination
+                const paginatedProposals = await storageToken.getPendingProposals(1, 1);
+                expect(paginatedProposals.proposalIds.length).to.equal(1);
+                expect(paginatedProposals.total).to.equal(2);
+    
+                // Execute one proposal
+                await storageToken.connect(admin).approveProposal(proposalId1);
+                const executionDelay = 24 * 60 * 60;
+                await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
+                await storageToken.connect(owner).executeProposal(proposalId1);
+    
+                // Verify updated pending proposals
+                const updatedPendingProposals = await storageToken.getPendingProposals(0, 10);
+                expect(updatedPendingProposals.proposalIds.length).to.equal(1);
+                expect(updatedPendingProposals.targets[0]).to.equal(addr2.address);
+                expect(updatedPendingProposals.types[0]).to.equal(0); // RoleChange
+                expect(updatedPendingProposals.total).to.equal(2);
+    
+                // Let a proposal expire
+                const proposalTimeout = 48 * 60 * 60;
+                await ethers.provider.send("evm_increaseTime", [proposalTimeout + 1]);
+                await ethers.provider.send("evm_mine", []);
+    
+                // Verify no pending proposals after expiry
+                const finalPendingProposals = await storageToken.getPendingProposals(0, 10);
+                expect(finalPendingProposals.proposalIds.length).to.equal(0);
+                expect(finalPendingProposals.total).to.equal(2);
+            });
+    
+            it("should handle pagination limits correctly", async () => {
+                await expect(
+                    storageToken.getPendingProposals(0, 51)
+                ).to.be.revertedWith("Limit too high");
+            });
+        });
+    });    
 });
 
 describe("StorageToken", () => {

@@ -551,7 +551,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         );
     }
 
-    function getPendingProposals() 
+    function getPendingProposals(uint256 offset, uint256 limit) 
         external 
         view 
         returns (
@@ -559,27 +559,43 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
             uint8[] memory types,
             address[] memory targets,
             uint256[] memory expiryTimes,
-            bool[] memory executed
+            bool[] memory executed,
+            uint256 total
         ) 
     {
-        proposalIds = new bytes32[](proposalCount);
-        types = new uint8[](proposalCount);
-        targets = new address[](proposalCount);
-        expiryTimes = new uint256[](proposalCount);
-        executed = new bool[](proposalCount);
+        // Cap the maximum number of proposals that can be returned
+        require(limit <= 50, "Limit too high");
+        
+        // Initialize arrays with the smaller of limit or remaining proposals
+        uint256 remaining = proposalCount > offset ? proposalCount - offset : 0;
+        uint256 size = remaining < limit ? remaining : limit;
+        
+        proposalIds = new bytes32[](size);
+        types = new uint8[](size);
+        targets = new address[](size);
+        expiryTimes = new uint256[](size);
+        executed = new bool[](size);
 
         uint256 validCount = 0;
+        uint256 skipped = 0;
 
-        for (uint256 i = 0; i < proposalCount; i++) {
+        // Only iterate through the specified window
+        for (uint256 i = 0; i < proposalCount && validCount < size; i++) {
             bytes32 proposalId = proposalRegistry[i];
             UnifiedProposal storage proposal = proposals[proposalId];
             
-            // Check if proposal is valid using packed flags
             bool isExecuted = (proposal.flags & EXECUTED_FLAG) != 0;
             
             if (proposal.target != address(0) && 
                 !isExecuted && 
                 proposal.expiryTime > block.timestamp) {
+                
+                // Skip proposals until we reach the offset
+                if (skipped < offset) {
+                    skipped++;
+                    continue;
+                }
+                
                 proposalIds[validCount] = proposalId;
                 types[validCount] = proposal.proposalType;
                 targets[validCount] = proposal.target;
@@ -598,7 +614,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
             mstore(executed, validCount)
         }
 
-        return (proposalIds, types, targets, expiryTimes, executed);
+        return (proposalIds, types, targets, expiryTimes, executed, proposalCount);
     }
 
     function hasApprovedProposal(bytes32 proposalId, address approver) 
