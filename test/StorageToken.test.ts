@@ -1865,7 +1865,7 @@ describe("StorageToken", () => {
             it("should handle pagination limits correctly", async () => {
                 await expect(
                     storageToken.getPendingProposals(0, 51)
-                ).to.be.revertedWith("Limit too high");
+                ).to.be.revertedWithCustomError(storageToken, "LimitTooHigh");
             });
         });
     });    

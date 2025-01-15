@@ -151,6 +151,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     error AlreadyUpgraded();
     error InvalidRole(bytes32 role);
     error UseTransferFromContractInstead();
+    error LimitTooHigh();
 
     // Ensures address is not zero
     modifier validateAddress(address _address) {
@@ -564,7 +565,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         ) 
     {
         // Cap the maximum number of proposals that can be returned
-        require(limit <= 50, "Limit too high");
+        if (limit > 20) revert LimitTooHigh();
         
         // Initialize arrays with the smaller of limit or remaining proposals
         uint256 remaining = proposalCount > offset ? proposalCount - offset : 0;
