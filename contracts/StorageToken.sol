@@ -184,12 +184,9 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         uint256 initialMintedTokens
     ) public reinitializer(1) {
         // Combine validation checks
-        if (initialOwner == address(0) || initialAdmin == address(0)) {
-            revert InvalidAddress(address(0));
-        }
-        if (initialMintedTokens > TOTAL_SUPPLY) {
-            revert("Exceeds maximum supply");
-        }
+        if (initialOwner == address(0) || initialAdmin == address(0)) revert InvalidAddress(address(0));
+        if (initialAdmin == address(0)) revert InvalidAddress(initialAdmin);
+        if (initialMintedTokens > TOTAL_SUPPLY) revert("Exceeds maximum supply");
         
         // Initialize contracts
         __ERC20_init("Placeholder Token", "PLACEHOLDER");
@@ -738,12 +735,29 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         if (admin == msg.sender) revert CannotRemoveSelf();
         if (admin == address(0)) revert InvalidAddress(admin);
         
-        // Use TimeConfig struct for time-related values
+        // Check timelock
         TimeConfig storage senderTimeConfig = timeConfigs[msg.sender];
         if (block.timestamp < senderTimeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
         
+        // Count active admins
         uint256 adminCount = getRoleMemberCount(ADMIN_ROLE);
-        if(adminCount <= 2) revert MinimumRoleNoRequired();
+        uint256 activeAdminCount = 0;
+        
+        for (uint256 i = 0; i < adminCount; i++) {
+            address currentAdmin = getRoleMember(ADMIN_ROLE, i);
+            if (currentAdmin != admin && // Don't count the admin being removed
+                block.timestamp - timeConfigs[currentAdmin].lastActivityTime <= INACTIVITY_THRESHOLD) {
+                activeAdminCount++;
+            }
+        }
+        
+        // Calculate minimum required active admins (floor(total_admins/2) + 1)
+        uint256 minRequiredActiveAdmins = (adminCount - 1) / 2 + 1;
+        
+        // Ensure we maintain minimum active admins after removal
+        if (activeAdminCount < minRequiredActiveAdmins) {
+            revert MinimumRoleNoRequired();
+        }
         
         _revokeRole(ADMIN_ROLE, admin);
         
