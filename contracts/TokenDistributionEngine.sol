@@ -15,12 +15,9 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
     using SafeERC20 for IERC20;
     bytes32 public constant DISTRIBUTOR_ROLE = keccak256("DISTRIBUTOR_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    uint8 PROPOSED_ADD = 1;
-    uint8 PROPOSED_REMOVE = 2;
     uint256 private constant ROLE_CHANGE_DELAY = 1 days;
-    uint32 public constant INACTIVITY_THRESHOLD = 365 days;
-    uint16 private constant EMERGENCY_COOLDOWN = 30 minutes;
-    uint8 constant PENDING_OWNERSHIP = 2;
+    uint256 public constant INACTIVITY_THRESHOLD = 365 days;
+    uint256 private constant EMERGENCY_COOLDOWN = 30 minutes;
 
 
     IERC20 public storageToken;
@@ -32,6 +29,9 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
     uint8 constant EXECUTED_FLAG = 8;
     uint8 constant ADDROLE_FLAG = 16;
     uint8 constant REMOVEROLE_FLAG = 32;
+    uint8 constant PENDING_OWNERSHIP = 2;
+    uint8 constant PROPOSED_ADD = 1;
+    uint8 constant PROPOSED_REMOVE = 2;
     address private _pendingOwner;
     struct ProposalConfig {
         uint32 approvals;
