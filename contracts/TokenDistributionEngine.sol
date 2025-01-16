@@ -45,7 +45,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         uint256 capId;                    // Cap ID for wallet operations
         uint256[] allocations;            // Token allocations for wallets
         address target;                    // Target address for upgrades/wallet operations
-        string[] names;                   // Names for wallets
+        bytes32[] names;                   // Names for wallets
         address[] wallets;                // Wallet addresses
         ProposalConfig config;            // Packed configuration
         mapping(address => bool) hasApproved;  // Approval tracking
@@ -76,7 +76,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
     mapping(address => mapping(uint256 => uint8)) public proposedWallets; // Proposed allocation for tokens per wallet per cap
     mapping(address => bytes32) public upgradeProposals;
     mapping(uint256 => uint256) public allocatedTokensPerCap; // Allocated tokens per cap
-    mapping(address => mapping(uint256 => string)) public walletNames; // tag the wallet of each receiver
+    mapping(address => mapping(uint256 => bytes32)) public walletNames; // tag the wallet of each receiver
     mapping(address => mapping(uint256 => bytes32)) public activeProposals;
     bool public tgeInitiated;
     uint256[] public capIds;
@@ -103,7 +103,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
 
 
     event TGEInitiated(uint256 startTime);
-    event VestingCapAdded(uint256 id, string name);
+    event VestingCapAdded(uint256 id, bytes32 name);
     event WalletsAddedToCap(uint256 capId, address[] wallets);
     event TokensClaimed(address indexed receiver, uint256 capId, uint256 dueTokens, uint256 chainId);
     event EmergencyAction(string action, uint256 timestamp, address caller);
@@ -296,7 +296,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
 
     function addVestingCap(
         uint256 capId,
-        string memory name,
+        bytes32 name,
         uint256 totalAllocation,
         uint256 cliff, // cliff in days
         uint256 vestingTerm, // linear vesting duration in months
@@ -325,6 +325,37 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
 
         emit VestingCapAdded(capId, name);
     }
+
+    function removeVestingCap(uint256 capId) external onlyRole(ADMIN_ROLE) {
+        if(vestingCaps[capId].totalAllocation <= 0) revert CapNotFound(capId);
+        if (capWallets[capId].length > 0) revert CapHasWallets();
+
+        // Clean up all role assignments and permissions for this cap
+        address[] storage wallets = capWallets[capId];
+        for (uint i = 0; i < wallets.length; i++) {
+            address wallet = wallets[i];
+            delete allocatedTokens[wallet][capId];
+            delete walletNames[wallet][capId];
+            delete proposedWallets[wallet][capId];
+            delete activeProposals[wallet][capId];
+        }
+        
+        delete vestingCaps[capId];
+        delete allocatedTokensPerCap[capId];
+        delete capWallets[capId];
+        
+        // Remove from capIds array
+        for (uint i = 0; i < capIds.length; i++) {
+            if (capIds[i] == capId) {
+                capIds[i] = capIds[capIds.length - 1];
+                capIds.pop();
+                break;
+            }
+        }
+        
+        emit CapRemoved(capId);
+    }
+
 
     function _checkAllocatedTokensToContract(uint256 amount) internal view returns (bool) {
         if (amount+totalAllocatedToWallets > storageToken.totalSupply()) revert ExceedsMaximumSupply(amount+totalAllocatedToWallets);
@@ -365,7 +396,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         address target,
         uint256 capId,
         address[] memory wallets,
-        string[] memory names,
+        bytes32[] memory names,
         uint256[] memory allocations,
         uint8 proposalType
     ) internal {
@@ -427,7 +458,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
             account,
             0,
             new address[](0),
-            new string[](0),
+            new bytes32[](0),
             new uint256[](0),
             proposalType
         );
@@ -450,7 +481,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
     function proposeAddWalletsToCap(
         uint256 capId,
         address[] memory wallets,
-        string[] memory names,
+        bytes32[] memory names,
         uint256[] memory totalAllocationToWallet
     ) external whenNotPaused onlyRole(ADMIN_ROLE) returns (bytes32) {
         // Initial validations
@@ -536,7 +567,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
             newImplementation,
             0,
             new address[](0),
-            new string[](0),
+            new bytes32[](0),
             new uint256[](0),
             UPGRADE_FLAG
         );
@@ -669,7 +700,8 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         else if (uint8(ADDWALLET_FLAG) == proposal.proposalType) {
             for (uint256 i = 0; i < proposal.wallets.length; i++) {
                 address wallet = proposal.wallets[i];
-                string memory name = bytes(proposal.names[i]).length > 0 ? proposal.names[i] : "Unnamed Wallet"; // Default name if empty
+                bytes32 name = proposal.names[i] != bytes32(0) ? proposal.names[i] : bytes32("Unnamed Wallet");
+
                 // Check if the contract has enough token balance for this cap
                 uint256 allocationForWallet = proposal.allocations[i];
                 if(totalAllocatedToWallets + allocationForWallet > storageToken.totalSupply()) revert ExceedsMaximumSupply(totalAllocatedToWallets + allocationForWallet);
