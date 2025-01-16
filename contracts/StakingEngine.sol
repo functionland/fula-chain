@@ -11,13 +11,13 @@ import "./StorageToken.sol";
 import "./interfaces/IStakingEngine.sol";
 
 contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable {
-    uint32 public constant LOCK_PERIOD_1 = 60 days;
+    uint32 public constant LOCK_PERIOD_1 = 90 days;
     uint32 public constant LOCK_PERIOD_2 = 180 days;
     uint32 public constant LOCK_PERIOD_3 = 365 days;
 
-    uint256 public constant FIXED_APY_60_DAYS = 2; // 2% for 60 days
-    uint256 public constant FIXED_APY_180_DAYS = 9; // 9% for 180 days
-    uint256 public constant FIXED_APY_365_DAYS = 23; // 23% for 365 days
+    uint256 public constant FIXED_APY_90_DAYS = 2; // 2% for 90 days
+    uint256 public constant FIXED_APY_180_DAYS = 6; // 9% for 180 days
+    uint256 public constant FIXED_APY_365_DAYS = 15; // 23% for 365 days
 
     struct StakeInfo {
         uint256 amount;
@@ -35,11 +35,11 @@ contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, 
     address public rewardPoolAddress; // Address holding reward pool tokens
     address public stakingPoolAddress; // Address holding staked tokens
 
-    uint256 public accRewardPerToken60Days;
+    uint256 public accRewardPerToken90Days;
     uint256 public accRewardPerToken180Days;
     uint256 public accRewardPerToken365Days;
 
-    uint256 totalStaked60Days;
+    uint256 totalStaked90Days;
     uint256 totalStaked180Days;
     uint256 totalStaked365Days;
 
@@ -108,7 +108,7 @@ contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, 
     function stakeToken(uint256 amount, uint256 lockPeriod) external whenNotPaused {
         require(amount > 0, "Amount must be greater than zero");
         require(
-            lockPeriod == 60 days || lockPeriod == 180 days || lockPeriod == 365 days,
+            lockPeriod == 90 days || lockPeriod == 180 days || lockPeriod == 365 days,
             "Invalid lock period"
         );
 
@@ -118,9 +118,9 @@ contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, 
         // Calculate projected APY after adding this stake
         uint256 projectedAPY = calculateProjectedAPY(amount, lockPeriod);
         if (
-            lockPeriod == 60 days && projectedAPY < FIXED_APY_60_DAYS
+            lockPeriod == 90 days && projectedAPY < FIXED_APY_90_DAYS
         ) {
-            revert APYCannotBeSatisfied(1, projectedAPY, FIXED_APY_60_DAYS);
+            revert APYCannotBeSatisfied(1, projectedAPY, FIXED_APY_90_DAYS);
         }
         if (
             lockPeriod == 180 days && projectedAPY < FIXED_APY_180_DAYS
@@ -158,8 +158,8 @@ contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, 
         );
 
         // Update total staked for the specific lock period
-        if (lockPeriod == 60 days) {
-            totalStaked60Days += amount;
+        if (lockPeriod == 90 days) {
+            totalStaked90Days += amount;
         } else if (lockPeriod == 180 days) {
             totalStaked180Days += amount;
         } else if (lockPeriod == 365 days) {
@@ -190,8 +190,8 @@ contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, 
 
 
     function calculateRewardDebt(uint256 amount, uint256 lockPeriod) internal view returns (uint256) {
-        if (lockPeriod == 60 days) {
-            return (amount * accRewardPerToken60Days) / 1e18;
+        if (lockPeriod == 90 days) {
+            return (amount * accRewardPerToken90Days) / 1e18;
         } else if (lockPeriod == 180 days) {
             return (amount * accRewardPerToken180Days) / 1e18;
         } else if (lockPeriod == 365 days) {
@@ -200,8 +200,8 @@ contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, 
         return 0; // Default case; should never occur due to earlier validation
     }
     function getAccRewardPerTokenForLockPeriod(uint256 lockPeriod) internal view returns (uint256) {
-        if (lockPeriod == 60 days) {
-            return accRewardPerToken60Days;
+        if (lockPeriod == 90 days) {
+            return accRewardPerToken90Days;
         } else if (lockPeriod == 180 days) {
             return accRewardPerToken180Days;
         } else if (lockPeriod == 365 days) {
@@ -244,11 +244,11 @@ contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, 
         }
 
         totalStaked -= stakedAmount;
-        if (lockPeriod == 60 days) {
-            if (totalStaked60Days < stakedAmount) {
-                revert TotalStakedTooLow(totalStaked60Days, stakedAmount);
+        if (lockPeriod == 90 days) {
+            if (totalStaked90Days < stakedAmount) {
+                revert TotalStakedTooLow(totalStaked90Days, stakedAmount);
             }
-            totalStaked60Days -= stakedAmount;
+            totalStaked90Days -= stakedAmount;
         } else if (lockPeriod == 180 days) {
             if (totalStaked180Days < stakedAmount) {
                 revert TotalStakedTooLow(totalStaked180Days, stakedAmount);
@@ -323,9 +323,9 @@ contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, 
             uint256 rewardPoolBalance = token.balanceOf(rewardPoolAddress);
 
             // Calculate rewards for each lock period using centralized logic
-            uint256 rewardsFor60Days = calculateElapsedRewards(
-                totalStaked60Days,
-                FIXED_APY_60_DAYS,
+            uint256 rewardsFor90Days = calculateElapsedRewards(
+                totalStaked90Days,
+                FIXED_APY_90_DAYS,
                 timeElapsed
             );
             uint256 rewardsFor180Days = calculateElapsedRewards(
@@ -340,7 +340,7 @@ contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, 
             );
 
             // Total new rewards to distribute across all stakes
-            uint256 newRewards = rewardsFor60Days + rewardsFor180Days + rewardsFor365Days;
+            uint256 newRewards = rewardsFor90Days + rewardsFor180Days + rewardsFor365Days;
 
             // Ensure we do not exceed available reward pool balance
             if (newRewards > rewardPoolBalance) {
@@ -348,8 +348,8 @@ contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, 
             }
 
             // Update accumulated rewards per token for each lock period
-            if (totalStaked60Days > 0) {
-                accRewardPerToken60Days += (rewardsFor60Days * 1e18) / totalStaked60Days;
+            if (totalStaked90Days > 0) {
+                accRewardPerToken90Days += (rewardsFor90Days * 1e18) / totalStaked90Days;
             }
             if (totalStaked180Days > 0) {
                 accRewardPerToken180Days += (rewardsFor180Days * 1e18) / totalStaked180Days;
@@ -407,8 +407,8 @@ contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, 
 
         // Define reward multipliers based on lock periods
         uint256 fixedAPY;
-        if (lockPeriod == 60 days) {
-            fixedAPY = FIXED_APY_60_DAYS; // 2%
+        if (lockPeriod == 90 days) {
+            fixedAPY = FIXED_APY_90_DAYS; // 2%
         } else if (lockPeriod == 180 days) {
             fixedAPY = FIXED_APY_180_DAYS; // 9%
         } else if (lockPeriod == 365 days) {
@@ -419,7 +419,7 @@ contract StakingEngine is IStakingEngine, ERC20Upgradeable, OwnableUpgradeable, 
 
         // Calculate projected APY as a percentage
         uint256 neededNewRewards = calculateElapsedRewards(additionalStake, fixedAPY, lockPeriod);
-        uint256 neededCurrentRewards1 = calculateElapsedRewards(totalStaked60Days, fixedAPY, LOCK_PERIOD_1);
+        uint256 neededCurrentRewards1 = calculateElapsedRewards(totalStaked90Days, fixedAPY, LOCK_PERIOD_1);
         uint256 neededCurrentRewards2 = calculateElapsedRewards(totalStaked180Days, fixedAPY, LOCK_PERIOD_2);
         uint256 neededCurrentRewards3 = calculateElapsedRewards(totalStaked365Days, fixedAPY, LOCK_PERIOD_3);
         if (neededNewRewards + neededCurrentRewards1 + neededCurrentRewards2 + neededCurrentRewards3 <= token.balanceOf(rewardPoolAddress) ) {
