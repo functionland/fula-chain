@@ -39,16 +39,16 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         uint64 executionTime;
     }
     struct UnifiedProposal {
+        uint8 proposalType;
+        uint8 flags;             // Packed flags
         bytes32 role;
-        address target;                    // Target address for upgrades/wallet operations
         uint256 capId;                    // Cap ID for wallet operations
         uint256[] allocations;            // Token allocations for wallets
+        address target;                    // Target address for upgrades/wallet operations
         string[] names;                   // Names for wallets
         address[] wallets;                // Wallet addresses
         ProposalConfig config;            // Packed configuration
-        uint8 flags;             // Packed flags
         mapping(address => bool) hasApproved;  // Approval tracking
-        uint8 proposalType;
     }
     struct PendingProposals {
         uint8 flags;
@@ -84,21 +84,20 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
     uint256 public totalAllocatedToWallets;
 
     struct TimeConfig {
+        uint32 roleChangeTimeLock;
         uint64 lastActivityTime;
-        uint64 roleChangeTimeLock;
-        uint64 whitelistLockTime;
     }
     mapping(address => TimeConfig) public timeConfigs;
     struct RoleConfig {
-        uint32 quorum;
-        uint256 transactionLimit;
+        uint8 quorum;
+        uint248 transactionLimit;
     }
     mapping(bytes32 => RoleConfig) public roleConfigs;
 
     // Packed storage structs
     struct PackedVars {
-        uint248 lastEmergencyAction;
         uint8 flags;  // includes _initializedMint
+        uint248 lastEmergencyAction;
     }
     PackedVars private packedVars;
 
@@ -121,7 +120,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
     event ProposalExpired(bytes32 indexed proposalId);
     event WalletRemoved(address indexed wallet, uint256 indexed capId);
     event CapRemoved(uint256 indexed capId);
-    event QuorumUpdated(bytes32 indexed role, uint256 newQuorum);
+    event QuorumUpdated(bytes32 indexed role, uint8 newQuorum);
     event AdminRemovalProposed(address indexed admin, address indexed proposer);
     event AdminRemovalExecuted(address indexed admin);
     event AdminTransferProposed(address indexed from, address indexed to);
@@ -132,7 +131,6 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
     error CliffNotReached(uint256 currentTime, uint256 startDate, uint256 cliffEnd);
     error AllocationTooHigh(address walletAddr, uint256 walletAllocation, uint256 maxAllocation, uint256 capId);
     // multi-sig errors
-
     // Combine basic proposal errors into status codes
     error ProposalError(uint8 code);  // codes: 1=ProposalNotFound, 2=ProposalExpiredErr, 3=ProposalAlreadyExecuted, 4=ProposalAlreadyApproved
 
@@ -141,7 +139,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
 
     error CapHasWallets();
     error TimeLockActive(address operator);
-    error InvalidQuorumErr(bytes32 role, uint32 quorum);
+    error InvalidQuorumErr(bytes32 role, uint8 quorum);
     error InvalidAddress();
     error OperationFailed();
     error LowCapBalance(uint256 allocatedToCaps, uint256 totalAllocatedToWallets);
@@ -190,10 +188,10 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         uint256 lockTime = block.timestamp + ROLE_CHANGE_DELAY;
         
         TimeConfig storage ownerTimeConfig = timeConfigs[initialOwner];
-        ownerTimeConfig.roleChangeTimeLock = uint64(lockTime);
+        ownerTimeConfig.roleChangeTimeLock = uint32(lockTime);
         
         TimeConfig storage adminTimeConfig = timeConfigs[initialAdmin];
-        adminTimeConfig.roleChangeTimeLock = uint64(lockTime);
+        adminTimeConfig.roleChangeTimeLock = uint32(lockTime);
 
         // Initialize storageToken as ERC20PausableUpgradeable
         storageToken = IERC20(_storageToken);
@@ -616,36 +614,6 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         }
     }
 
-    function removeCap(uint256 capId) external onlyRole(ADMIN_ROLE) {
-        if(vestingCaps[capId].totalAllocation <= 0) revert CapNotFound(capId);
-        if (capWallets[capId].length > 0) revert CapHasWallets();
-
-        // Clean up all role assignments and permissions for this cap
-        address[] storage wallets = capWallets[capId];
-        for (uint i = 0; i < wallets.length; i++) {
-            address wallet = wallets[i];
-            delete allocatedTokens[wallet][capId];
-            delete walletNames[wallet][capId];
-            delete proposedWallets[wallet][capId];
-            delete activeProposals[wallet][capId];
-        }
-        
-        delete vestingCaps[capId];
-        delete allocatedTokensPerCap[capId];
-        delete capWallets[capId];
-        
-        // Remove from capIds array
-        for (uint i = 0; i < capIds.length; i++) {
-            if (capIds[i] == capId) {
-                capIds[i] = capIds[capIds.length - 1];
-                capIds.pop();
-                break;
-            }
-        }
-        
-        emit CapRemoved(capId);
-    }
-
     function _executeProposal(bytes32 proposalId) internal {
         UnifiedProposal storage proposal = proposals[proposalId];
         if (uint8(ADDROLE_FLAG) == proposal.proposalType || 
@@ -665,7 +633,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
                 
                 // Set timelock for new role
                 TimeConfig storage timeConfig = timeConfigs[account];
-                timeConfig.roleChangeTimeLock = uint64(block.timestamp + ROLE_CHANGE_DELAY);
+                timeConfig.roleChangeTimeLock = uint32(block.timestamp + ROLE_CHANGE_DELAY);
                 timeConfig.lastActivityTime = uint64(block.timestamp);
             } else {
                 // Prevent removing the last admin
@@ -820,7 +788,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         emit TokensClaimed(msg.sender, capId, dueTokens, chainId);
     }
 
-    function setRoleQuorum(bytes32 role, uint32 quorum) 
+    function setRoleQuorum(bytes32 role, uint8 quorum) 
         external 
         whenNotPaused
         nonReentrant
@@ -900,54 +868,4 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         
         emit ProposalExecuted(currentId, currentProposal.proposalType, target);
     }
-
-    /**
-     * @dev Removes an admin after ensuring the time lock has expired.
-     * Uses `_revokeRole` because additional custom logic (time lock) is implemented. It also requires at least one admin and the last admin cannot be removed
-    */
-    function removeAdmin(address admin) 
-        external 
-        whenNotPaused 
-        nonReentrant 
-        onlyRole(ADMIN_ROLE)
-        updateActivityTimestamp 
-    {
-        if (admin == msg.sender) revert CannotRemoveSelf();
-        if (admin == address(0)) revert InvalidAddress();
-        
-        // Check timelock
-        TimeConfig storage senderTimeConfig = timeConfigs[msg.sender];
-        if (block.timestamp < senderTimeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
-        
-        // Count active admins
-        uint256 adminCount = getRoleMemberCount(ADMIN_ROLE);
-        uint256 activeAdminCount = 0;
-        
-        for (uint256 i = 0; i < adminCount; i++) {
-            address currentAdmin = getRoleMember(ADMIN_ROLE, i);
-            if (currentAdmin != admin && // Don't count the admin being removed
-                block.timestamp - timeConfigs[currentAdmin].lastActivityTime <= INACTIVITY_THRESHOLD) {
-                activeAdminCount++;
-            }
-        }
-        
-        // Calculate minimum required active admins (floor(total_admins/2) + 1)
-        uint256 minRequiredActiveAdmins = (adminCount - 1) / 2 + 1;
-        
-        // Ensure we maintain minimum active admins after removal
-        if (activeAdminCount < minRequiredActiveAdmins) {
-            revert MinimumRoleNoRequired();
-        }
-        
-        _revokeRole(ADMIN_ROLE, admin);
-        
-        // Update admin's time config
-        TimeConfig storage adminTimeConfig = timeConfigs[admin];
-        if (adminTimeConfig.roleChangeTimeLock > 0) {
-            adminTimeConfig.roleChangeTimeLock = 0;
-        }
-        
-        emit RoleUpdated(admin, msg.sender, ADMIN_ROLE, false);
-    }
-
 }

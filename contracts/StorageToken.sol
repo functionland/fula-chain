@@ -44,8 +44,8 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
 
     // Packed storage structs
     struct PackedVars {
-        uint248 lastEmergencyAction;
         uint8 flags;  // includes _initializedMint
+        uint248 lastEmergencyAction;
     }
     PackedVars private packedVars;
 
@@ -61,15 +61,15 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
     }
 
     struct UnifiedProposal {
+        uint8 proposalType;
+        uint8 flags;
+        uint32 approvals;
         bytes32 role;
         uint256 amount;
         uint256 expiryTime;
         uint256 executionTime;
         address target;
         address tokenAddress;
-        uint32 approvals;
-        uint8 proposalType;
-        uint8 flags;
         mapping(address => bool) hasApproved;
     }
 
