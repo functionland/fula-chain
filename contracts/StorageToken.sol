@@ -186,7 +186,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         // Combine validation checks
         if (initialOwner == address(0) || initialAdmin == address(0)) revert InvalidAddress(address(0));
         if (initialAdmin == address(0)) revert InvalidAddress(initialAdmin);
-        if (initialMintedTokens > TOTAL_SUPPLY) revert("Exceeds maximum supply");
+        if (initialMintedTokens > TOTAL_SUPPLY) revert ExceedsAvailableSupply(initialMintedTokens, TOTAL_SUPPLY);
         
         // Initialize contracts
         __ERC20_init("Placeholder Token", "PLACEHOLDER");
@@ -667,6 +667,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         onlyRole(ADMIN_ROLE)
         updateActivityTimestamp 
     {
+        if(balanceOf(address(this)) < limit) revert ExceedsAvailableSupply(limit, balanceOf(address(this)));
         // Use the packed RoleConfig struct
         RoleConfig storage roleConfig = roleConfigs[role];
         roleConfig.transactionLimit = limit;
@@ -776,7 +777,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         virtual 
         whenNotPaused 
         nonReentrant 
-        onlyRole(CONTRACT_OPERATOR_ROLE) 
+        onlyRole(ADMIN_ROLE) 
         onlyWhitelisted(to)
         updateActivityTimestamp 
         returns (bool) 
@@ -792,7 +793,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         if (amount > contractBalance) revert ExceedsAvailableSupply(amount, contractBalance);
         
         // Use RoleConfig struct for role-related values
-        RoleConfig storage roleConfig = roleConfigs[CONTRACT_OPERATOR_ROLE];
+        RoleConfig storage roleConfig = roleConfigs[ADMIN_ROLE];
         if (amount > roleConfig.transactionLimit) revert LowAllowance(roleConfig.transactionLimit, amount);
         
         _transfer(address(this), to, amount);
@@ -961,9 +962,9 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         if (newImplementation == address(0)) revert InvalidAddress(newImplementation);
         
         // Use RoleConfig struct for role-related values
-        RoleConfig storage operatorConfig = roleConfigs[CONTRACT_OPERATOR_ROLE];
-        if (operatorConfig.quorum < 2) {
-            revert InvalidQuorumErr(CONTRACT_OPERATOR_ROLE, operatorConfig.quorum);
+        RoleConfig storage adminConfig = roleConfigs[ADMIN_ROLE];
+        if (adminConfig.quorum < 2) {
+            revert InvalidQuorumErr(ADMIN_ROLE, adminConfig.quorum);
         }
         
         // Cache current timestamp
@@ -989,7 +990,7 @@ contract StorageToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, ER
         if (target == address(0)) revert InvalidAddress(target);
         
         // Cache required approvals
-        uint32 requiredApprovals = operatorConfig.quorum;
+        uint32 requiredApprovals = adminConfig.quorum;
         if (currentProposal.approvals < requiredApprovals) {
             revert InsufficientApprovalsErr(requiredApprovals, currentProposal.approvals);
         }

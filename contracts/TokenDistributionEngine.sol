@@ -10,8 +10,10 @@ import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import "hardhat/console.sol";
 
-contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, PausableUpgradeable, AccessControlEnumerableUpgradeable, ReentrancyGuardUpgradeable {
+contract TokenDistributionEngine is Initializable, IERC20Metadata, ERC20Upgradeable, OwnableUpgradeable, ERC20PermitUpgradeable, UUPSUpgradeable, PausableUpgradeable, AccessControlEnumerableUpgradeable, ReentrancyGuardUpgradeable {
     using SafeERC20 for IERC20;
     bytes32 public constant DISTRIBUTOR_ROLE = keccak256("DISTRIBUTOR_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
@@ -39,7 +41,6 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         uint64 executionTime;
     }
     struct UnifiedProposal {
-        uint8 proposalType;
         uint8 flags;             // Packed flags
         bytes32 role;
         uint256 capId;                    // Cap ID for wallet operations
@@ -102,21 +103,21 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
     PackedVars private packedVars;
 
 
-    event TGEInitiated(uint256 startTime);
+    event TGEInitiated(uint256 startTime, uint256 blockNumber);
     event VestingCapAdded(uint256 id, bytes32 name);
     event WalletsAddedToCap(uint256 capId, address[] wallets);
-    event TokensClaimed(address indexed receiver, uint256 capId, uint256 dueTokens, uint256 chainId);
+    event TokensClaimed(address indexed receiver, uint256 capId, uint256 dueTokens, uint256 time, uint256 chainId);
     event EmergencyAction(string action, uint256 timestamp, address caller);
     event TokensAllocatedToContract(uint256 indexed capId, uint256 amount, string tag);
     //multi-sign events
     event ProposalCreated(
         bytes32 indexed proposalId, 
-        uint8 indexed proposalType, 
+        uint8 indexed flags, 
         address indexed proposer,
         uint256 capId
     );
-    event ProposalApproved(bytes32 indexed proposalId, address indexed approver);
-    event ProposalExecuted(bytes32 indexed proposalId, uint8 indexed proposalType, address indexed target);
+    event ProposalApproved(bytes32 indexed proposalId, bool executionAttempted, address indexed approver);
+    event ProposalExecuted(bytes32 indexed proposalId, uint8 indexed flags, address indexed target);
     event ProposalExpired(bytes32 indexed proposalId);
     event WalletRemoved(address indexed wallet, uint256 indexed capId);
     event CapRemoved(uint256 indexed capId);
@@ -132,10 +133,10 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
     error AllocationTooHigh(address walletAddr, uint256 walletAllocation, uint256 maxAllocation, uint256 capId);
     // multi-sig errors
     // Combine basic proposal errors into status codes
-    error ProposalError(uint8 code);  // codes: 1=ProposalNotFound, 2=ProposalExpiredErr, 3=ProposalAlreadyExecuted, 4=ProposalAlreadyApproved
+    error ProposalError(uint8 code);  // codes: 1=ProposalNotFound, 2=ProposalExpiredErr, 3=ProposalAlreadyExecuted, 4=ProposalAlreadyApproved, 
 
     // Combine execution delay errors
-    error ProposalExecutionError(uint256 allowedTime, uint8 code); // codes: 1=ProposalExecutionDelayNotMet, 2=InsufficientApprovals
+    error ProposalExecutionError(uint256 allowedTime, uint8 code); // codes: 1=ProposalExecutionDelayNotMet, 2=InsufficientApprovals, 3=OnlyApprovercanExecute, 0=uncheckedError
 
     error CapHasWallets();
     error TimeLockActive(address operator);
@@ -182,8 +183,8 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         __Pausable_init();
         __ERC20Permit_init("TokenDistributionEngine");
 
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(ADMIN_ROLE, msg.sender);
+        _grantRole(ADMIN_ROLE, initialAdmin);
+        _grantRole(ADMIN_ROLE, initialOwner);
        // Set timelocks using packed TimeConfig struct
         uint256 lockTime = block.timestamp + ROLE_CHANGE_DELAY;
         
@@ -270,28 +271,62 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
 
     function InitiateTGE() external onlyRole(ADMIN_ROLE) {
         if(tgeInitiated) revert TGETInitiatedErr();
-        uint256 allocatedToCaps = 0;
         
-        // Validate all caps have proper start dates
+        // Calculate total required tokens across all caps
+        uint256 totalRequiredTokens = 0;
+        
+        // First pass: validate caps and calculate total required tokens
         for (uint256 i = 0; i < capIds.length; i++) {
             uint256 capId = capIds[i];
             VestingCap storage cap = vestingCaps[capId];
             
             if (cap.totalAllocation > 0) {
-                // Ensure start date is not the default value
-                if (cap.startDate > block.timestamp + (29 * 365 days)) {
+                // Ensure start date is the default value
+                if (cap.startDate < block.timestamp + (10 * 365 days)) {
                     revert StartDateNotSet(capId);
                 }
-                allocatedToCaps += cap.totalAllocation;
-                cap.startDate = block.timestamp;
+                
+                // Add to total required tokens
+                totalRequiredTokens += cap.totalAllocation;
+                
+                // Verify cap allocation matches wallet allocations
+                if (cap.totalAllocation < allocatedTokensPerCap[capId]) {
+                    revert AllocationTooHigh(
+                        address(0), 
+                        allocatedTokensPerCap[capId], 
+                        cap.totalAllocation, 
+                        capId
+                    );
+                }
             }
         }
 
-        if (allocatedToCaps < totalAllocatedToWallets) revert LowCapBalance(allocatedToCaps, totalAllocatedToWallets);
-        if (!_checkAllocatedTokensToContract(0)) revert LowContractBalance();
+        // Verify contract has sufficient token balance
+        uint256 contractBalance = storageToken.balanceOf(address(this));
+        if (contractBalance < totalRequiredTokens) {
+            revert InsufficientContractBalance(
+                address(this), 
+                contractBalance, 
+                totalRequiredTokens
+            );
+        }
+
+        // Verify total allocations
+        if (totalRequiredTokens < totalAllocatedToWallets) {
+            revert LowCapBalance(totalRequiredTokens, totalAllocatedToWallets);
+        }
+
+        // Second pass: set start dates after all validations pass
+        for (uint256 i = 0; i < capIds.length; i++) {
+            uint256 capId = capIds[i];
+            VestingCap storage cap = vestingCaps[capId];
+            if (cap.totalAllocation > 0) {
+                cap.startDate = block.timestamp;
+            }
+        }
         
         tgeInitiated = true;
-        emit TGEInitiated(block.timestamp);
+        emit TGEInitiated(block.timestamp, block.number);
     }
 
     function addVestingCap(
@@ -383,9 +418,9 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         }
     }
 
-    function _createProposalId(uint8 proposalType, bytes32 data) internal view returns (bytes32) {
+    function _createProposalId(uint8 flags, bytes32 data) internal view returns (bytes32) {
         return keccak256(abi.encodePacked(
-            uint8(proposalType),
+            flags,
             data,
             block.timestamp
         ));
@@ -398,7 +433,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         address[] memory wallets,
         bytes32[] memory names,
         uint256[] memory allocations,
-        uint8 proposalType
+        uint8 flags
     ) internal {
         proposal.target = target;
         proposal.capId = capId;
@@ -408,12 +443,13 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         proposal.config.expiryTime = uint64(block.timestamp + PROPOSAL_TIMEOUT);
         proposal.config.executionTime = uint64(block.timestamp + MIN_PROPOSAL_EXECUTION_DELAY);
         proposal.config.approvals = 1;
-        proposal.flags |= uint8(proposalType);
+        proposal.flags |= flags;
         proposal.hasApproved[msg.sender] = true;
     }
 
     function _canExecute(UnifiedProposal storage proposal) internal view returns (bool) {
         RoleConfig storage roleConfig = roleConfigs[ADMIN_ROLE];
+
         return proposal.config.approvals >= roleConfig.quorum && 
             block.timestamp >= proposal.config.executionTime && 
             block.timestamp < proposal.config.expiryTime;
@@ -422,7 +458,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
     function proposeRole(
         address account,
         bytes32 role,
-        bool isAdd
+        uint8 flags
     ) external 
         whenNotPaused 
         onlyRole(ADMIN_ROLE) 
@@ -433,7 +469,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         _validateQuorum(ADMIN_ROLE);
 
         // Validate role assignment
-        if (isAdd) {
+        if ((flags & ADDROLE_FLAG) != 0) {
             if (hasRole(role, account)) revert RoleAssignment(account, role, 1);
         } else {
             if (!hasRole(role, account)) revert RoleAssignment(account, role, 2);
@@ -443,11 +479,9 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
             }
         }
 
-        uint8 proposalType = isAdd ? ADDROLE_FLAG : REMOVEROLE_FLAG;
-
         // Create proposal ID
         bytes32 proposalId = _createProposalId(
-            proposalType,
+            flags,
             keccak256(abi.encodePacked(account, role))
         );
 
@@ -460,18 +494,18 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
             new address[](0),
             new bytes32[](0),
             new uint256[](0),
-            proposalType
+            flags
         );
 
         // Store role in the proposal for execution
         proposal.role = role;
-        proposal.flags |= proposalType;
+        proposal.flags |= flags;
 
         proposalRegistry[proposalCount++] = proposalId;
         
         emit ProposalCreated(
             proposalId, 
-            proposalType, 
+            flags, 
             msg.sender,
             0
         );
@@ -540,6 +574,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
             totalAllocationToWallet,
             ADDWALLET_FLAG
         );
+        proposal.hasApproved[msg.sender] = true;
 
         // Register proposal
         proposalRegistry[proposalCount++] = proposalId;
@@ -555,7 +590,17 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         returns (bytes32) 
     {
         if(newImplementation == address(0)) revert InvalidAddress();
-        if(upgradeProposals[newImplementation] != 0) revert DuplicateProposal();
+        // Clear any expired proposal first
+        bytes32 existingProposal = upgradeProposals[newImplementation];
+        if(existingProposal != 0) {
+            UnifiedProposal storage oldProposal = proposals[existingProposal];
+            if(block.timestamp >= oldProposal.config.expiryTime) {
+                delete upgradeProposals[newImplementation];
+                delete proposals[existingProposal];
+            } else {
+                revert DuplicateProposal();
+            }
+        }
         _validateTimelock(msg.sender);
         _validateQuorum(ADMIN_ROLE);
 
@@ -610,7 +655,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         proposal.config.expiryTime = uint64(block.timestamp + PROPOSAL_TIMEOUT);
         proposal.config.executionTime = uint64(block.timestamp + MIN_PROPOSAL_EXECUTION_DELAY);
         proposal.config.approvals = 1;
-        proposal.proposalType = uint8(REMOVEWALLET_FLAG);
+        proposal.flags = REMOVEWALLET_FLAG;
         proposal.hasApproved[msg.sender] = true;
 
         proposalRegistry[proposalCount++] = proposalId;
@@ -638,22 +683,60 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         proposal.hasApproved[msg.sender] = true;
         proposal.config.approvals++;
         
-        emit ProposalApproved(proposalId, msg.sender);
+        bool executionAttempted = false;
+        if (_canExecute(proposal)) {
+            executionAttempted = true;
+            _executeProposal(proposalId);
+        }
+        emit ProposalApproved(proposalId, executionAttempted, msg.sender);
+    }
+
+    function executeProposal(bytes32 proposalId) 
+        external
+        whenNotPaused
+        nonReentrant
+        onlyRole(ADMIN_ROLE)
+        updateActivityTimestamp
+    {
+        UnifiedProposal storage proposal = proposals[proposalId];
+        if (proposal.flags == 0) revert ProposalError(1);
+        if (block.timestamp >= proposal.config.expiryTime) {
+            delete proposals[proposalId];
+            revert ProposalError(2);
+        }
+        if (! proposal.hasApproved[msg.sender]) revert ProposalExecutionError(proposal.config.executionTime, 3);
+        
+        _validateTimelock(msg.sender);
+        _validateQuorum(ADMIN_ROLE);
         
         if (_canExecute(proposal)) {
             _executeProposal(proposalId);
+        } else {
+            revert ProposalExecutionError(proposal.config.executionTime, 0);
         }
     }
 
     function _executeProposal(bytes32 proposalId) internal {
         UnifiedProposal storage proposal = proposals[proposalId];
-        if (uint8(ADDROLE_FLAG) == proposal.proposalType || 
-            uint8(REMOVEROLE_FLAG) == proposal.proposalType) 
+        // Add validation for proposal status changes
+        if (proposal.config.expiryTime == 0) revert ProposalError(1);
+        if (block.timestamp >= proposal.config.expiryTime) revert ProposalError(2);
+        if ((proposal.flags & EXECUTED_FLAG) != 0) revert ProposalError(3);
+
+        // Revalidate quorum requirements
+        RoleConfig storage roleConfig = roleConfigs[ADMIN_ROLE];
+        if (proposal.config.approvals < roleConfig.quorum) {
+            revert ProposalExecutionError(proposal.config.executionTime, 2);
+        }
+    
+        if ((proposal.flags & ADDROLE_FLAG) != 0 || 
+            (proposal.flags & REMOVEROLE_FLAG) != 0 
+        )
         {
             address account = proposal.target;
             bytes32 role = proposal.role;  // Use proposedRole instead of role
 
-            if (proposal.proposalType == uint8(ADDROLE_FLAG)) {
+            if ((proposal.flags & ADDROLE_FLAG) != 0) {
                 // Additional validation for admin role
                 if (role == ADMIN_ROLE) {
                     uint256 adminCount = getRoleMemberCount(ADMIN_ROLE);
@@ -694,10 +777,10 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
                 timeConfig.lastActivityTime = 0;
             }
 
-            emit ProposalExecuted(proposalId, proposal.proposalType, account);
+            emit ProposalExecuted(proposalId, proposal.flags, account);
             delete proposals[proposalId];
         }
-        else if (uint8(ADDWALLET_FLAG) == proposal.proposalType) {
+        else if ((proposal.flags & ADDWALLET_FLAG) != 0) {
             for (uint256 i = 0; i < proposal.wallets.length; i++) {
                 address wallet = proposal.wallets[i];
                 bytes32 name = proposal.names[i] != bytes32(0) ? proposal.names[i] : bytes32("Unnamed Wallet");
@@ -727,10 +810,10 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
                 delete activeProposals[wallet][proposal.capId];
             }
             emit WalletsAddedToCap(proposal.capId, proposal.wallets);
-            emit ProposalExecuted(proposalId, proposal.proposalType, proposal.target);
+            emit ProposalExecuted(proposalId, proposal.flags, proposal.wallets[0]);
             delete proposals[proposalId];
         } 
-        else if (uint8(REMOVEWALLET_FLAG) == proposal.proposalType) {
+        else if ((proposal.flags & REMOVEWALLET_FLAG) != 0) {
             address wallet = proposal.target;
             uint256 capId = proposal.capId;
             
@@ -751,7 +834,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
             }
             
             emit WalletRemoved(wallet, capId);
-            emit ProposalExecuted(proposalId, proposal.proposalType, proposal.target);
+            emit ProposalExecuted(proposalId, proposal.flags, proposal.target);
             delete proposals[proposalId];
             delete proposedWallets[wallet][capId];
             delete activeProposals[wallet][proposal.capId];
@@ -761,46 +844,71 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
 
     function calculateDueTokens(address wallet, uint256 capId) public view returns (uint256) {
         VestingCap memory cap = vestingCaps[capId];
-
-        // Ensure cliff has been reached
+        
+        // Initial validations
         if (cap.startDate == 0 || block.timestamp < cap.startDate + cap.cliff) {
             revert CliffNotReached(block.timestamp, cap.startDate, cap.startDate + cap.cliff);
         }
 
-        // Ensure allocation exists
         uint256 allocation = allocatedTokens[wallet][capId];
         if(allocation <= 0) revert LowCapBalance(allocation, 0);
-
-        // Ensure vestingPlan is not zero
         if(cap.vestingPlan == 0) revert InvalidAllocation();
 
-        // Calculate elapsed time since cliff
-        uint256 elapsedTime = block.timestamp - (cap.startDate + cap.cliff);
-
-        // Calculate vested months with higher precision
-        uint256 vestedIntervals = elapsedTime / cap.vestingPlan;
-        // Multiply by 1e18 for precision before division
-        uint256 vestedMonths = (vestedIntervals * cap.vestingPlan * 1e18) / (30 days);
-        vestedMonths = vestedMonths / 1e18; // Restore to normal scale
-
-        if (vestedMonths > cap.vestingTerm / (30 days)) {
-            vestedMonths = cap.vestingTerm / (30 days); // Cap at total vesting term
+        // Get token decimals and adjust precision
+        uint8 tokenDecimals = IERC20Metadata(address(storageToken)).decimals();
+        uint256 precisionFactor = 10 ** tokenDecimals;
+        
+        // Calculate elapsed time since cliff with safe math
+        uint256 elapsedTime;
+        unchecked {
+            elapsedTime = block.timestamp - (cap.startDate + cap.cliff);
         }
 
-        // Calculate total claimable tokens with higher precision
-        uint256 initialRelease = (allocation * cap.initialRelease) / 100;
-        uint256 remainingAllocation = allocation - initialRelease;
+        // Calculate vested intervals safely
+        uint256 vestedIntervals = elapsedTime / cap.vestingPlan;
         
-        // Use intermediate variable with higher precision
-        uint256 vestingMultiplier = (vestedMonths * 30 days * 1e18) / cap.vestingTerm;
-        uint256 totalClaimable = initialRelease + ((remainingAllocation * vestingMultiplier) / 1e18);
+        // Calculate vested months with proper decimal handling
+        uint256 vestedMonths;
+        {
+            uint256 monthlyFactor = 30 days;
+            uint256 temp = (vestedIntervals * cap.vestingPlan * precisionFactor) / monthlyFactor;
+            vestedMonths = temp / precisionFactor;
+            
+            // Cap at total vesting term
+            uint256 maxMonths = cap.vestingTerm / monthlyFactor;
+            if (vestedMonths > maxMonths) {
+                vestedMonths = maxMonths;
+            }
+        }
 
-        // Subtract already claimed tokens
-        if (totalClaimable <= claimedTokens[wallet][capId]) {
+        // Calculate initial release with decimal precision
+        uint256 initialRelease;
+        {
+            uint256 scaledAllocation = allocation * precisionFactor;
+            initialRelease = (scaledAllocation * cap.initialRelease) / (100 * precisionFactor);
+        }
+
+        // Calculate remaining allocation
+        uint256 remainingAllocation = allocation - initialRelease;
+
+        // Calculate vesting multiplier with safe precision
+        uint256 vestingMultiplier;
+        {
+            uint256 scaledMonths = vestedMonths * 30 days * precisionFactor;
+            vestingMultiplier = scaledMonths / cap.vestingTerm;
+        }
+
+        // Calculate total claimable amount
+        uint256 vestedAmount = (remainingAllocation * vestingMultiplier) / precisionFactor;
+        uint256 totalClaimable = initialRelease + vestedAmount;
+
+        // Handle claimed tokens
+        uint256 claimed = claimedTokens[wallet][capId];
+        if (totalClaimable <= claimed) {
             return 0;
         }
-        
-        return totalClaimable - claimedTokens[wallet][capId];
+
+        return totalClaimable - claimed;
     }
 
     function claimTokens(uint256 capId, uint256 chainId) external whenNotPaused nonReentrant {
@@ -817,7 +925,7 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         bool success = storageToken.transfer(msg.sender, dueTokens);
         if(! success) revert OperationFailed();
 
-        emit TokensClaimed(msg.sender, capId, dueTokens, chainId);
+        emit TokensClaimed(msg.sender, capId, dueTokens, block.timestamp, chainId);
     }
 
     function setRoleQuorum(bytes32 role, uint8 quorum) 
@@ -864,11 +972,11 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
         UnifiedProposal storage currentProposal = proposals[currentId];
         
         // Check if proposal is valid
-        if (currentProposal.proposalType != uint8(UPGRADE_FLAG) || 
+        if ((currentProposal.flags & UPGRADE_FLAG) == 0 || 
             currentProposal.target != newImplementation ||
-            (currentProposal.flags & EXECUTED_FLAG) != 0 ||  // Check executed flag
-            currentProposal.config.expiryTime <= currentTime) {
-            revert ProposalError(1);
+            (currentProposal.flags & EXECUTED_FLAG) == 0 || 
+            currentProposal.config.expiryTime <= currentTime ) {
+                revert ProposalError(1);
         }
         
         // Cache target address
@@ -898,6 +1006,6 @@ contract TokenDistributionEngine is Initializable, ERC20Upgradeable, OwnableUpgr
             delete pendingProposals[target];
         }
         
-        emit ProposalExecuted(currentId, currentProposal.proposalType, target);
+        emit ProposalExecuted(currentId, currentProposal.flags, target);
     }
 }
