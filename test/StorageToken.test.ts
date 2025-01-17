@@ -43,7 +43,7 @@ describe("StorageToken", () => {
             admin.address,
             TOTAL_SUPPLY + BigInt(1)
           ])
-        ).to.be.revertedWith("Exceeds maximum supply");
+        ).to.be.revertedWithCustomError(StorageToken, "ExceedsMaximumSupply");
   
         // Verify initial state
         expect(await storageToken.name()).to.equal("Placeholder Token");

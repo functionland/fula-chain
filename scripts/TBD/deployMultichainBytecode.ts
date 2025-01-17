@@ -1,6 +1,6 @@
 import { multichain } from "hardhat";
 import { NetworkArguments } from "@chainsafe/hardhat-plugin-multichain-deploy";
-import tokenArtifact from "../artifacts/contracts/StorageToken.sol/StorageToken.json";
+import tokenArtifact from "../../artifacts/contracts/StorageToken.sol/StorageToken.json";
 import poolArtifact from "../artifacts/contracts/StoragePool.sol/StoragePool.json";
 
 async function main(): Promise<void> {
