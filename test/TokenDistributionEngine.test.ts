@@ -1399,3 +1399,224 @@ describe("TokenDistributionEngine - Contract Upgrade", () => {
   });
 });
 
+describe("TokenDistributionEngine - Full Distribution Flow", () => {
+    let tokenDistributionEngine: TokenDistributionEngine;
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let investor1: SignerWithAddress;
+    let investor2: SignerWithAddress;
+    let investor3: SignerWithAddress;
+    let investor4: SignerWithAddress;
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const MONTH = 30 * 24 * 60 * 60; // 30 days in seconds
+
+    beforeEach(async () => {
+        [owner, admin, investor1, investor2, investor3, investor4] = await ethers.getSigners();
+        
+        // Deploy StorageToken
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = (await upgrades.deployProxy(StorageToken, [
+            owner.address,
+            admin.address,
+            ethers.parseEther("1000000000")
+        ])) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Deploy TokenDistributionEngine
+        const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
+        tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
+            await storageToken.getAddress(),
+            owner.address,
+            admin.address
+        ])) as TokenDistributionEngine;
+        await tokenDistributionEngine.waitForDeployment();
+
+        // Wait for timelock
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine", []);
+
+        // Set quorum for ADMIN_ROLE
+        await tokenDistributionEngine.connect(owner).setRoleQuorum(await tokenDistributionEngine.ADMIN_ROLE(), 2);
+
+        // Setup vesting caps
+        await tokenDistributionEngine.connect(admin).addVestingCap(
+            1, // First cap
+            ethers.encodeBytes32String("First Cap"),
+            TOKEN_UNIT * BigInt(750), // 250 + 500
+            4 * MONTH,  // 4 month cliff
+            15 * MONTH, // 15 month vesting
+            1,          // monthly vesting
+            10         // 10% initial release
+        );
+
+        await tokenDistributionEngine.connect(admin).addVestingCap(
+            2, // Second cap
+            ethers.encodeBytes32String("Second Cap"),
+            TOKEN_UNIT * BigInt(200),
+            6 * MONTH,  // 6 month cliff
+            18 * MONTH, // 18 month vesting
+            1,          // monthly vesting
+            5          // 5% initial release
+        );
+
+        await tokenDistributionEngine.connect(admin).addVestingCap(
+            3, // Third cap
+            ethers.encodeBytes32String("Third Cap"),
+            TOKEN_UNIT * BigInt(50),
+            0,          // no cliff
+            6 * MONTH,  // 6 month vesting
+            1,          // monthly vesting
+            20         // 20% initial release
+        );
+
+        // Add investors to caps
+        const tx1 = await tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
+            1,
+            [investor1.address, investor2.address],
+            [ethers.encodeBytes32String("Investor1"), ethers.encodeBytes32String("Investor2")],
+            [TOKEN_UNIT * BigInt(250), TOKEN_UNIT * BigInt(500)]
+        );
+        const receipt1 = await tx1.wait();
+        const proposalId1 = receipt1?.logs
+            .map((log) => tokenDistributionEngine.interface.parseLog(log))
+            .find((parsedLog) => parsedLog?.name === "ProposalCreated")?.args?.proposalId;
+        await tokenDistributionEngine.connect(owner).approveProposal(proposalId1);
+
+        const tx2 = await tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
+            2,
+            [investor3.address],
+            [ethers.encodeBytes32String("Investor3")],
+            [TOKEN_UNIT * BigInt(200)]
+        );
+        const receipt2 = await tx2.wait();
+        const proposalId2 = receipt2?.logs
+            .map((log) => tokenDistributionEngine.interface.parseLog(log))
+            .find((parsedLog) => parsedLog?.name === "ProposalCreated")?.args?.proposalId;
+        await tokenDistributionEngine.connect(owner).approveProposal(proposalId2);
+
+        const tx3 = await tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
+            3,
+            [investor4.address],
+            [ethers.encodeBytes32String("Investor4")],
+            [TOKEN_UNIT * BigInt(50)]
+        );
+        const receipt3 = await tx3.wait();
+        const proposalId3 = receipt3?.logs
+            .map((log) => tokenDistributionEngine.interface.parseLog(log))
+            .find((parsedLog) => parsedLog?.name === "ProposalCreated")?.args?.proposalId;
+        await tokenDistributionEngine.connect(owner).approveProposal(proposalId3);
+
+        // Whitelist distribution contract
+        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
+        const tx4 = await storageToken.connect(owner).createProposal(
+            3, // Whitelist
+            await tokenDistributionEngine.getAddress(),
+            ethers.ZeroHash,
+            0,
+            ZeroAddress,
+            true
+        );
+        
+        const receipt4 = await tx4.wait();
+        const event4 = receipt4?.logs
+            .map((log) => storageToken.interface.parseLog(log))
+            .find((parsedLog) => parsedLog?.name === "ProposalCreated");
+        
+        const proposalId4 = event4?.args?.proposalId;
+        await storageToken.connect(admin).approveProposal(proposalId4);
+        
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await storageToken.connect(owner).executeProposal(proposalId2);
+        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), TOKEN_UNIT * BigInt(1000));
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+
+        // Transfer tokens to distribution contract
+        await storageToken.connect(admin).transferFromContract(
+            await tokenDistributionEngine.getAddress(),
+            TOKEN_UNIT * BigInt(1000)
+        );
+
+        await tokenDistributionEngine.connect(admin).setRoleQuorum(await tokenDistributionEngine.ADMIN_ROLE(), 2);
+
+        // Initiate TGE
+        await tokenDistributionEngine.connect(admin).InitiateTGE();
+    });
+
+    it("should handle complete vesting flow for all investors", async () => {
+        // TGE Claims
+        await expect(
+            tokenDistributionEngine.connect(investor1).claimTokens(1, 1)
+        ).to.be.revertedWithCustomError(tokenDistributionEngine, "CliffNotReached");
+        
+        await expect(
+            tokenDistributionEngine.connect(investor2).claimTokens(1, 1)
+        ).to.be.revertedWithCustomError(tokenDistributionEngine, "CliffNotReached");
+
+        await expect(
+            tokenDistributionEngine.connect(investor3).claimTokens(2, 1)
+        ).to.be.revertedWithCustomError(tokenDistributionEngine, "CliffNotReached");
+
+        // Investor 4 can claim initial release at TGE
+        await tokenDistributionEngine.connect(investor4).claimTokens(3, 1);
+        expect(await storageToken.balanceOf(investor4.address)).to.equal(TOKEN_UNIT * BigInt(10)); // 20% of 50
+
+        // Move to month 4 (cliff for investors 1 & 2)
+        await ethers.provider.send("evm_increaseTime", [4 * MONTH]);
+        await ethers.provider.send("evm_mine", []);
+
+        // Investors 1 & 2 claim initial release + 1 month vesting
+        await tokenDistributionEngine.connect(investor1).claimTokens(1, 1);
+        await tokenDistributionEngine.connect(investor2).claimTokens(1, 1);
+
+        // Move to month 5
+        await ethers.provider.send("evm_increaseTime", [MONTH]);
+        await ethers.provider.send("evm_mine", []);
+
+        // All investors claim
+        await tokenDistributionEngine.connect(investor1).claimTokens(1, 1);
+        await tokenDistributionEngine.connect(investor2).claimTokens(1, 1);
+        await expect(
+            tokenDistributionEngine.connect(investor3).claimTokens(2, 1)
+        ).to.be.revertedWithCustomError(tokenDistributionEngine, "CliffNotReached");
+        await tokenDistributionEngine.connect(investor4).claimTokens(3, 1);
+
+        // Skip to month 8
+        await ethers.provider.send("evm_increaseTime", [3 * MONTH]);
+        await ethers.provider.send("evm_mine", []);
+
+        // Investors 1 & 2 claim accumulated tokens
+        await tokenDistributionEngine.connect(investor1).claimTokens(1, 1);
+        await tokenDistributionEngine.connect(investor2).claimTokens(1, 1);
+
+        // Move to end of vesting for investor 4
+        await ethers.provider.send("evm_increaseTime", [6 * MONTH]);
+        await ethers.provider.send("evm_mine", []);
+
+        // Investor 4 claims remaining tokens
+        await tokenDistributionEngine.connect(investor4).claimTokens(3, 1);
+        await expect(
+            tokenDistributionEngine.connect(investor4).claimTokens(3, 1)
+        ).to.be.revertedWithCustomError(tokenDistributionEngine, "NoTokensDue");
+
+        // Move to end of vesting for all investors
+        await ethers.provider.send("evm_increaseTime", [15 * MONTH]);
+        await ethers.provider.send("evm_mine", []);
+
+        // Final claims and verify balances
+        await tokenDistributionEngine.connect(investor1).claimTokens(1, 1);
+        await tokenDistributionEngine.connect(investor2).claimTokens(1, 1);
+        await tokenDistributionEngine.connect(investor3).claimTokens(2, 1);
+
+        // Verify final balances
+        expect(await storageToken.balanceOf(investor1.address)).to.equal(TOKEN_UNIT * BigInt(250));
+        expect(await storageToken.balanceOf(investor2.address)).to.equal(TOKEN_UNIT * BigInt(500));
+        expect(await storageToken.balanceOf(investor3.address)).to.equal(TOKEN_UNIT * BigInt(200));
+        expect(await storageToken.balanceOf(investor4.address)).to.equal(TOKEN_UNIT * BigInt(50));
+
+        // Verify no more claims possible
+        await expect(
+            tokenDistributionEngine.connect(investor1).claimTokens(1, 1)
+        ).to.be.revertedWithCustomError(tokenDistributionEngine, "NoTokensDue");
+    });
+});
