@@ -6,7 +6,8 @@ pragma solidity ^0.8.24;
 /// @dev This library is used by both StorageToken and TokenDistributionEngine contracts
 library ProposalTypes {
     /// @notice Enum representing different types of proposals
-    enum ProposalType { 
+    enum ProposalType {
+        NA,
         AddRole,  // For adding or removing roles
         RemoveRole,
         Upgrade,     // For contract upgrades
@@ -43,15 +44,9 @@ library ProposalTypes {
         bytes32 role;
         address target;
         address tokenAddress;
-
-        // Multi-wallet support
-        address[] wallets;
-        bytes32[] names;
-        uint256[] allocations;
         
         // Token and amount related
         uint256 amount;
-        uint256 capId;
         
         // Packed configuration
         ProposalConfig config;

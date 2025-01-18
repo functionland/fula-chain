@@ -12,8 +12,7 @@
     "deploy:deployMultichainBytecode": "yarn hardhat run scripts/deployMultichainBytecode.ts --network sepolia",
     "deploy:localhost": "yarn hardhat run scripts/localhost.ts",
     "test:token": "set REPORT_GAS=true && yarn hardhat test test/Storagetoken.test.ts",
-    "test:staking": "set REPORT_GAS=true && yarn hardhat test test/stakingEngine.test.ts",
-    "test:distribution": "set REPORT_GAS=true && yarn hardhat test test/TokenDistributionEngine.test.ts",
+    "test:governance": "set REPORT_GAS=true && yarn hardhat test test/governance/GovernanceModule.test.ts",
     "test": "yarn hardhat test"
   },
   "devDependencies": {

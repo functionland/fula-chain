@@ -42,7 +42,7 @@ contract StorageToken is
     error ES(uint256 requested, uint256 supply);
     error LowAllowance(uint256 allowance, uint256 limit);
     error UsedNonce(uint256 nonce);
-    error UnsupportedChain(uint256 chain);
+    error Unsupported(uint256 chain);
     error ExceedsMaximumSupply(uint256 requested, uint256 maxSupply);
     error LowBalance(uint256 walletBalance, uint256 requiredBalance);
     error AW(address target);
@@ -152,7 +152,7 @@ contract StorageToken is
         onlyRole(ProposalTypes.BRIDGE_OPERATOR_ROLE)
     {
         if (_usedNonces[sourceChain][nonce]) revert UsedNonce(nonce);
-        if (!supportedChains[sourceChain]) revert UnsupportedChain(sourceChain);
+        if (!supportedChains[sourceChain]) revert Unsupported(sourceChain);
         if (amount == 0) revert AmountMustBePositive();
         
         uint256 currentSupply = totalSupply();
@@ -169,6 +169,7 @@ contract StorageToken is
         emit BridgeOperationDetails(msg.sender, "MINT", amount, sourceChain, block.timestamp);
     }
 
+
     /// @notice Bridge burn function for cross-chain transfers
     function bridgeBurn(uint256 amount, uint256 targetChain, uint256 nonce) 
         external 
@@ -177,7 +178,7 @@ contract StorageToken is
         onlyRole(ProposalTypes.BRIDGE_OPERATOR_ROLE)
     {
         if (_usedNonces[targetChain][nonce]) revert UsedNonce(nonce);
-        if (!supportedChains[targetChain]) revert UnsupportedChain(targetChain);
+        if (!supportedChains[targetChain]) revert Unsupported(targetChain);
         if (amount == 0) revert AmountMustBePositive();
         
         uint256 contractBalance = balanceOf(address(this));
@@ -212,11 +213,7 @@ contract StorageToken is
             ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
             _initializeProposal(
                 proposal,
-                target,
-                0,
-                new address[](0),
-                new bytes32[](0),
-                new uint256[](0)
+                target
             );
             
             proposal.proposalType = proposalType;
@@ -228,7 +225,6 @@ contract StorageToken is
             if(tokenAddress == address(this)) revert Failed();
             if (amount <= 0) revert AmountMustBePositive();
             if (pendingProposals[target].proposalType != 0) revert ExistingActiveProposal(target);
-
             bytes32 proposalId = _createProposalId(
                 uint8(ProposalTypes.ProposalType.Recovery),
                 keccak256(abi.encodePacked(target, tokenAddress, amount))
@@ -237,11 +233,7 @@ contract StorageToken is
             ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
             _initializeProposal(
                 proposal,
-                target,
-                0,
-                new address[](0),
-                new bytes32[](0),
-                new uint256[](0)
+                target
             );
 
             proposal.proposalType = proposalType;
@@ -296,7 +288,6 @@ contract StorageToken is
         } else {
             revert InvalidProposalTypeErr(proposalTypeVal);
         }
-        emit ProposalExecuted(proposalId, proposalTypeVal, target);
     }
 
     /// @notice Set supported chains for cross-chain operations
@@ -314,11 +305,13 @@ contract StorageToken is
 
     function _authorizeUpgrade(address newImplementation) 
         internal 
-        virtual 
+        nonReentrant
+        whenNotPaused
+        onlyRole(ADMIN_ROLE) 
         override 
     {
         // Delegate the authorization to the governance module
-        if (! GovernanceModule(address(this)).authorizeUpgrade(newImplementation)) revert("UpgradeNotAuthorized");
+        if (! _checkUpgrade(newImplementation)) revert("UpgradeNotAuthorized");
 
     }
 
