@@ -1,0 +1,367 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "../governance/GovernanceModule.sol";
+
+/// @title TokenDistributionEngine
+/// @notice Handles token distribution with vesting and cliff periods
+/// @dev Inherits governance functionality from GovernanceModule
+contract TokenDistributionEngine is GovernanceModule {
+    using SafeERC20 for IERC20;
+
+    /// @notice Distribution parameters struct
+    struct Distribution {
+        uint256 totalAmount;
+        uint256 claimedAmount;
+        uint256 startTime;
+        uint256 cliffPeriod;
+        uint256 vestingPeriod;
+        bool isActive;
+    }
+
+    /// @notice Storage variables
+    IERC20 public storageToken;
+    mapping(address => Distribution) public distributions;
+    mapping(address => bool) public whitelistedAddresses;
+
+    /// @notice Events
+    event DistributionCreated(address indexed beneficiary, uint256 amount, uint256 startTime, uint256 cliffPeriod, uint256 vestingPeriod);
+    event TokensClaimed(address indexed beneficiary, uint256 amount);
+    event DistributionRevoked(address indexed beneficiary);
+    event WhitelistUpdated(address indexed account, bool status);
+
+    /// @notice Custom errors
+    error InvalidVestingParameters();
+    error NoActiveDistribution();
+    error NothingToClaim();
+    error CliffPeriodNotEnded();
+    error InsufficientContractBalance();
+    error NotWhitelisted(address account);
+    error DistributionAlreadyExists();
+
+    /// @notice Initialize the contract
+    /// @param _storageToken Address of the token to distribute
+    /// @param initialOwner Address of the initial owner
+    /// @param initialAdmin Address of the initial admin
+    function initialize(
+        address _storageToken,
+        address initialOwner,
+        address initialAdmin
+    ) public reinitializer(1) {
+        // Address validations
+        if (_storageToken == address(0)) revert InvalidAddress();
+        if (initialOwner == address(0)) revert InvalidAddress();
+        if (initialAdmin == address(0)) revert InvalidAddress();
+
+        // Initialize governance module
+        __GovernanceModule_init(initialOwner, initialAdmin);
+
+        // Initialize storageToken
+        storageToken = IERC20(_storageToken);
+
+        // Reset and set max approval for token transfers
+        uint256 currentAllowance = storageToken.allowance(address(this), address(this));
+        if (currentAllowance > 0) {
+            bool resetSuccess = storageToken.approve(address(this), 0);
+            if (!resetSuccess) revert OperationFailed();
+        }
+
+        bool approveSuccess = storageToken.approve(address(this), type(uint256).max);
+        if (!approveSuccess) revert OperationFailed();
+
+        uint256 newAllowance = storageToken.allowance(address(this), address(this));
+        if (newAllowance != type(uint256).max) revert OperationFailed();
+    }
+
+    /// @notice Create a new distribution
+    /// @param beneficiary Address to receive tokens
+    /// @param amount Total amount of tokens
+    /// @param startTime Start time of distribution
+    /// @param cliffPeriod Cliff period in seconds
+    /// @param vestingPeriod Vesting period in seconds
+    function createDistribution(
+        address beneficiary,
+        uint256 amount,
+        uint256 startTime,
+        uint256 cliffPeriod,
+        uint256 vestingPeriod
+    ) 
+        external 
+        whenNotPaused 
+        nonReentrant 
+        onlyRole(ADMIN_ROLE)
+        updateActivityTimestamp 
+    {
+        if (distributions[beneficiary].isActive) revert DistributionAlreadyExists();
+        if (!whitelistedAddresses[beneficiary]) revert NotWhitelisted(beneficiary);
+        if (startTime < block.timestamp || cliffPeriod >= vestingPeriod) revert InvalidVestingParameters();
+
+        distributions[beneficiary] = Distribution({
+            totalAmount: amount,
+            claimedAmount: 0,
+            startTime: startTime,
+            cliffPeriod: cliffPeriod,
+            vestingPeriod: vestingPeriod,
+            isActive: true
+        });
+
+        emit DistributionCreated(beneficiary, amount, startTime, cliffPeriod, vestingPeriod);
+    }
+
+    /// @notice Claim vested tokens
+    function claim() external whenNotPaused nonReentrant updateActivityTimestamp {
+        Distribution storage dist = distributions[msg.sender];
+        if (!dist.isActive) revert NoActiveDistribution();
+
+        uint256 claimableAmount = getClaimableAmount(msg.sender);
+        if (claimableAmount == 0) revert NothingToClaim();
+
+        uint256 contractBalance = token.balanceOf(address(this));
+        if (contractBalance < claimableAmount) revert InsufficientContractBalance();
+
+        dist.claimedAmount = dist.claimedAmount.add(claimableAmount);
+        token.safeTransfer(msg.sender, claimableAmount);
+
+        emit TokensClaimed(msg.sender, claimableAmount);
+    }
+
+    /// @notice Calculate claimable amount for an address
+    /// @param beneficiary Address to check claimable amount for
+    /// @return Amount of tokens claimable
+    function getClaimableAmount(address beneficiary) public view returns (uint256) {
+        Distribution memory dist = distributions[beneficiary];
+        if (!dist.isActive) return 0;
+
+        if (block.timestamp < dist.startTime.add(dist.cliffPeriod)) return 0;
+
+        uint256 timeFromStart = block.timestamp.sub(dist.startTime);
+        if (timeFromStart >= dist.vestingPeriod) {
+            return dist.totalAmount.sub(dist.claimedAmount);
+        }
+
+        uint256 vestedAmount = dist.totalAmount.mul(timeFromStart).div(dist.vestingPeriod);
+        return vestedAmount.sub(dist.claimedAmount);
+    }
+
+    /// @notice Update whitelist status for an address
+    /// @param account Address to update
+    /// @param status New whitelist status
+    function updateWhitelist(address account, bool status)
+        external
+        whenNotPaused
+        nonReentrant
+        onlyRole(ADMIN_ROLE)
+        updateActivityTimestamp
+    {
+        whitelistedAddresses[account] = status;
+        emit WhitelistUpdated(account, status);
+    }
+
+    /// @notice Revoke distribution for an address
+    /// @param beneficiary Address to revoke distribution for
+    function revokeDistribution(address beneficiary)
+        external
+        whenNotPaused
+        nonReentrant
+        onlyRole(ADMIN_ROLE)
+        updateActivityTimestamp
+    {
+        Distribution storage dist = distributions[beneficiary];
+        if (!dist.isActive) revert NoActiveDistribution();
+
+        dist.isActive = false;
+        emit DistributionRevoked(beneficiary);
+    }
+
+    function _createCustomProposal(
+        ProposalType proposalType,
+        address target,
+        bytes32 role,
+        uint256 amount,
+        address tokenAddress,
+        bool isAdd
+    ) internal virtual override returns (bytes32) {
+        if (proposalType == ProposalType.AddWallets) {
+            if (amount <= 0) revert InvalidAllocation();
+            if (target == address(0)) revert InvalidAddress();
+            if (proposedWallets[target][amount] != 0) revert WalletExists();
+            if (activeProposals[target][amount] != 0) revert ActiveProposalExists(target, amount, activeProposals[target][amount]);
+
+            bytes32 proposalId = _createProposalId(
+                ADDWALLET_FLAG,
+                keccak256(abi.encodePacked(target, amount, block.timestamp))
+            );
+
+            UnifiedProposal storage proposal = proposals[proposalId];
+            _initializeProposal(
+                proposal,
+                target,
+                amount, // capId
+                new address[](1), // single wallet
+                new bytes32[](1), // single name
+                new uint256[](1), // single allocation
+                ADDWALLET_FLAG
+            );
+
+            proposal.wallets[0] = target;
+            proposal.allocations[0] = amount;
+            proposal.capId = amount; // capId
+            proposedWallets[target][amount] = PROPOSED_ADD;
+            activeProposals[target][amount] = proposalId;
+            pendingProposals[target].flags |= ADDWALLET_FLAG;
+
+            return proposalId;
+        } 
+        else if (proposalType == ProposalType.RemoveWallet) {
+            if (!hasRole(ADMIN_ROLE, target)) revert WalletNotInCap(amount, target);
+            if (pendingProposals[target].flags & REMOVEWALLET_FLAG != 0) revert ExistingActiveProposal(target);
+
+            bytes32 proposalId = _createProposalId(
+                REMOVEWALLET_FLAG,
+                keccak256(abi.encodePacked(target, amount, block.timestamp))
+            );
+
+            UnifiedProposal storage proposal = proposals[proposalId];
+            _initializeProposal(
+                proposal,
+                target,
+                amount, // capId
+                new address[](0),
+                new bytes32[](0),
+                new uint256[](0),
+                REMOVEWALLET_FLAG
+            );
+
+            proposal.capId = amount; // capId
+            pendingProposals[target].flags |= REMOVEWALLET_FLAG;
+
+            return proposalId;
+        }
+        
+        revert InvalidProposalTypeErr(proposalType);
+    }
+
+    function _handleCustomProposalExpiry(bytes32 proposalId) internal virtual override {
+        UnifiedProposal storage proposal = proposals[proposalId];
+        
+        if ((proposal.flags & ADDWALLET_FLAG) != 0) {
+            for (uint256 i = 0; i < proposal.wallets.length; i++) {
+                address wallet = proposal.wallets[i];
+                delete proposedWallets[wallet][proposal.capId];
+                delete activeProposals[wallet][proposal.capId];
+            }
+        }
+        else if ((proposal.flags & REMOVEWALLET_FLAG) != 0) {
+            // No additional cleanup needed for remove wallet proposals
+        }
+    }
+
+    function _getCustomProposalFlag(uint8 proposalType) internal pure virtual override returns (uint8) {
+        if (proposalType == uint8(ProposalType.AddWallets)) {
+            return ADDWALLET_FLAG;
+        }
+        else if (proposalType == uint8(ProposalType.RemoveWallet)) {
+            return REMOVEWALLET_FLAG;
+        }
+        revert InvalidProposalTypeErr(ProposalType(proposalType));
+    }
+
+    function _executeCustomProposal(bytes32 proposalId) internal virtual override {
+        UnifiedProposal storage proposal = proposals[proposalId];
+        PendingProposals storage pending = pendingProposals[proposal.target];
+
+        if ((proposal.flags & ADDWALLET_FLAG) != 0) {
+            // Validate vesting cap exists and has start date
+            VestingCap storage cap = vestingCaps[proposal.capId];
+            if (cap.startDate == 0) revert StartDateNotSet(proposal.capId);
+
+            for (uint256 i = 0; i < proposal.wallets.length; i++) {
+                address wallet = proposal.wallets[i];
+                bytes32 name = proposal.names[i] != bytes32(0) ? proposal.names[i] : bytes32("Unnamed Wallet");
+                uint256 allocationForWallet = proposal.allocations[i];
+
+                // Validate allocations
+                if (allocationForWallet <= 0) revert InvalidAllocation();
+                if (allocatedTokens[wallet][proposal.capId] != 0) revert WalletExists();
+                
+                // Check total supply limits
+                if (totalAllocatedToWallets + allocationForWallet > storageToken.totalSupply()) {
+                    revert ExceedsMaximumSupply(totalAllocatedToWallets + allocationForWallet);
+                }
+
+                // Check cap allocation limits
+                uint256 maxAllocation = vestingCaps[proposal.capId].totalAllocation - allocatedTokensPerCap[proposal.capId];
+                if (allocationForWallet > maxAllocation) {
+                    revert AllocationTooHigh(wallet, allocationForWallet, maxAllocation, proposal.capId);
+                }
+
+                // Check contract balance if TGE initiated
+                if (tgeInitiated && storageToken.balanceOf(address(this)) < allocationForWallet) {
+                    revert ExceedsMaximumSupply(allocationForWallet);
+                }
+
+                // Update allocations and tracking
+                allocatedTokens[wallet][proposal.capId] = allocationForWallet;
+                capWallets[proposal.capId].push(wallet);
+                walletNames[wallet][proposal.capId] = name;
+                totalAllocatedToWallets += allocationForWallet;
+                allocatedTokensPerCap[proposal.capId] += allocationForWallet;
+
+                // Clean up proposal tracking
+                delete proposedWallets[wallet][proposal.capId];
+                delete activeProposals[wallet][proposal.capId];
+            }
+
+            emit WalletsAddedToCap(proposal.capId, proposal.wallets);
+        } 
+        else if ((proposal.flags & REMOVEWALLET_FLAG) != 0) {
+            address wallet = proposal.target;
+            uint256 capId = proposal.capId;
+            
+            // Validate wallet exists in cap
+            if (allocatedTokens[wallet][capId] == 0) revert WalletNotInCap(capId, wallet);
+            
+            // Cache allocation for events and updates
+            uint256 allocation = allocatedTokens[wallet][capId];
+            
+            // Update totals
+            totalAllocatedToWallets -= allocation;
+            allocatedTokensPerCap[capId] -= allocation;
+            
+            // Clean up wallet data
+            delete allocatedTokens[wallet][capId];
+            delete walletNames[wallet][capId];
+            delete proposedWallets[wallet][capId];
+            delete activeProposals[wallet][capId];
+            
+            // Remove from capWallets array
+            address[] storage wallets = capWallets[capId];
+            for (uint i = 0; i < wallets.length; i++) {
+                if (wallets[i] == wallet) {
+                    wallets[i] = wallets[wallets.length - 1];
+                    wallets.pop();
+                    break;
+                }
+            }
+            
+            emit WalletRemoved(wallet, capId);
+        } else {
+            revert InvalidProposalTypeErr(ProposalType(proposal.proposalType));
+        }
+
+        // Clean up pending proposals
+        pending.flags &= ~_getCustomProposalFlag(proposal.proposalType);
+        if (pending.flags == 0) {
+            delete pendingProposals[proposal.target];
+        }
+
+        // Mark proposal as executed
+        proposal.flags |= EXECUTED_FLAG;
+        emit ProposalExecuted(proposalId, ProposalType(proposal.proposalType), proposal.target);
+    }
+
+    uint256[45] private __gap;
+}
