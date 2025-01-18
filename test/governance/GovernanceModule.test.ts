@@ -1090,6 +1090,76 @@ describe("GovernanceModule", function () {
       expect(detailsFromAdmin.hasApproved).to.be.false; // Not approved by admin yet
     });
   });
+  describe("Role Assignment and Removal", function () {
+    beforeEach(async function () {
+      [owner, admin, otherAccount] = await ethers.getSigners();
+      
+      // Wait for timelock to expire
+      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+      await ethers.provider.send("evm_mine");
+      
+      // Set quorum
+      const adminRole = await storageToken.ADMIN_ROLE();
+      await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
+    });
+  
+    it("should correctly assign and remove role through proposals", async function () {
+      const bridgeOperatorRole = await storageToken.BRIDGE_OPERATOR_ROLE();
+      
+      // Create role assignment proposal
+      const addRoleType = 1; // AddRole type
+      const addTx = await storageToken.connect(owner).createProposal(
+        addRoleType,
+        otherAccount.address,
+        bridgeOperatorRole,
+        0,
+        ZeroAddress
+      );
+      
+      const addReceipt = await addTx.wait();
+      const addEvent = addReceipt?.logs[0];
+      const addProposalId = addEvent?.topics[1];
+  
+      // Wait for execution delay
+      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+      await ethers.provider.send("evm_mine");
+  
+      // Approve and execute role assignment
+      await storageToken.connect(admin).approveProposal(addProposalId);
+  
+      // Verify role was assigned
+      expect(await storageToken.hasRole(bridgeOperatorRole, otherAccount.address)).to.be.true;
+  
+      // Wait for timelock again
+      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+      await ethers.provider.send("evm_mine");
+  
+      // Create role removal proposal
+      const removeRoleType = 2; // RemoveRole type
+      const removeTx = await storageToken.connect(owner).createProposal(
+        removeRoleType,
+        otherAccount.address,
+        bridgeOperatorRole,
+        0,
+        ZeroAddress
+      );
+      
+      const removeReceipt = await removeTx.wait();
+      const removeEvent = removeReceipt?.logs[0];
+      const removeProposalId = removeEvent?.topics[1];
+  
+      // Wait for execution delay
+      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+      await ethers.provider.send("evm_mine");
+  
+      // Approve and execute role removal
+      await storageToken.connect(admin).approveProposal(removeProposalId);
+  
+      // Verify role was removed
+      expect(await storageToken.hasRole(bridgeOperatorRole, otherAccount.address)).to.be.false;
+    });
+  });
+  
 });
 
 

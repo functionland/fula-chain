@@ -287,9 +287,10 @@ abstract contract GovernanceModule is
         if (proposalType == uint8(ProposalTypes.ProposalType.AddRole) || proposalType == uint8(ProposalTypes.ProposalType.RemoveRole)) {
             if (role != ADMIN_ROLE && role != CONTRACT_OPERATOR_ROLE && role != BRIDGE_OPERATOR_ROLE) 
                 revert InvalidRole(role);
-                
-            ProposalTypes.TimeConfig storage targetTimeConfig = timeConfigs[target];
-            if (targetTimeConfig.roleChangeTimeLock != 0) revert AlreadyOwnsRole(target);
+            if (proposalType == uint8(ProposalTypes.ProposalType.AddRole)) {
+                ProposalTypes.TimeConfig storage targetTimeConfig = timeConfigs[target];
+                if (targetTimeConfig.roleChangeTimeLock != 0) revert AlreadyOwnsRole(target);
+            }
             
             proposalId = _createRoleChangeProposal(target, role, proposalType);
         } 
