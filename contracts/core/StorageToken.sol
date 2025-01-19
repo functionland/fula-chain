@@ -37,15 +37,15 @@ contract StorageToken is
     event WalletRemovedFromWhitelist(address indexed wallet, address caller);
     
     error Failed();
-    error NW(address to);
-    error RL(address to);
+    error NotWhitelisted(address to);
+    error LocktimeActive(address to);
     error ES(uint256 requested, uint256 supply);
     error LowAllowance(uint256 allowance, uint256 limit);
     error UsedNonce(uint256 nonce);
     error Unsupported(uint256 chain);
     error ExceedsMaximumSupply(uint256 requested, uint256 maxSupply);
     error LowBalance(uint256 walletBalance, uint256 requiredBalance);
-    error AW(address target);
+    error AccountWhitelisted(address target);
     error InvalidChain(uint256 chainId);
     
 
@@ -55,8 +55,8 @@ contract StorageToken is
         ProposalTypes.TimeConfig storage timeConfig = timeConfigs[to];
         uint64 lockTime = timeConfig.whitelistLockTime;
         
-        if (lockTime == 0) revert NW(to);
-        if (block.timestamp < lockTime) revert RL(to);
+        if (lockTime == 0) revert NotWhitelisted(to);
+        if (block.timestamp < lockTime) revert LocktimeActive(to);
     }
 
     /// @notice Initialize the token contract
@@ -202,7 +202,11 @@ contract StorageToken is
     ) internal virtual override returns (bytes32) {
         if (proposalType == uint8(ProposalTypes.ProposalType.AddWhitelist) || proposalType == uint8(ProposalTypes.ProposalType.RemoveWhitelist)) {
             ProposalTypes.TimeConfig storage targetTimeConfig = timeConfigs[target];
-            if (targetTimeConfig.whitelistLockTime != 0) revert AW(target);
+            if (proposalType == uint8(ProposalTypes.ProposalType.AddWhitelist)) {
+                if (targetTimeConfig.whitelistLockTime != 0) revert AccountWhitelisted(target);
+            } else if (proposalType == uint8(ProposalTypes.ProposalType.RemoveWhitelist)) {
+                if (targetTimeConfig.whitelistLockTime == 0) revert NotWhitelisted(target);
+            }
             if (pendingProposals[target].proposalType != 0) revert ExistingActiveProposal(target);
             
             bytes32 proposalId = _createProposalId(
