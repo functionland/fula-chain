@@ -69,8 +69,8 @@ library ProposalTypes {
 
     /// @notice Structure for role-related configurations
     struct RoleConfig {
-        uint16 quorum;             // Required number of approvals
-        uint240 transactionLimit;  // Transaction limit for role
+        uint256 quorum;             // Required number of approvals
+        uint256 transactionLimit;  // Transaction limit for role
     }
 
     /// @notice Structure for pending proposal tracking

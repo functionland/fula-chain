@@ -42,12 +42,12 @@ abstract contract GovernanceModule is
     error ProposalExpiredErr();
     error ProposalAlreadyExecutedErr();
     error ProposalAlreadyApprovedErr();
-    error InsufficientApprovalsErr(uint32 requiredApprovals, uint32 approvals);
+    error InsufficientApprovalsErr(uint256 requiredApprovals, uint32 approvals);
     error InvalidProposalType(uint8 proposalType);
     error DuplicateProposalErr(uint8 proposalType, address target);
     error ProposalExecutionDelayNotMetErr(uint256 allowedTime);
     error UnauthorizedProposalApproverErr();
-    error InvalidQuorumErr(bytes32 role, uint32 quorum);
+    error InvalidQuorumErr(bytes32 role, uint256 quorum);
     error TimeLockActive(address operator);
     error ExistingActiveProposal(address target);
     error InvalidAddress(address wallet);
@@ -187,7 +187,7 @@ abstract contract GovernanceModule is
     }
 
     /// @notice Set transaction limit for a role
-    function setRoleTransactionLimit(bytes32 role, uint240 limit) 
+    function setRoleTransactionLimit(bytes32 role, uint256 limit) 
         external 
         whenNotPaused
         nonReentrant
@@ -234,7 +234,7 @@ abstract contract GovernanceModule is
     function getRoleQuorum(bytes32 role) 
         external 
         view 
-        returns (uint32)
+        returns (uint256)
     {
         ProposalTypes.RoleConfig storage roleConfig = roleConfigs[role];
         return roleConfig.quorum;
@@ -663,7 +663,7 @@ abstract contract GovernanceModule is
     }
 
     /// @notice Set quorum for a role
-    function setRoleQuorum(bytes32 role, uint16 quorum) 
+    function setRoleQuorum(bytes32 role, uint256 quorum) 
         external 
         whenNotPaused
         nonReentrant
@@ -829,7 +829,7 @@ abstract contract GovernanceModule is
         if (target == address(0)) revert InvalidAddress(target);
         
         // Cache required approvals
-        uint32 requiredApprovals = adminConfig.quorum;
+        uint256 requiredApprovals = adminConfig.quorum;
         if (currentProposal.config.approvals < requiredApprovals) {
             revert InsufficientApprovalsErr(requiredApprovals, currentProposal.config.approvals);
         }
@@ -851,6 +851,4 @@ abstract contract GovernanceModule is
         emit ProposalExecuted(currentId, currentProposal.proposalType, target);
         return true;
     }
-
-    uint256[45] private __gap; // gap size to accommodate new storage variables
 }

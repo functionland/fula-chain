@@ -660,6 +660,4 @@ contract TokenDistributionEngine is GovernanceModule {
         if (! _checkUpgrade(newImplementation)) revert("UpgradeNotAuthorized");
 
     }
-
-    uint256[45] private __gap;
 }

@@ -4,21 +4,20 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
 
-contract Treasury is AccessControl, ReentrancyGuard, Pausable {
+contract Treasury is AccessControl, ReentrancyGuard {
     address public immutable storageToken;
 
-    event Withdrawn(address indexed token, address indexed to, uint256 amount);
+    event W(address indexed t, address indexed r, uint256 a); //Withdrawn(token, to, amount)
 
-    error Failed(uint8 status);
+    error F(uint8 s); // Failed(status);
 
     constructor(
         address _storageToken,
         address _admin
     ) {
         if(_admin == address(0) || _storageToken == address(0)) 
-            revert Failed(0);
+            revert F(0);
         
         storageToken = _storageToken;
         
@@ -26,17 +25,13 @@ contract Treasury is AccessControl, ReentrancyGuard, Pausable {
     }
 
     function withdrawFees(
-        address token,
-        uint256 amount
-    ) external nonReentrant whenNotPaused onlyRole(DEFAULT_ADMIN_ROLE) {
-        if(amount == 0) revert Failed(1);
-
-        uint256 balance = IERC20(token).balanceOf(address(this));
-        if(amount > balance) revert Failed(2);
-
-        bool success = IERC20(token).transfer(storageToken, amount);
-        if(!success) revert Failed(3);
-
-        emit Withdrawn(token, storageToken, amount);
+        address t,  // token
+        uint256 a   // amount
+    ) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
+        if(a == 0) revert F(1);
+        uint256 b = IERC20(t).balanceOf(address(this));
+        if(a > b) revert F(2);
+        if(!IERC20(t).transfer(storageToken, a)) revert F(3);
+        emit W(t, storageToken, a);
     }
 }
