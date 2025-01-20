@@ -28,7 +28,7 @@ abstract contract GovernanceModule is
 
     // Events
     event RoleUpdated(address target, address caller, bytes32 role, bool status);
-    event EmergencyAction(string action, uint256 timestamp, address caller);
+    event EmergencyAction(uint8 action, uint256 timestamp, address caller);
     event ProposalCreated(bytes32 indexed proposalId, uint32 version, uint8 indexed proposalType, address indexed target, bytes32 role, uint256 amount, address tokenAddress, address proposer);
     event ProposalApproved(bytes32 indexed proposalId, uint8 indexed proposalType, address indexed approver);
     event ProposalReadyForExecution(bytes32 indexed proposalId, uint8 indexed proposalType);
@@ -38,19 +38,14 @@ abstract contract GovernanceModule is
     event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
 
     // Errors
-    error ProposalNotFoundErr();
-    error ProposalExpiredErr();
-    error ProposalAlreadyExecutedErr();
-    error ProposalAlreadyApprovedErr();
+    error ProposalErr(uint8 err); // 1: not found, 2: expired, 3: ProposalAlreadyExecuted, 4: ProposalAlreadyApproved, 5: DuplicateProposal, 6: UnauthorizedProposalApproverErr
     error InsufficientApprovalsErr(uint16 requiredApprovals, uint16 approvals);
     error InvalidProposalType(uint8 proposalType);
-    error DuplicateProposalErr(uint8 proposalType, address target);
     error ProposalExecutionDelayNotMetErr(uint256 allowedTime);
-    error UnauthorizedProposalApproverErr();
     error InvalidQuorumErr(bytes32 role, uint16 quorum);
     error TimeLockActive(address operator);
     error ExistingActiveProposal(address target);
-    error InvalidAddress(address wallet);
+    error InvalidAddress();
     error MinimumRoleNoRequired();
     error CannotRemoveSelf();
     error CoolDownActive(uint256 waitUntil);
@@ -58,13 +53,11 @@ abstract contract GovernanceModule is
     error InvalidRole(bytes32 role);
     error AlreadyOwnsRole(address target);
     error AlreadyUpgraded();
-    error DuplicateProposal();
     error RoleAssignment(address account, bytes32 role, uint8 status);
     error LimitTooHigh();
     error AmountMustBePositive();
     error TransferRestricted();
-    error ProposalError(uint8 code);  // codes: 1=ProposalNotFound, 2=ProposalExpiredErr, 3=ProposalAlreadyExecuted, 4=ProposalAlreadyApproved, 
-    error Failed(uint8 status); //1: recovery contract is same as current contract, 2: unknown
+    error Failed(uint8 status); //1: recovery contract is same as current contract, 0 or 2: unknown
     error LowBalance(uint256 walletBalance, uint256 requiredBalance);
 
     /// @notice Event emitted when a proposal is executed
@@ -126,7 +119,7 @@ abstract contract GovernanceModule is
         address initialAdmin
     ) internal onlyInitializing {
         if (initialOwner == address(0) || initialAdmin == address(0)) 
-            revert InvalidAddress(address(0));
+            revert InvalidAddress();
 
         __Ownable_init(initialOwner);
         __UUPSUpgradeable_init();
@@ -160,7 +153,7 @@ abstract contract GovernanceModule is
         nonReentrant 
         onlyOwner 
     {
-        if (newOwner == address(0)) revert InvalidAddress(newOwner);
+        if (newOwner == address(0)) revert InvalidAddress();
         
         PackedVars storage vars = packedVars;
         vars.flags |= PENDING_OWNERSHIP;
@@ -277,7 +270,7 @@ abstract contract GovernanceModule is
         onlyRole(ADMIN_ROLE)
         returns (bytes32)
     {
-        if (target == address(0)) revert InvalidAddress(target);
+        if (target == address(0)) revert InvalidAddress();
         
         // Validate timelock and quorum
         _validateTimelock(msg.sender);
@@ -390,7 +383,7 @@ abstract contract GovernanceModule is
                 delete upgradeProposals[newImplementation];
                 delete proposals[existingProposal];
             } else {
-                revert DuplicateProposal();
+                revert ProposalErr(5);
             }
         }
 
@@ -430,7 +423,7 @@ abstract contract GovernanceModule is
             _removeFromRegistry(proposalId);
             
             emit ProposalExpired(proposalId, proposal.proposalType, proposal.target);
-            revert ProposalExpiredErr();
+            revert ProposalErr(2);
         }
     }
 
@@ -467,9 +460,9 @@ abstract contract GovernanceModule is
         onlyRole(ADMIN_ROLE)
     {
         ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
-        if (proposal.target == address(0)) revert ProposalNotFoundErr();
-        if (proposal.config.status != 0) revert ProposalAlreadyExecutedErr();
-        if (proposal.hasApproved[msg.sender]) revert ProposalAlreadyApprovedErr();
+        if (proposal.target == address(0)) revert ProposalErr(1);
+        if (proposal.config.status != 0) revert ProposalErr(3);
+        if (proposal.hasApproved[msg.sender]) revert ProposalErr(4);
         
         _validateTimelock(msg.sender);
         _validateQuorum(ADMIN_ROLE);
@@ -501,7 +494,7 @@ abstract contract GovernanceModule is
         onlyRole(ADMIN_ROLE)
     {
         ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
-        if (proposal.target == address(0)) revert ProposalNotFoundErr();
+        if (proposal.target == address(0)) revert ProposalErr(1);
         
         // Cache storage reads
         ProposalTypes.RoleConfig storage adminConfig = roleConfigs[ADMIN_ROLE];
@@ -511,7 +504,7 @@ abstract contract GovernanceModule is
         if (proposal.config.approvals < adminConfig.quorum) revert InsufficientApprovalsErr(adminConfig.quorum, proposal.config.approvals);
         
         // Check execution status
-        if (proposal.config.status != 0) revert ProposalAlreadyExecutedErr();
+        if (proposal.config.status != 0) revert ProposalErr(3);
         
         // Check execution time and expiry
         if (block.timestamp < proposal.config.executionTime) revert ProposalExecutionDelayNotMetErr(proposal.config.executionTime);
@@ -617,7 +610,8 @@ abstract contract GovernanceModule is
     function _executeCustomProposal(bytes32 proposalId) internal virtual;
 
     /// @notice Emergency pause functionality
-    function emergencyPause() 
+    /// @param op 1 is pause and 2 is unpause
+    function emergencyAction(uint8 op) 
         external 
         nonReentrant
         onlyRole(ADMIN_ROLE)
@@ -632,34 +626,15 @@ abstract contract GovernanceModule is
         ProposalTypes.TimeConfig storage timeConfig = timeConfigs[msg.sender];
         if (block.timestamp < timeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
         
-        _pause();
+        if(op == uint8(1)) 
+            _pause();
+        else if(op == uint8(2))
+             _unpause();
+        else
+            revert Failed(0);
         vars.lastEmergencyAction = uint248(block.timestamp);
         _updateActivityTimestamp();
-        emit EmergencyAction("Contract paused", block.timestamp, msg.sender);
-    }
-
-    /// @notice Emergency unpause functionality
-    function emergencyUnpause() 
-        external 
-        nonReentrant
-        onlyRole(ADMIN_ROLE)
-    {
-        // Cache storage reads
-        PackedVars storage vars = packedVars;
-        uint256 lastAction = vars.lastEmergencyAction;
-        
-        if (block.timestamp < lastAction + EMERGENCY_COOLDOWN) revert CoolDownActive(lastAction + EMERGENCY_COOLDOWN);
-        
-        // Use TimeConfig struct for time-related values
-        ProposalTypes.TimeConfig storage timeConfig = timeConfigs[msg.sender];
-        if (block.timestamp < timeConfig.roleChangeTimeLock) revert TimeLockActive(msg.sender);
-        
-        _unpause();
-        
-        // Update packed emergency action time
-        vars.lastEmergencyAction = uint248(block.timestamp);
-        _updateActivityTimestamp();
-        emit EmergencyAction("Contract unpaused", block.timestamp, msg.sender);
+        emit EmergencyAction(op, block.timestamp, msg.sender);
     }
 
     /// @notice Set quorum for a role
@@ -777,7 +752,7 @@ abstract contract GovernanceModule is
         ) 
     {
         ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
-        if (proposal.proposalType == uint8(0)) revert ProposalNotFoundErr();
+        if (proposal.proposalType == uint8(0)) revert ProposalErr(1);
         return (
             proposal.proposalType,
             proposal.target,
@@ -797,7 +772,7 @@ abstract contract GovernanceModule is
         virtual
         returns (bool)
     {
-        if (newImplementation == address(0)) revert InvalidAddress(newImplementation);
+        if (newImplementation == address(0)) revert InvalidAddress();
         
         // Use RoleConfig struct for role-related values
         ProposalTypes.RoleConfig storage adminConfig = roleConfigs[ADMIN_ROLE];
@@ -810,7 +785,7 @@ abstract contract GovernanceModule is
         
         // Find the active upgrade proposal
         bytes32 currentId = upgradeProposals[newImplementation];
-        if (currentId == 0) revert ProposalNotFoundErr();
+        if (currentId == 0) revert ProposalErr(1);
         
         // Cache proposal storage
         ProposalTypes.UnifiedProposal storage currentProposal = proposals[currentId];
@@ -821,12 +796,12 @@ abstract contract GovernanceModule is
             currentProposal.target != newImplementation ||
             currentProposal.config.status != 0 ||  // Check executed flag
             currentProposal.config.expiryTime <= currentTime) {
-            revert ProposalNotFoundErr();
+            revert ProposalErr(1);
         }
         
         // Cache target address
         address target = currentProposal.target;
-        if (target == address(0)) revert InvalidAddress(target);
+        if (target == address(0)) revert InvalidAddress();
         
         // Cache required approvals
         uint16 requiredApprovals = adminConfig.quorum;

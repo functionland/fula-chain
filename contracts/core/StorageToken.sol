@@ -36,7 +36,7 @@ contract StorageToken is
     PackedVars private packedVars;
 
     /// @notice Events specific to token operations
-    event BridgeOperationDetails(address indexed operator, string operation, uint256 amount, uint256 chainId, uint256 timestamp);
+    event BridgeOperationDetails(address indexed operator, uint8 operation, uint256 amount, uint256 chainId, uint256 timestamp);
     event TokensAllocatedToContract(uint256 indexed amount, string tag);
     event SupportedChainChanged(uint256 indexed chainId, bool supported, address caller);
     event TransferFromContract(address indexed from, address indexed to, uint256 amount, address caller);
@@ -53,7 +53,7 @@ contract StorageToken is
     error UsedNonce(uint256 nonce);
     error Unsupported(uint256 chain);
     error ExceedsMaximumSupply(uint256 requested, uint256 maxSupply);
-    error AccountWhitelisted(address target);
+    error AlreadyWhitelisted(address target);
     error InvalidChain(uint256 chainId);
     error BlacklistedAddress(address account);
     error AccountBlacklisted(address target);
@@ -70,7 +70,7 @@ contract StorageToken is
         uint256 initialMintedTokens
     ) public reinitializer(1) {
         // Validate addresses
-        if (initialOwner == address(0) || initialAdmin == address(0)) revert InvalidAddress(address(0));
+        if (initialOwner == address(0) || initialAdmin == address(0)) revert InvalidAddress();
         if (initialMintedTokens > TOTAL_SUPPLY) revert ExceedsSupply(initialMintedTokens, TOTAL_SUPPLY);
         
         // Initialize ERC20 and Permit
@@ -135,7 +135,7 @@ contract StorageToken is
         internal 
         whenNotPaused
     {
-        require(_platformFeeBps <= MAX_BPS, "Fee exceeds maximum");
+        if(_platformFeeBps > MAX_BPS) revert FeeExceedsMax(_platformFeeBps);
         platformFeeBps = _platformFeeBps;
         emit PlatformFeeUpdated(_platformFeeBps);
     }
@@ -146,7 +146,7 @@ contract StorageToken is
         whenNotPaused 
         onlyRole(ADMIN_ROLE) 
     {
-        if(account == address(0)) revert InvalidAddress(account);
+        if(account == address(0)) revert InvalidAddress();
         blacklisted[account] = (status == 1 ? true : false);
         emit BlackListOp(account, msg.sender, status);
     }
@@ -184,21 +184,23 @@ contract StorageToken is
         nonReentrant
         returns (bool) 
     {
-        if (to == address(0)) revert InvalidAddress(to);
+        if (to == address(0)) revert InvalidAddress();
         if (amount <= 0) revert AmountMustBePositive();
         _updateActivityTimestamp();
         return super.transfer(to, amount);
     }
 
     /// @notice Bridge mint function for cross-chain transfers
-    function bridgeMint(uint256 amount, uint256 sourceChain, uint256 nonce) 
+    /// @param amount is the amount ot burn or mint
+    /// @param op mint is 1 and burn is 2
+    function bridgeOp(uint256 amount, uint256 chain, uint256 nonce, uint8 op) 
         external 
         whenNotPaused 
         nonReentrant 
         onlyRole(ProposalTypes.BRIDGE_OPERATOR_ROLE)
     {
-        if (_usedNonces[sourceChain][nonce]) revert UsedNonce(nonce);
-        if (!supportedChains[sourceChain]) revert Unsupported(sourceChain);
+        if (_usedNonces[chain][nonce]) revert UsedNonce(nonce);
+        if (!supportedChains[chain]) revert Unsupported(chain);
         if (amount == 0) revert AmountMustBePositive();
         
         uint256 currentSupply = totalSupply();
@@ -209,34 +211,15 @@ contract StorageToken is
         ProposalTypes.RoleConfig storage roleConfig = roleConfigs[ProposalTypes.BRIDGE_OPERATOR_ROLE];
         if (amount > roleConfig.transactionLimit) revert LowAllowance(roleConfig.transactionLimit, amount);
 
-        _mint(address(this), amount);
-        _usedNonces[sourceChain][nonce] = true;
+        if (op == uint8(1)) 
+            _mint(address(this), amount);
+        else if (op == uint8(2)) 
+            _burn(address(this), amount);
+        else 
+            revert Unsupported(chain);
+        _usedNonces[chain][nonce] = true;
         _updateActivityTimestamp();
-        emit BridgeOperationDetails(msg.sender, "MINT", amount, sourceChain, block.timestamp);
-    }
-
-
-    /// @notice Bridge burn function for cross-chain transfers
-    function bridgeBurn(uint256 amount, uint256 targetChain, uint256 nonce) 
-        external 
-        whenNotPaused 
-        nonReentrant 
-        onlyRole(ProposalTypes.BRIDGE_OPERATOR_ROLE)
-    {
-        if (_usedNonces[targetChain][nonce]) revert UsedNonce(nonce);
-        if (!supportedChains[targetChain]) revert Unsupported(targetChain);
-        if (amount == 0) revert AmountMustBePositive();
-        
-        uint256 contractBalance = balanceOf(address(this));
-        if (contractBalance < amount) revert LowBalance(contractBalance, amount);
-
-        ProposalTypes.RoleConfig storage roleConfig = roleConfigs[BRIDGE_OPERATOR_ROLE];
-        if (amount > roleConfig.transactionLimit) revert LowAllowance(roleConfig.transactionLimit, amount);
-
-        _burn(address(this), amount);
-        _usedNonces[targetChain][nonce] = true;
-        _updateActivityTimestamp();
-        emit BridgeOperationDetails(msg.sender, "BURN", amount, targetChain, block.timestamp);
+        emit BridgeOperationDetails(msg.sender, op, amount, chain, block.timestamp);
     }
 
     function _createCustomProposal(
@@ -250,14 +233,14 @@ contract StorageToken is
         if (proposalType == uint8(ProposalTypes.ProposalType.AddWhitelist) || proposalType == uint8(ProposalTypes.ProposalType.RemoveWhitelist)) {
             ProposalTypes.TimeConfig storage targetTimeConfig = timeConfigs[target];
             if (proposalType == uint8(ProposalTypes.ProposalType.AddWhitelist)) {
-                if (targetTimeConfig.whitelistLockTime != 0) revert AccountWhitelisted(target);
+                if (targetTimeConfig.whitelistLockTime != 0) revert AlreadyWhitelisted(target);
             } else if (proposalType == uint8(ProposalTypes.ProposalType.RemoveWhitelist)) {
                 if (targetTimeConfig.whitelistLockTime == 0) revert NotWhitelisted(target);
             }
             if (pendingProposals[target].proposalType != 0) revert ExistingActiveProposal(target);
         } else if (proposalType == uint8(ProposalTypes.ProposalType.AddToBlacklist) || 
              proposalType == uint8(ProposalTypes.ProposalType.RemoveFromBlacklist)) {
-            if (target == address(0)) revert InvalidAddress(target);
+            if (target == address(0)) revert InvalidAddress();
             if (pendingProposals[target].proposalType != 0) revert ExistingActiveProposal(target);
 
             // Check current blacklist status
@@ -327,6 +310,8 @@ contract StorageToken is
             _blacklistOp(target, 1);
         } else if (proposalTypeVal == uint8(ProposalTypes.ProposalType.RemoveFromBlacklist)) {
             _blacklistOp(target, 2);
+        } else if (proposalTypeVal == uint8(ProposalTypes.ProposalType.ChangeTreasuryFee)) {
+            _setPlatformFee(proposal.amount);
         }
         else {
             revert InvalidProposalType(proposalTypeVal);

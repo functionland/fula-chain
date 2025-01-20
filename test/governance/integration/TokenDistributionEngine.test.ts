@@ -1311,7 +1311,7 @@ describe("Custom Proposals", function () {
             // Try to approve expired proposal
             await expect(
                 distributionEngine.connect(admin).approveProposal(proposalId)
-            ).to.be.revertedWithCustomError(distributionEngine, "ProposalExpiredErr");
+            ).to.be.revertedWithCustomError(distributionEngine, "ProposalErr");
 
             // Verify no wallet was added
             const walletInfo = await distributionEngine.vestingWallets(beneficiary.address, capId);

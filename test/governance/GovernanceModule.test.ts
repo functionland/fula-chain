@@ -565,7 +565,7 @@ describe("GovernanceModule", function () {
       // Verify proposal details after execution
       await expect(
         storageToken.getProposalDetails(proposalId)
-      ).to.be.revertedWithCustomError(storageToken, "ProposalNotFoundErr");
+      ).to.be.revertedWithCustomError(storageToken, "ProposalErr");
     });
   
     it("should revert when approving non-existent proposal", async function () {
@@ -573,7 +573,7 @@ describe("GovernanceModule", function () {
       
       await expect(
         storageToken.connect(admin).approveProposal(nonExistentProposalId)
-      ).to.be.revertedWithCustomError(storageToken, "ProposalNotFoundErr");
+      ).to.be.revertedWithCustomError(storageToken, "ProposalErr");
     });
   
     it("should revert when approving already approved proposal", async function () {
@@ -597,7 +597,7 @@ describe("GovernanceModule", function () {
       // Try to approve by the same admin who created it
       await expect(
         storageToken.connect(owner).approveProposal(proposalId)
-      ).to.be.revertedWithCustomError(storageToken, "ProposalAlreadyApprovedErr");
+      ).to.be.revertedWithCustomError(storageToken, "ProposalErr");
     });
   
     it("should revert when approving expired proposal", async function () {
@@ -623,7 +623,7 @@ describe("GovernanceModule", function () {
       
       await expect(
         storageToken.connect(admin).approveProposal(proposalId)
-      ).to.be.revertedWithCustomError(storageToken, "ProposalExpiredErr");
+      ).to.be.revertedWithCustomError(storageToken, "ProposalErr");
     });
   });
   
@@ -679,7 +679,7 @@ describe("GovernanceModule", function () {
       
       await expect(
         storageToken.connect(owner).executeProposal(nonExistentProposalId)
-      ).to.be.revertedWithCustomError(storageToken, "ProposalNotFoundErr");
+      ).to.be.revertedWithCustomError(storageToken, "ProposalErr");
     });
   
     it("should revert when executing proposal with insufficient approvals", async function () {
@@ -1070,7 +1070,7 @@ describe("GovernanceModule", function () {
       // Get proposal details
       await expect(
         storageToken.getProposalDetails(proposalId)
-      ).to.be.revertedWithCustomError(storageToken, "ProposalNotFoundErr");
+      ).to.be.revertedWithCustomError(storageToken, "ProposalErr");
     });
   
     it("should return zero values for non-existent proposal", async function () {
@@ -1078,7 +1078,7 @@ describe("GovernanceModule", function () {
       
       await expect(
         storageToken.getProposalDetails(nonExistentProposalId)
-      ).to.be.revertedWithCustomError(storageToken, "ProposalNotFoundErr");
+      ).to.be.revertedWithCustomError(storageToken, "ProposalErr");
     });
   
     it("should show correct approval status for different accounts", async function () {

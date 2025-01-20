@@ -97,8 +97,8 @@ contract TokenDistributionEngine is GovernanceModule {
         address initialAdmin
     ) public reinitializer(1) {
         // Validate addresses
-        if (_storageToken == address(0)) revert InvalidAddress(address(0));
-        if (initialOwner == address(0) || initialAdmin == address(0)) revert InvalidAddress(address(0));
+        if (_storageToken == address(0)) revert InvalidAddress();
+        if (initialOwner == address(0) || initialAdmin == address(0)) revert InvalidAddress();
         
         // Initialize governance module (handles UUPSUpgradeable, Ownable, ReentrancyGuard, 
         // Pausable, AccessControlEnumerable, role grants, and timelocks)
