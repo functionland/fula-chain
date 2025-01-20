@@ -61,7 +61,7 @@ abstract contract GovernanceModule is
 
     // Flag Constants
     uint8 constant INITIATED = 1;
-    uint8 constant PENDING_OWNERSHIP = 2;
+    uint8 private constant PENDING_OWNERSHIP = 2;
     uint8 constant TGE_INITIATED = 4;
 
     /// @notice Core storage mappings
@@ -97,8 +97,7 @@ abstract contract GovernanceModule is
         address initialOwner,
         address initialAdmin
     ) internal onlyInitializing {
-        if (initialOwner == address(0) || initialAdmin == address(0)) 
-            revert InvalidAddress();
+        if (initialOwner == address(0) || initialAdmin == address(0)) revert InvalidAddress();
 
         __Ownable_init(initialOwner);
         __UUPSUpgradeable_init();
@@ -361,17 +360,19 @@ abstract contract GovernanceModule is
     }
 
     function _removeFromRegistry(bytes32 proposalId) internal {
-        for (uint256 i = 0; i < proposalCount; i++) {
+        uint256 count = proposalCount;
+        uint256 i;
+        
+        for (; i < count;) {
             if (proposalRegistry[i] == proposalId) {
-                // Move last element to current position
-                if (i != proposalCount - 1) {
-                    proposalRegistry[i] = proposalRegistry[proposalCount - 1];
+                if (i != --count) {
+                    proposalRegistry[i] = proposalRegistry[count];
                 }
-                // Delete the last element
-                delete proposalRegistry[proposalCount - 1];
-                proposalCount--;
+                delete proposalRegistry[count];
+                proposalCount = count;
                 break;
             }
+            unchecked { ++i; }
         }
     }
 
