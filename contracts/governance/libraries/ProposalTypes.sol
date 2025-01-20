@@ -36,22 +36,22 @@ library ProposalTypes {
 
     /// @notice Structure for proposal configuration
     struct ProposalConfig {
-        uint8 status; // 1: executed
-        uint32 approvals;      // Number of approvals received
         uint64 expiryTime;     // Timestamp when proposal expires
         uint64 executionTime;  // Earliest timestamp when proposal can be executed
+        uint16 approvals;      // Number of approvals received
+        uint8 status; // 1: executed
     }
 
     struct UnifiedProposal {
         // Basic proposal info
         uint8 proposalType;
+        address target; //multi-purpose for both role recipient in AddRole Proposals and Add token recipient wallet Vesting Wallet proposal and token recipient in Recovery
+        uint40 id; //multi-purpose for capId in add vesting wallet
+
         bytes32 role; //multi-purpose for both role in AddRole Proposals and Add wallet name Vesting Wallet proposal
-        address target; //multi-purpose for both role recipient in AddRole Proposals and Add token recipient wallet Vesting Wallet proposal
-        address tokenAddress;
-        
-        // Token and amount related
-        uint256 amount; //Multi-purpose for both amount in whitelist proposal and allocated amount in add vesting wallet
-        uint256 id; //multi-purpose for capId in add vesting wallet
+
+        address tokenAddress; // Address of token for recovery
+        uint96 amount; //Multi-purpose for both amount in whitelist proposal and allocated amount in add vesting wallet
         
         // Packed configuration
         ProposalConfig config;
@@ -69,8 +69,8 @@ library ProposalTypes {
 
     /// @notice Structure for role-related configurations
     struct RoleConfig {
-        uint256 quorum;             // Required number of approvals
-        uint256 transactionLimit;  // Transaction limit for role
+        uint16 quorum;             // Required number of approvals
+        uint240 transactionLimit;  // Transaction limit for role
     }
 
     /// @notice Structure for pending proposal tracking

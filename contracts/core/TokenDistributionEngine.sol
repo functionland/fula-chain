@@ -426,16 +426,16 @@ contract TokenDistributionEngine is GovernanceModule {
     /// @param tokenAddress this is used for recovery of other tokens from the contract address if needed
     function _createCustomProposal(
         uint8 proposalType,
-        uint256 id,
+        uint40 id,
         address target,
         bytes32 role,
-        uint256 amount,
+        uint96 amount,
         address tokenAddress
     ) internal virtual override returns (bytes32) {
         // For adding wallet to cap
         if (proposalType == uint8(ProposalTypes.ProposalType.AddDistributionWallets)) {
             // amount parameter is used as capId
-            uint256 capId = id;
+            uint40 capId = id;
             
             // Validate cap exists and has space
             VestingCap storage cap = vestingCaps[capId];
@@ -478,7 +478,7 @@ contract TokenDistributionEngine is GovernanceModule {
         }
         // For removing wallet from cap
         else if (proposalType == uint8(ProposalTypes.ProposalType.RemoveDistributionWallet)) {
-            uint256 capId = id;
+            uint40 capId = id;
             
             // Validate wallet exists in cap
             if (vestingWallets[target][capId].amount == 0) {

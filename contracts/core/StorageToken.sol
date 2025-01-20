@@ -241,10 +241,10 @@ contract StorageToken is
 
     function _createCustomProposal(
         uint8 proposalType,
-        uint256 id,
+        uint40 id,
         address target,
         bytes32 role,
-        uint256 amount,
+        uint96 amount,
         address tokenAddress
     ) internal virtual override returns (bytes32) {
         if (proposalType == uint8(ProposalTypes.ProposalType.AddWhitelist) || proposalType == uint8(ProposalTypes.ProposalType.RemoveWhitelist)) {

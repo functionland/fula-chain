@@ -42,12 +42,12 @@ abstract contract GovernanceModule is
     error ProposalExpiredErr();
     error ProposalAlreadyExecutedErr();
     error ProposalAlreadyApprovedErr();
-    error InsufficientApprovalsErr(uint256 requiredApprovals, uint32 approvals);
+    error InsufficientApprovalsErr(uint16 requiredApprovals, uint16 approvals);
     error InvalidProposalType(uint8 proposalType);
     error DuplicateProposalErr(uint8 proposalType, address target);
     error ProposalExecutionDelayNotMetErr(uint256 allowedTime);
     error UnauthorizedProposalApproverErr();
-    error InvalidQuorumErr(bytes32 role, uint256 quorum);
+    error InvalidQuorumErr(bytes32 role, uint16 quorum);
     error TimeLockActive(address operator);
     error ExistingActiveProposal(address target);
     error InvalidAddress(address wallet);
@@ -187,7 +187,7 @@ abstract contract GovernanceModule is
     }
 
     /// @notice Set transaction limit for a role
-    function setRoleTransactionLimit(bytes32 role, uint256 limit) 
+    function setRoleTransactionLimit(bytes32 role, uint240 limit) 
         external 
         whenNotPaused
         nonReentrant
@@ -234,7 +234,7 @@ abstract contract GovernanceModule is
     function getRoleQuorum(bytes32 role) 
         external 
         view 
-        returns (uint256)
+        returns (uint16)
     {
         ProposalTypes.RoleConfig storage roleConfig = roleConfigs[role];
         return roleConfig.quorum;
@@ -264,10 +264,10 @@ abstract contract GovernanceModule is
     /// @notice Create a new proposal
     function createProposal(
         uint8 proposalType,
-        uint256 id,
+        uint40 id,
         address target,
         bytes32 role,
-        uint256 amount,
+        uint96 amount,
         address tokenAddress
     ) 
         external 
@@ -452,10 +452,10 @@ abstract contract GovernanceModule is
     // Virtual function for contract-specific proposals
     function _createCustomProposal(
         uint8 proposalType,
-        uint256 id,
+        uint40 id,
         address target,
         bytes32 role,
-        uint256 amount,
+        uint96 amount,
         address tokenAddress
     ) internal virtual returns (bytes32);
 
@@ -663,7 +663,7 @@ abstract contract GovernanceModule is
     }
 
     /// @notice Set quorum for a role
-    function setRoleQuorum(bytes32 role, uint256 quorum) 
+    function setRoleQuorum(bytes32 role, uint16 quorum) 
         external 
         whenNotPaused
         nonReentrant
@@ -829,7 +829,7 @@ abstract contract GovernanceModule is
         if (target == address(0)) revert InvalidAddress(target);
         
         // Cache required approvals
-        uint256 requiredApprovals = adminConfig.quorum;
+        uint16 requiredApprovals = adminConfig.quorum;
         if (currentProposal.config.approvals < requiredApprovals) {
             revert InsufficientApprovalsErr(requiredApprovals, currentProposal.config.approvals);
         }
