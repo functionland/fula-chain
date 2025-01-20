@@ -121,18 +121,6 @@ describe("Token Constants", function () {
       await storageToken.waitForDeployment();
     });
   
-    describe("tokenUnit", function () {
-      it("should return correct token unit", async function () {
-        const unit = await storageToken.tokenUnit();
-        expect(unit).to.equal(TOKEN_UNIT);
-      });
-  
-      it("should be callable by any address", async function () {
-        const unit = await storageToken.connect(otherAccount).tokenUnit();
-        expect(unit).to.equal(TOKEN_UNIT);
-      });
-    });
-  
     describe("maxSupply", function () {
       it("should return correct total supply", async function () {
         const max = await storageToken.maxSupply();

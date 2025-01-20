@@ -43,7 +43,7 @@ abstract contract GovernanceModule is
     error ProposalAlreadyExecutedErr();
     error ProposalAlreadyApprovedErr();
     error InsufficientApprovalsErr(uint32 requiredApprovals, uint32 approvals);
-    error InvalidProposalTypeErr(uint8 proposalType);
+    error InvalidProposalType(uint8 proposalType);
     error DuplicateProposalErr(uint8 proposalType, address target);
     error ProposalExecutionDelayNotMetErr(uint256 allowedTime);
     error UnauthorizedProposalApproverErr();
@@ -84,7 +84,6 @@ abstract contract GovernanceModule is
     bytes32 public constant BRIDGE_OPERATOR_ROLE = ProposalTypes.BRIDGE_OPERATOR_ROLE;
     bytes32 public constant CONTRACT_OPERATOR_ROLE = ProposalTypes.CONTRACT_OPERATOR_ROLE;
     bytes32 public constant ADMIN_ROLE = ProposalTypes.ADMIN_ROLE;
-    bytes32 public constant UNDER_REVIEW = ProposalTypes.UNDER_REVIEW;
 
     // Time Constants
     uint256 private constant ROLE_CHANGE_DELAY = ProposalTypes.ROLE_CHANGE_DELAY;
@@ -188,7 +187,7 @@ abstract contract GovernanceModule is
     }
 
     /// @notice Set transaction limit for a role
-    function setRoleTransactionLimit(bytes32 role, uint256 limit) 
+    function setRoleTransactionLimit(bytes32 role, uint240 limit) 
         external 
         whenNotPaused
         nonReentrant
@@ -664,7 +663,7 @@ abstract contract GovernanceModule is
     }
 
     /// @notice Set quorum for a role
-    function setRoleQuorum(bytes32 role, uint32 quorum) 
+    function setRoleQuorum(bytes32 role, uint16 quorum) 
         external 
         whenNotPaused
         nonReentrant
@@ -853,5 +852,5 @@ abstract contract GovernanceModule is
         return true;
     }
 
-    uint256[45] private __gap; // Reduced gap size to accommodate new storage variables
+    uint256[45] private __gap; // gap size to accommodate new storage variables
 }

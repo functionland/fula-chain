@@ -15,7 +15,10 @@ library ProposalTypes {
         AddWhitelist,    // For whitelist management
         RemoveWhitelist,
         AddDistributionWallets, //Adding wallet to distribution cap
-        RemoveDistributionWallet
+        RemoveDistributionWallet,
+        AddToBlacklist, // Adding a wallet address to Blacklist for restrictions
+        RemoveFromBlacklist, // Removing a wallet from blacklist
+        ChangeTreasuryFee // change hte fee that goes to treasury from transfers
     }
 
     /// @notice Time-related constants for proposal lifecycle
@@ -25,7 +28,6 @@ library ProposalTypes {
     bytes32 public constant BRIDGE_OPERATOR_ROLE = keccak256("BRIDGE_OPERATOR_ROLE");
     bytes32 public constant CONTRACT_OPERATOR_ROLE = keccak256("CONTRACT_OPERATOR_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    bytes32 public constant UNDER_REVIEW = keccak256("UNDER_REVIEW");
 
     // Time Constants
     uint32 public constant INACTIVITY_THRESHOLD = 365 days;
@@ -67,21 +69,12 @@ library ProposalTypes {
 
     /// @notice Structure for role-related configurations
     struct RoleConfig {
-        uint32 quorum;             // Required number of approvals
-        uint256 transactionLimit;  // Transaction limit for role
+        uint16 quorum;             // Required number of approvals
+        uint240 transactionLimit;  // Transaction limit for role
     }
 
     /// @notice Structure for pending proposal tracking
     struct PendingProposals {
         uint8 proposalType;  // Flags indicating pending proposal types
     }
-
-    /// @notice Error codes for proposal operations
-    // uint8 constant ERROR_PROPOSAL_NOT_FOUND = 1;
-    // uint8 constant ERROR_PROPOSAL_EXPIRED = 2;
-    // uint8 constant ERROR_ALREADY_EXECUTED = 3;
-    // uint8 constant ERROR_ALREADY_APPROVED = 4;
-    // uint8 constant ERROR_INSUFFICIENT_APPROVALS = 5;
-    // uint8 constant ERROR_EXECUTION_DELAY = 6;
-    // uint8 constant ERROR_UNAUTHORIZED = 7;
 }

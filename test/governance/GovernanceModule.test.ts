@@ -363,7 +363,7 @@ describe("GovernanceModule", function () {
     });
   
     it("should return 0 for roles without set quorum", async function () {
-      const underReviewRole = await storageToken.UNDER_REVIEW();
+      const underReviewRole = await storageToken.CONTRACT_OPERATOR_ROLE();
       expect(await storageToken.getRoleQuorum(underReviewRole)).to.equal(0);
     });
   

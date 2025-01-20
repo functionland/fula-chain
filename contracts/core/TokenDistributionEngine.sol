@@ -511,7 +511,7 @@ contract TokenDistributionEngine is GovernanceModule {
             return proposalId;
         }
         
-        revert InvalidProposalTypeErr(proposalType);
+        revert InvalidProposalType(proposalType);
     }
 
     function _handleCustomProposalExpiry(bytes32 proposalId) internal virtual override {

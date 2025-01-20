@@ -1394,7 +1394,7 @@ describe("Custom Proposals", function () {
                 WALLET_ALLOCATION,
                 ZeroAddress
             )
-        ).to.be.revertedWithCustomError(distributionEngine, "InvalidProposalTypeErr");
+        ).to.be.revertedWithCustomError(distributionEngine, "InvalidProposalType");
     });
 });
 

@@ -3,6 +3,9 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/MulticallUpgradeable.sol";
+import "../governance/Treasury.sol";
 import "../governance/GovernanceModule.sol";
 
 /// @title StorageToken
@@ -11,7 +14,9 @@ import "../governance/GovernanceModule.sol";
 contract StorageToken is 
     GovernanceModule,
     ERC20Upgradeable,
-    ERC20PermitUpgradeable
+    ERC20PermitUpgradeable,
+    ERC20BurnableUpgradeable,
+    MulticallUpgradeable
 {
 
     /// @notice Token constants
@@ -22,6 +27,12 @@ contract StorageToken is
     /// @notice Bridge-related storage
     mapping(uint256 => mapping(uint256 => bool)) private _usedNonces;
     mapping(uint256 => bool) public supportedChains;
+    mapping(address => bool) public blacklisted;
+
+    // @notice fee collection related storage
+    Treasury public treasury;
+    uint128 private constant MAX_BPS = 500; // 5%
+    uint128 private platformFeeBps;
 
     uint256 private proposalCount;
     PackedVars private packedVars;
@@ -34,6 +45,10 @@ contract StorageToken is
     event TokensMinted(address to, uint256 amount);
     event WalletWhitelistedWithLock(address indexed wallet, uint256 lockUntil, address caller);
     event WalletRemovedFromWhitelist(address indexed wallet, address caller);
+    event AddedToBlacklist(address indexed account, address indexed by);
+    event RemovedFromBlacklist(address indexed account, address indexed by);
+    event TreasuryDeployed(address indexed treasury);
+    event PlatformFeeUpdated(uint256 newFee);
     
     error NotWhitelisted(address to);
     error LocktimeActive(address to);
@@ -44,17 +59,10 @@ contract StorageToken is
     error ExceedsMaximumSupply(uint256 requested, uint256 maxSupply);
     error AccountWhitelisted(address target);
     error InvalidChain(uint256 chainId);
-    
-
-    // _checkWhitelisted checks to ensure only white-listed recipients and only after time lock period are allowed
-    function _checkWhitelisted(address to) internal view {
-        // Use TimeConfig struct for whitelist lock time
-        ProposalTypes.TimeConfig storage timeConfig = timeConfigs[to];
-        uint64 lockTime = timeConfig.whitelistLockTime;
-        
-        if (lockTime == 0) revert NotWhitelisted(to);
-        if (block.timestamp < lockTime) revert LocktimeActive(to);
-    }
+    error BlacklistedAddress(address account);
+    error AccountBlacklisted(address target);
+    error AccountNotBlacklisted(address target);
+    error FeeExceedsMax(uint256 fee);
 
     /// @notice Initialize the token contract
     /// @param initialOwner Address of the initial owner
@@ -76,6 +84,10 @@ contract StorageToken is
         // Initialize governance module (handles UUPSUpgradeable, Ownable, ReentrancyGuard, 
         // Pausable, AccessControlEnumerable, role grants, and timelocks)
         __GovernanceModule_init(initialOwner, initialAdmin);
+
+        // Deploy Treasury
+        treasury = new Treasury(address(this), initialAdmin);
+        platformFeeBps = uint128(0);
         
         // Initialize mint and proposal settings
         PackedVars storage vars = packedVars;
@@ -84,14 +96,8 @@ contract StorageToken is
             proposalCount = 0;
             emit TokensAllocatedToContract(initialMintedTokens, "INITIAL_MINT");
             emit TokensMinted(address(this), initialMintedTokens);
+            emit TreasuryDeployed(address(treasury));
             vars.flags |= INITIATED;
-        }
-    }
-
-    /// @notice Returns the token unit (decimals)
-    function tokenUnit() public pure returns (uint256) {
-        unchecked {
-            return TOKEN_UNIT;
         }
     }
 
@@ -100,6 +106,63 @@ contract StorageToken is
         unchecked {
             return TOTAL_SUPPLY;
         }
+    }
+
+    // _checkWhitelisted checks to ensure only white-listed recipients and only after time lock period are allowed
+    function _checkWhitelisted(address to) internal view {
+        // Use TimeConfig struct for whitelist lock time
+        ProposalTypes.TimeConfig storage timeConfig = timeConfigs[to];
+        uint64 lockTime = timeConfig.whitelistLockTime;
+        
+        if (lockTime == 0) revert NotWhitelisted(to);
+        if (block.timestamp < lockTime) revert LocktimeActive(to);
+    }
+
+    /// @notice blocking transfers from/to blacklisted wallets and transfer the platform to treasury from the transaction 
+    function _update(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual override(ERC20Upgradeable) {
+        if (blacklisted[from]) revert BlacklistedAddress(from);
+        if (blacklisted[to]) revert BlacklistedAddress(to);
+        if (platformFeeBps > 0) {
+            uint256 fee = (amount * platformFeeBps) / MAX_BPS;
+            super._update(from, address(treasury), fee);
+            super._update(from, to, amount - fee);
+        } else {
+            super._update(from, to, amount);
+        }
+    }
+
+    function _setPlatformFee(uint256 _platformFeeBps) 
+        internal 
+        whenNotPaused
+    {
+        require(_platformFeeBps <= MAX_BPS, "Fee exceeds maximum");
+        platformFeeBps = uint128(_platformFeeBps);
+        emit PlatformFeeUpdated(_platformFeeBps);
+    }
+
+    // Add these functions to manage the blacklist
+    function _addToBlacklist(address account) 
+        internal
+        whenNotPaused 
+        onlyRole(ADMIN_ROLE) 
+    {
+        if(account == address(0)) revert InvalidAddress(account);
+        blacklisted[account] = true;
+        emit AddedToBlacklist(account, msg.sender);
+    }
+
+    function _removeFromBlacklist(address account) 
+        internal 
+        whenNotPaused 
+        onlyRole(ADMIN_ROLE) 
+    {
+        if(account == address(0)) revert InvalidAddress(account);
+        blacklisted[account] = false;
+        emit RemovedFromBlacklist(account, msg.sender);
     }
 
     /// @notice Transfer tokens from contract to whitelisted address
@@ -206,9 +269,29 @@ contract StorageToken is
                 if (targetTimeConfig.whitelistLockTime == 0) revert NotWhitelisted(target);
             }
             if (pendingProposals[target].proposalType != 0) revert ExistingActiveProposal(target);
-            
+        } else if (proposalType == uint8(ProposalTypes.ProposalType.AddToBlacklist) || 
+             proposalType == uint8(ProposalTypes.ProposalType.RemoveFromBlacklist)) {
+            if (target == address(0)) revert InvalidAddress(target);
+            if (pendingProposals[target].proposalType != 0) revert ExistingActiveProposal(target);
+
+            // Check current blacklist status
+            if (proposalType == uint8(ProposalTypes.ProposalType.AddToBlacklist)) {
+                if (blacklisted[target]) revert AccountBlacklisted(target);
+            } else {
+                if (!blacklisted[target]) revert AccountNotBlacklisted(target);
+            }
+        } else if (proposalType == uint8(ProposalTypes.ProposalType.ChangeTreasuryFee)) {
+            if (amount > MAX_BPS) revert FeeExceedsMax(amount);
+        }
+
+        if (proposalType == uint8(ProposalTypes.ProposalType.AddWhitelist) || 
+            proposalType == uint8(ProposalTypes.ProposalType.RemoveWhitelist) || 
+            proposalType == uint8(ProposalTypes.ProposalType.AddToBlacklist) || 
+            proposalType == uint8(ProposalTypes.ProposalType.RemoveFromBlacklist) || 
+            proposalType == uint8(ProposalTypes.ProposalType.ChangeTreasuryFee)
+        ) {
             bytes32 proposalId = _createProposalId(
-                uint8(ProposalTypes.ProposalType.AddWhitelist),
+                proposalType,
                 keccak256(abi.encodePacked(target, block.timestamp))
             );
 
@@ -224,7 +307,7 @@ contract StorageToken is
             return proposalId;
         }
         
-        revert InvalidProposalTypeErr(proposalType);
+        revert InvalidProposalType(proposalType);
     }
 
     function _handleCustomProposalExpiry(bytes32 proposalId) internal virtual override {
@@ -256,7 +339,7 @@ contract StorageToken is
             emit WalletRemovedFromWhitelist(target, msg.sender);
         }  
         else {
-            revert InvalidProposalTypeErr(proposalTypeVal);
+            revert InvalidProposalType(proposalTypeVal);
         }
     }
 
@@ -285,5 +368,5 @@ contract StorageToken is
 
     }
 
-    uint256[45] private __gap;
+    uint256[45] private __gap;  // gap size to accommodate new storage variables
 }
