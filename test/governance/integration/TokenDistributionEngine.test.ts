@@ -1,1622 +1,2017 @@
 import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
-import { StorageToken, TokenDistributionEngine } from "../typechain-types";
+import { TokenDistributionEngine, StorageToken } from "../typechain-types";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 import { ZeroAddress } from "ethers";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
 
-describe("TokenDistributionEngine - Initialization", () => {
-    let tokenDistributionEngine: TokenDistributionEngine;
-    let storageToken: StorageToken;
-    let owner: SignerWithAddress;
-    let admin: SignerWithAddress;
-    let addr1: SignerWithAddress;
-    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
-    const INITIAL_MINT = TOTAL_SUPPLY / BigInt(2);
-
-    beforeEach(async () => {
-        [owner, admin, addr1] = await ethers.getSigners();
-        
-        // Deploy StorageToken first
-        const StorageToken = await ethers.getContractFactory("StorageToken");
-        storageToken = (await upgrades.deployProxy(StorageToken, [
-            owner.address,
-            admin.address,
-            INITIAL_MINT
-        ])) as StorageToken;
-        await storageToken.waitForDeployment();
-    });
-
-    describe("TokenDistributionEngine - Initialization", () => {
-      let tokenDistributionEngine: TokenDistributionEngine;
-      let storageToken: StorageToken;
-      let owner: SignerWithAddress;
-      let admin: SignerWithAddress;
-      let addr1: SignerWithAddress;
-  
-      beforeEach(async () => {
-          [owner, admin, addr1] = await ethers.getSigners();
-          
-          // Deploy StorageToken first
-          const StorageToken = await ethers.getContractFactory("StorageToken");
-          storageToken = (await upgrades.deployProxy(StorageToken, [
-              owner.address,
-              admin.address,
-              ethers.parseEther("1000000000") // 1 billion tokens
-          ])) as StorageToken;
-          await storageToken.waitForDeployment();
-  
-          // Deploy TokenDistributionEngine
-          const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-          tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
-              await storageToken.getAddress(),
-              owner.address,
-              admin.address
-          ])) as TokenDistributionEngine;
-          await tokenDistributionEngine.waitForDeployment();
-      });
-  
-      describe("initialize", () => {
-          it("should initialize contract with valid parameters", async () => {
-              expect(await tokenDistributionEngine.storageToken()).to.equal(await storageToken.getAddress());
-              
-              const ADMIN_ROLE = await tokenDistributionEngine.ADMIN_ROLE();
-              expect(await tokenDistributionEngine.hasRole(ADMIN_ROLE, owner.address)).to.be.true;
-              expect(await tokenDistributionEngine.hasRole(ADMIN_ROLE, admin.address)).to.be.true;
-          });
-  
-          it("should revert with zero address for storage token", async () => {
-              const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-              await expect(
-                  upgrades.deployProxy(TokenDistributionEngine, [
-                      ZeroAddress,
-                      owner.address,
-                      admin.address
-                  ])
-              ).to.be.revertedWithCustomError(tokenDistributionEngine, "InvalidAddress");
-          });
-  
-          it("should revert with zero address for owner", async () => {
-              const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-              await expect(
-                  upgrades.deployProxy(TokenDistributionEngine, [
-                      await storageToken.getAddress(),
-                      ZeroAddress,
-                      admin.address
-                  ])
-              ).to.be.revertedWithCustomError(tokenDistributionEngine, "InvalidAddress");
-          });
-  
-          it("should revert with zero address for admin", async () => {
-              const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-              await expect(
-                  upgrades.deployProxy(TokenDistributionEngine, [
-                      await storageToken.getAddress(),
-                      owner.address,
-                      ZeroAddress
-                  ])
-              ).to.be.revertedWithCustomError(tokenDistributionEngine, "InvalidAddress");
-          });
-  
-          it("should revert when trying to initialize twice", async () => {
-              await expect(
-                  tokenDistributionEngine.initialize(
-                      await storageToken.getAddress(),
-                      owner.address,
-                      admin.address
-                  )
-              ).to.be.reverted;
-          });
-      });
-  });  
-});
-
-describe("TokenDistributionEngine - Emergency Actions", () => {
-  let tokenDistributionEngine: TokenDistributionEngine;
+describe("TokenDistributionEngine", function () {
+  let distributionEngine: TokenDistributionEngine;
   let storageToken: StorageToken;
   let owner: SignerWithAddress;
   let admin: SignerWithAddress;
-  let addr1: SignerWithAddress;
-  const EMERGENCY_COOLDOWN = 30 * 60; // 30 minutes in seconds
-
-  beforeEach(async () => {
-      [owner, admin, addr1] = await ethers.getSigners();
-      
-      // Deploy StorageToken
-      const StorageToken = await ethers.getContractFactory("StorageToken");
-      storageToken = (await upgrades.deployProxy(StorageToken, [
-          owner.address,
-          admin.address,
-          ethers.parseEther("1000000000")
-      ])) as StorageToken;
-      await storageToken.waitForDeployment();
-
-      // Deploy TokenDistributionEngine
-      const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-      tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
-          await storageToken.getAddress(),
-          owner.address,
-          admin.address
-      ])) as TokenDistributionEngine;
-      await tokenDistributionEngine.waitForDeployment();
-  });
-
-  describe("TokenDistributionEngine - Emergency Actions", () => {
-    let tokenDistributionEngine: TokenDistributionEngine;
-    let storageToken: StorageToken;
-    let owner: SignerWithAddress;
-    let admin: SignerWithAddress;
-    let addr1: SignerWithAddress;
-    const EMERGENCY_COOLDOWN = 30 * 60; // 30 minutes in seconds
-
-    beforeEach(async () => {
-        [owner, admin, addr1] = await ethers.getSigners();
-        
-        // Deploy StorageToken
-        const StorageToken = await ethers.getContractFactory("StorageToken");
-        storageToken = (await upgrades.deployProxy(StorageToken, [
-            owner.address,
-            admin.address,
-            ethers.parseEther("1000000000")
-        ])) as StorageToken;
-        await storageToken.waitForDeployment();
-
-        // Deploy TokenDistributionEngine
-        const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-        tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
-            await storageToken.getAddress(),
-            owner.address,
-            admin.address
-        ])) as TokenDistributionEngine;
-        await tokenDistributionEngine.waitForDeployment();
-    });
-
-    describe("emergencyAction", () => {
-        it("should pause and unpause with proper cooldown", async () => {
-            // First pause
-            await tokenDistributionEngine.connect(admin).emergencyAction(true);
-            expect(await tokenDistributionEngine.paused()).to.be.true;
-
-            // Try to unpause immediately - should fail
-            await expect(
-                tokenDistributionEngine.connect(admin).emergencyAction(false)
-            ).to.be.revertedWithCustomError(tokenDistributionEngine, "CoolDownActive");
-
-            // Wait for cooldown
-            await ethers.provider.send("evm_increaseTime", [EMERGENCY_COOLDOWN + 1]);
-            await ethers.provider.send("evm_mine", []);
-
-            // Now unpause should work
-            await tokenDistributionEngine.connect(admin).emergencyAction(false);
-            expect(await tokenDistributionEngine.paused()).to.be.false;
-
-            // Try to pause again immediately - should fail
-            await expect(
-                tokenDistributionEngine.connect(admin).emergencyAction(true)
-            ).to.be.revertedWithCustomError(tokenDistributionEngine, "CoolDownActive");
-        });
-
-        it("should emit EmergencyAction event with correct parameters", async () => {
-            const tx = await tokenDistributionEngine.connect(admin).emergencyAction(true);
-            const receipt = await tx.wait();
-            const block = await ethers.provider.getBlock(receipt!.blockNumber);
-            
-            const event = receipt?.logs.find(
-                log => tokenDistributionEngine.interface.parseLog(log)?.name === "EmergencyAction"
-            );
-            
-            const parsedEvent = tokenDistributionEngine.interface.parseLog(event);
-            expect(parsedEvent?.args?.action).to.equal("paused");
-            expect(parsedEvent?.args?.timestamp).to.equal(block?.timestamp);
-            expect(parsedEvent?.args?.caller).to.equal(admin.address);
-        });
-
-        it("should revert when called by non-admin", async () => {
-            await expect(
-                tokenDistributionEngine.connect(addr1).emergencyAction(true)
-            ).to.be.reverted;
-        });
-
-        it("should prevent operations when paused", async () => {
-            await tokenDistributionEngine.connect(admin).emergencyAction(true);
-            
-            // Try some operation that should be blocked when paused
-            await expect(
-                tokenDistributionEngine.connect(owner).transferOwnership(addr1.address)
-            ).to.be.revertedWithCustomError(tokenDistributionEngine, "EnforcedPause");
-        });
-    });
-});
-});
-
-
-describe("TokenDistributionEngine - Ownership", () => {
-  let tokenDistributionEngine: TokenDistributionEngine;
-  let storageToken: StorageToken;
-  let owner: SignerWithAddress;
-  let admin: SignerWithAddress;
-  let addr1: SignerWithAddress;
-
-  beforeEach(async () => {
-      [owner, admin, addr1] = await ethers.getSigners();
-      
-      // Deploy StorageToken
-      const StorageToken = await ethers.getContractFactory("StorageToken");
-      storageToken = (await upgrades.deployProxy(StorageToken, [
-          owner.address,
-          admin.address,
-          ethers.parseEther("1000000000")
-      ])) as StorageToken;
-      await storageToken.waitForDeployment();
-
-      // Deploy TokenDistributionEngine
-      const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-      tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
-          await storageToken.getAddress(),
-          owner.address,
-          admin.address
-      ])) as TokenDistributionEngine;
-      await tokenDistributionEngine.waitForDeployment();
-  });
-
-  describe("transferOwnership", () => {
-      it("should set pending owner correctly", async () => {
-          await tokenDistributionEngine.connect(owner).transferOwnership(addr1.address);
-          
-          // Check pending owner through events since it's private
-          const filter = tokenDistributionEngine.filters.OwnershipTransferred;
-          const events = await tokenDistributionEngine.queryFilter(filter);
-          expect(events[0].args.newOwner).to.equal(owner.address);
-          expect(await tokenDistributionEngine.owner()).to.equal(owner.address);
-          // accept transfer
-          await tokenDistributionEngine.connect(addr1).acceptOwnership();
-          expect(await tokenDistributionEngine.owner()).to.equal(addr1.address);
-
-      });
-
-      it("should revert when called by non-owner", async () => {
-          await expect(
-              tokenDistributionEngine.connect(addr1).transferOwnership(addr1.address)
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "OwnableUnauthorizedAccount");
-      });
-
-      it("should revert when transferring to zero address", async () => {
-          await expect(
-              tokenDistributionEngine.connect(owner).transferOwnership(ZeroAddress)
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "InvalidAddress");
-      });
-
-      it("should revert when contract is paused", async () => {
-          await tokenDistributionEngine.connect(admin).emergencyAction(true);
-          
-          // Wait for cooldown
-          await ethers.provider.send("evm_increaseTime", [30 * 60 + 1]);
-          await ethers.provider.send("evm_mine", []);
-          
-          await expect(
-              tokenDistributionEngine.connect(owner).transferOwnership(addr1.address)
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "EnforcedPause");
-      });
-  });
-
-  describe("acceptOwnership", () => {
-      beforeEach(async () => {
-          await tokenDistributionEngine.connect(owner).transferOwnership(addr1.address);
-      });
-
-      it("should transfer ownership when called by pending owner", async () => {
-          await tokenDistributionEngine.connect(addr1).acceptOwnership();
-          expect(await tokenDistributionEngine.owner()).to.equal(addr1.address);
-      });
-
-      it("should revert when called by non-pending owner", async () => {
-          await expect(
-              tokenDistributionEngine.connect(admin).acceptOwnership()
-          ).to.be.revertedWith("Not pending owner");
-      });
-
-      it("should revert when contract is paused", async () => {
-          await tokenDistributionEngine.connect(admin).emergencyAction(true);
-          
-          // Wait for cooldown
-          await ethers.provider.send("evm_increaseTime", [30 * 60 + 1]);
-          await ethers.provider.send("evm_mine", []);
-          
-          await expect(
-              tokenDistributionEngine.connect(addr1).acceptOwnership()
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "EnforcedPause");
-      });
-
-      it("should clear pending owner after successful transfer", async () => {
-          await tokenDistributionEngine.connect(addr1).acceptOwnership();
-          
-          // Try to accept again - should fail since pending owner is cleared
-          await expect(
-              tokenDistributionEngine.connect(addr1).acceptOwnership()
-          ).to.be.revertedWith("Not pending owner");
-      });
-
-      it("should emit OwnershipTransferred event", async () => {
-          await expect(tokenDistributionEngine.connect(addr1).acceptOwnership())
-              .to.emit(tokenDistributionEngine, "OwnershipTransferred")
-              .withArgs(owner.address, addr1.address);
-      });
-  });
-
-  describe("TokenDistributionEngine - Ownership", () => {
-    let tokenDistributionEngine: TokenDistributionEngine;
-    let storageToken: StorageToken;
-    let owner: SignerWithAddress;
-    let admin: SignerWithAddress;
-    let addr1: SignerWithAddress;
-
-    beforeEach(async () => {
-        [owner, admin, addr1] = await ethers.getSigners();
-        
-        // Deploy StorageToken
-        const StorageToken = await ethers.getContractFactory("StorageToken");
-        storageToken = (await upgrades.deployProxy(StorageToken, [
-            owner.address,
-            admin.address,
-            ethers.parseEther("1000000000")
-        ])) as StorageToken;
-        await storageToken.waitForDeployment();
-
-        // Deploy TokenDistributionEngine
-        const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-        tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
-            await storageToken.getAddress(),
-            owner.address,
-            admin.address
-        ])) as TokenDistributionEngine;
-        await tokenDistributionEngine.waitForDeployment();
-    });
-
-    describe("transferOwnership", () => {
-        it("should transfer ownership correctly", async () => {
-            await tokenDistributionEngine.connect(owner).transferOwnership(addr1.address);
-            await tokenDistributionEngine.connect(addr1).acceptOwnership();
-            
-            expect(await tokenDistributionEngine.owner()).to.equal(addr1.address);
-        });
-
-        it("should emit OwnershipTransferred event", async () => {
-            await tokenDistributionEngine.connect(owner).transferOwnership(addr1.address);
-            
-            await expect(tokenDistributionEngine.connect(addr1).acceptOwnership())
-                .to.emit(tokenDistributionEngine, "OwnershipTransferred")
-                .withArgs(owner.address, addr1.address);
-        });
-
-        it("should revert when called by non-owner", async () => {
-            await expect(
-                tokenDistributionEngine.connect(addr1).transferOwnership(addr1.address)
-            ).to.be.revertedWithCustomError(tokenDistributionEngine, "OwnableUnauthorizedAccount");
-        });
-
-        it("should revert when transferring to zero address", async () => {
-            await expect(
-                tokenDistributionEngine.connect(owner).transferOwnership(ZeroAddress)
-            ).to.be.revertedWithCustomError(tokenDistributionEngine, "InvalidAddress");
-        });
-
-        it("should revert when contract is paused", async () => {
-            await tokenDistributionEngine.connect(admin).emergencyAction(true);
-            
-            await expect(
-                tokenDistributionEngine.connect(owner).transferOwnership(addr1.address)
-            ).to.be.revertedWithCustomError(tokenDistributionEngine, "EnforcedPause");
-        });
-    });
-
-    describe("acceptOwnership", () => {
-        beforeEach(async () => {
-            await tokenDistributionEngine.connect(owner).transferOwnership(addr1.address);
-        });
-
-        it("should revert when called by non-pending owner", async () => {
-            await expect(
-                tokenDistributionEngine.connect(admin).acceptOwnership()
-            ).to.be.revertedWith("Not pending owner");
-        });
-
-        it("should revert when contract is paused", async () => {
-            await tokenDistributionEngine.connect(admin).emergencyAction(true);
-            
-            await expect(
-                tokenDistributionEngine.connect(addr1).acceptOwnership()
-            ).to.be.revertedWithCustomError(tokenDistributionEngine, "EnforcedPause");
-        });
-
-        it("should clear pending owner after successful transfer", async () => {
-            await tokenDistributionEngine.connect(addr1).acceptOwnership();
-            
-            // Try to accept again - should fail since pending owner is cleared
-            await expect(
-                tokenDistributionEngine.connect(addr1).acceptOwnership()
-            ).to.be.revertedWith("Not pending owner");
-        });
-    });
-});
-
-});
-
-
-describe("TokenDistributionEngine - Vesting Cap Management", () => {
-  let tokenDistributionEngine: TokenDistributionEngine;
-  let storageToken: StorageToken;
-  let owner: SignerWithAddress;
-  let admin: SignerWithAddress;
-  let addr1: SignerWithAddress;
-  const CAP_ID = 1;
+  let otherAccount: SignerWithAddress;
+  
+  // Constants
   const TOKEN_UNIT = ethers.parseEther("1");
+  const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+  const INITIAL_SUPPLY = TOTAL_SUPPLY / BigInt(2); // 1 billion tokens
 
-  beforeEach(async () => {
-      [owner, admin, addr1] = await ethers.getSigners();
-      
-      // Deploy StorageToken
-      const StorageToken = await ethers.getContractFactory("StorageToken");
-      storageToken = (await upgrades.deployProxy(StorageToken, [
-          owner.address,
-          admin.address,
-          ethers.parseEther("1000000000")
-      ])) as StorageToken;
-      await storageToken.waitForDeployment();
+  beforeEach(async function () {
+    [owner, admin, otherAccount] = await ethers.getSigners();
+    
+    // Deploy StorageToken first
+    const StorageToken = await ethers.getContractFactory("StorageToken");
+    storageToken = await upgrades.deployProxy(
+      StorageToken,
+      [owner.address, admin.address, INITIAL_SUPPLY],
+      { kind: 'uups', initializer: 'initialize' }
+    ) as StorageToken;
+    await storageToken.waitForDeployment();
+  });
 
-      // Deploy TokenDistributionEngine
+  describe("initialize", function () {
+    it("should correctly initialize the contract", async function () {
       const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-      tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
+      distributionEngine = await upgrades.deployProxy(
+        TokenDistributionEngine,
+        [await storageToken.getAddress(), owner.address, admin.address],
+        { kind: 'uups', initializer: 'initialize' }
+      ) as TokenDistributionEngine;
+
+      // Check storage token address
+      expect(await distributionEngine.storageToken()).to.equal(await storageToken.getAddress());
+
+      // Check roles
+      const adminRole = await distributionEngine.ADMIN_ROLE();
+      expect(await distributionEngine.hasRole(adminRole, owner.address)).to.be.true;
+      expect(await distributionEngine.hasRole(adminRole, admin.address)).to.be.true;
+
+      // Check token allowance
+      const allowance = await storageToken.allowance(
+        await distributionEngine.getAddress(),
+        await distributionEngine.getAddress()
+      );
+      expect(allowance).to.equal(ethers.MaxUint256);
+    });
+
+    it("should revert with zero addresses", async function () {
+      const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
+      
+      await expect(
+        upgrades.deployProxy(
+          TokenDistributionEngine,
+          [await storageToken.getAddress(), ZeroAddress, admin.address],
+          { kind: 'uups', initializer: 'initialize' }
+        )
+      ).to.be.revertedWithCustomError(TokenDistributionEngine, "InvalidAddress")
+      .withArgs(ZeroAddress);
+
+      await expect(
+        upgrades.deployProxy(
+          TokenDistributionEngine,
+          [await storageToken.getAddress(), owner.address, ZeroAddress],
+          { kind: 'uups', initializer: 'initialize' }
+        )
+      ).to.be.revertedWithCustomError(TokenDistributionEngine, "InvalidAddress")
+      .withArgs(ZeroAddress);
+
+      await expect(
+        upgrades.deployProxy(
+          TokenDistributionEngine,
+          [ZeroAddress, owner.address, admin.address],
+          { kind: 'uups', initializer: 'initialize' }
+        )
+      ).to.be.revertedWithCustomError(TokenDistributionEngine, "InvalidAddress")
+      .withArgs(ZeroAddress);
+    });
+
+    it("should emit TokenDistributionInitialized event", async function () {
+        const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
+        const tokenAddress = await storageToken.getAddress();
+        
+        const distributionEngine = await upgrades.deployProxy(
+            TokenDistributionEngine,
+            [tokenAddress, owner.address, admin.address],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as TokenDistributionEngine;
+    
+        await distributionEngine.waitForDeployment();
+    
+        // Get the transaction that deployed the contract
+        const tx = await distributionEngine.deploymentTransaction();
+        if (!tx) throw new Error("No deployment transaction found");
+        
+        const receipt = await tx.wait();
+        if (!receipt) throw new Error("No receipt found");
+    
+        // Parse logs using contract interface
+        const logs = receipt.logs
+            .map((log) => {
+                try {
+                    return distributionEngine.interface.parseLog(log);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .filter((parsedLog): parsedLog is NonNullable<typeof parsedLog> => 
+                parsedLog !== null && parsedLog.name === "TokenDistributionInitialized"
+            );
+    
+        expect(logs.length).to.equal(1);
+        expect(logs[0].args[0]).to.equal(tokenAddress);
+    });
+    
+
+    it("should prevent reinitialization", async function () {
+      const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
+      distributionEngine = await upgrades.deployProxy(
+        TokenDistributionEngine,
+        [await storageToken.getAddress(), owner.address, admin.address],
+        { kind: 'uups', initializer: 'initialize' }
+      ) as TokenDistributionEngine;
+
+      await expect(
+        distributionEngine.initialize(
           await storageToken.getAddress(),
           owner.address,
           admin.address
-      ])) as TokenDistributionEngine;
-      await tokenDistributionEngine.waitForDeployment();
-  });
-
-  describe("addVestingCap", () => {
-      it("should add a vesting cap with valid parameters", async () => {
-          const capName = ethers.encodeBytes32String("Team");
-          const totalAllocation = TOKEN_UNIT * BigInt(1000000); // 1M tokens
-          const cliff = 180; // 180 days
-          const vestingTerm = 24; // 24 months
-          const vestingPlan = 3; // quarterly
-          const initialRelease = 10; // 10%
-
-          await tokenDistributionEngine.connect(admin).addVestingCap(
-              CAP_ID,
-              capName,
-              totalAllocation,
-              cliff,
-              vestingTerm,
-              vestingPlan,
-              initialRelease
-          );
-
-          const cap = await tokenDistributionEngine.vestingCaps(CAP_ID);
-          expect(cap.totalAllocation).to.equal(totalAllocation);
-          expect(cap.cliff).to.equal(cliff * 24 * 60 * 60); // converted to seconds
-          expect(cap.vestingTerm).to.equal(vestingTerm * 30 * 24 * 60 * 60); // converted to seconds
-          expect(cap.vestingPlan).to.equal(vestingPlan * 30 * 24 * 60 * 60); // converted to seconds
-          expect(cap.initialRelease).to.equal(initialRelease);
-
-          const capIds = await tokenDistributionEngine.capIds(0);
-          expect(capIds).to.equal(CAP_ID);
-      });
-
-      it("should revert when adding duplicate cap ID", async () => {
-          const capName = ethers.encodeBytes32String("Team");
-          await tokenDistributionEngine.connect(admin).addVestingCap(
-              CAP_ID,
-              capName,
-              TOKEN_UNIT * BigInt(1000000),
-              180,
-              24,
-              3,
-              10
-          );
-
-          await expect(
-              tokenDistributionEngine.connect(admin).addVestingCap(
-                  CAP_ID,
-                  capName,
-                  TOKEN_UNIT * BigInt(1000000),
-                  180,
-                  24,
-                  3,
-                  10
-              )
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "CapExists");
-      });
-
-      it("should revert when total allocation is zero", async () => {
-          await expect(
-              tokenDistributionEngine.connect(admin).addVestingCap(
-                  CAP_ID,
-                  ethers.encodeBytes32String("Team"),
-                  0,
-                  180,
-                  24,
-                  3,
-                  10
-              )
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "InvalidAllocation");
-      });
-
-      it("should revert when initial release is greater than 100%", async () => {
-          await expect(
-              tokenDistributionEngine.connect(admin).addVestingCap(
-                  CAP_ID,
-                  ethers.encodeBytes32String("Team"),
-                  TOKEN_UNIT * BigInt(1000000),
-                  180,
-                  24,
-                  3,
-                  101
-              )
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "InitialReleaseTooLarge");
-      });
-
-      it("should revert when vesting plan is greater than or equal to vesting term", async () => {
-          await expect(
-              tokenDistributionEngine.connect(admin).addVestingCap(
-                  CAP_ID,
-                  ethers.encodeBytes32String("Team"),
-                  TOKEN_UNIT * BigInt(1000000),
-                  180,
-                  24,
-                  24,
-                  10
-              )
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "OutOfRangeVestingPlan");
-      });
-
-      it("should revert when called by non-admin", async () => {
-          await expect(
-              tokenDistributionEngine.connect(addr1).addVestingCap(
-                  CAP_ID,
-                  ethers.encodeBytes32String("Team"),
-                  TOKEN_UNIT * BigInt(1000000),
-                  180,
-                  24,
-                  3,
-                  10
-              )
-          ).to.be.reverted;
-      });
-
-      it("should emit VestingCapAdded event", async () => {
-          const capName = ethers.encodeBytes32String("Team");
-          await expect(
-              tokenDistributionEngine.connect(admin).addVestingCap(
-                  CAP_ID,
-                  capName,
-                  TOKEN_UNIT * BigInt(1000000),
-                  180,
-                  24,
-                  3,
-                  10
-              )
-          ).to.emit(tokenDistributionEngine, "VestingCapAdded")
-              .withArgs(CAP_ID, capName);
-      });
+        )
+      ).to.be.revertedWithCustomError(distributionEngine, "InvalidInitialization");
+    });
   });
 });
 
-describe("TokenDistributionEngine - TGE", () => {
-    let tokenDistributionEngine: TokenDistributionEngine;
+describe("initiateTGE", function () {
+    let distributionEngine: TokenDistributionEngine;
     let storageToken: StorageToken;
     let owner: SignerWithAddress;
     let admin: SignerWithAddress;
-    let addr1: SignerWithAddress;
+    let otherAccount: SignerWithAddress;
+    
+    // Constants
     const TOKEN_UNIT = ethers.parseEther("1");
-    const CAP_ID = 1;
-    const ROLE_CHANGE_DELAY = 24 * 60 * 60; // 1 day in seconds
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+    const INITIAL_SUPPLY = TOTAL_SUPPLY / BigInt(2); // 1 billion tokens
+    const CAP_ALLOCATION = ethers.parseEther("1000000"); // 1 million tokens
 
-    beforeEach(async () => {
-        [owner, admin, addr1] = await ethers.getSigners();
+    beforeEach(async function () {
+        [owner, admin, otherAccount] = await ethers.getSigners();
         
         // Deploy StorageToken
         const StorageToken = await ethers.getContractFactory("StorageToken");
-        storageToken = (await upgrades.deployProxy(StorageToken, [
-            owner.address,
-            admin.address,
-            ethers.parseEther("1000000000")
-        ])) as StorageToken;
+        storageToken = await upgrades.deployProxy(
+            StorageToken,
+            [owner.address, admin.address, INITIAL_SUPPLY],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as StorageToken;
         await storageToken.waitForDeployment();
 
         // Deploy TokenDistributionEngine
         const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-        tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
-            await storageToken.getAddress(),
-            owner.address,
-            admin.address
-        ])) as TokenDistributionEngine;
-        await tokenDistributionEngine.waitForDeployment();
+        distributionEngine = await upgrades.deployProxy(
+            TokenDistributionEngine,
+            [await storageToken.getAddress(), owner.address, admin.address],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as TokenDistributionEngine;
+        await distributionEngine.waitForDeployment();
+        await storageToken.connect(owner).setRoleQuorum(storageToken.ADMIN_ROLE(), 2);
+        await ethers.provider.send("evm_increaseTime", [48 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+        await storageToken.connect(owner).setRoleTransactionLimit(storageToken.ADMIN_ROLE(), BigInt(2) * CAP_ALLOCATION);
 
         // Wait for timelock to expire
-        await ethers.provider.send("evm_increaseTime", [ROLE_CHANGE_DELAY + 1]);
-        await ethers.provider.send("evm_mine", []);
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
 
-        // Set quorum for ADMIN_ROLE in StorageToken
-      const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
-      await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
-
-        // Setup vesting cap
-        await tokenDistributionEngine.connect(admin).addVestingCap(
-            CAP_ID,
-            ethers.encodeBytes32String("Team"),
-            TOKEN_UNIT * BigInt(100000), // 1M tokens
-            180, // 180 days cliff
-            24,  // 24 months vesting
-            3,   // quarterly vesting
-            10   // 10% initial release
-        );
-
-        // Setup contract operator role and whitelist
-        const CONTRACT_OPERATOR_ROLE = await storageToken.CONTRACT_OPERATOR_ROLE();
+        // Create whitelist proposal for distribution engine
+        const addWhitelistType = 5; // AddWhitelist type
         const tx = await storageToken.connect(owner).createProposal(
-            0, // RoleChange
-            addr1.address,
-            CONTRACT_OPERATOR_ROLE,
+            addWhitelistType,
             0,
-            ZeroAddress,
-            true
+            await distributionEngine.getAddress(),
+            ethers.ZeroHash,
+            0,
+            ZeroAddress
         );
         
         const receipt = await tx.wait();
-        const event = receipt?.logs
-            .map((log) => storageToken.interface.parseLog(log))
-            .find((parsedLog) => parsedLog?.name === "ProposalCreated");
-        
-        const proposalId = event?.args?.proposalId;
-        await storageToken.connect(admin).approveProposal(proposalId);
-        
+        const event = receipt?.logs[0];
+        const proposalId = event?.topics[1];
+
         // Wait for execution delay
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-        await storageToken.connect(owner).executeProposal(proposalId);
+        await ethers.provider.send("evm_mine");
 
-        // Whitelist distribution contract
-        const tx4 = await storageToken.connect(owner).createProposal(
-            3, // Whitelist
-            await tokenDistributionEngine.getAddress(),
-            ethers.ZeroHash,
-            0,
-            ZeroAddress,
-            true
-        );
-        
-        const receipt4 = await tx4.wait();
-        const event4 = receipt4?.logs
-            .map((log) => storageToken.interface.parseLog(log))
-            .find((parsedLog) => parsedLog?.name === "ProposalCreated");
-        
-        const proposalId4 = event4?.args?.proposalId;
-        await storageToken.connect(admin).approveProposal(proposalId4);
-        
+        // Approve whitelist proposal
+        await storageToken.connect(admin).approveProposal(proposalId);
+
+        // Wait for whitelist lock
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-        await storageToken.connect(owner).executeProposal(proposalId4);
+        await ethers.provider.send("evm_mine");
 
-        // Whitelist distribution contract
-      await expect(storageToken.connect(owner).createProposal(
-        3, // Whitelist
-        await tokenDistributionEngine.getAddress(),
-          ethers.ZeroHash,
-          0,
-          ZeroAddress,
-          true
-      )).to.be.revertedWithCustomError(storageToken, "AlreadyWhitelisted");
+        // Transfer tokens to distribution engine
+        await storageToken.connect(owner).transferFromContract(
+            await distributionEngine.getAddress(),
+            BigInt(2) * CAP_ALLOCATION
+        );
 
-    await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), TOKEN_UNIT * BigInt(1000000));
-    await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-
-    // Transfer tokens to distribution contract
-    await storageToken.connect(admin).transferFromContract(
-        await tokenDistributionEngine.getAddress(),
-        TOKEN_UNIT * BigInt(1000000)
-    );
+        // Add a vesting cap
+        await distributionEngine.connect(owner).addVestingCap(
+            1, // capId
+            ethers.encodeBytes32String("Test Cap"),
+            CAP_ALLOCATION,
+            30, // 30 days cliff
+            12, // 12 months vesting
+            1,  // monthly vesting plan
+            10  // 10% initial release
+        );
     });
 
-    describe("InitiateTGE", () => {
-      it("should successfully initiate TGE", async () => {
-          await tokenDistributionEngine.connect(admin).InitiateTGE();
-          expect(await tokenDistributionEngine.tgeInitiated()).to.be.true;
-      });
+    it("should correctly initiate TGE", async function () {
+        const tx = await distributionEngine.connect(owner).initiateTGE();
+        const receipt = await tx.wait();
+        
+        // Check TGE initiated flag
+        const cap = await distributionEngine.vestingCaps(1);
+        expect(cap.startDate).to.equal(await time.latest());
 
-      it("should revert when called twice", async () => {
-          await tokenDistributionEngine.connect(admin).InitiateTGE();
-          await expect(
-              tokenDistributionEngine.connect(admin).InitiateTGE()
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "TGETInitiatedErr");
-      });
+        // Verify event
+        await expect(tx)
+            .to.emit(distributionEngine, "TGEInitiated")
+            .withArgs(CAP_ALLOCATION, await time.latest());
+    });
 
-      it("should revert when contract has insufficient balance", async () => {
-          // Add another cap that exceeds contract balance
-          await tokenDistributionEngine.connect(admin).addVestingCap(
-              2,
-              ethers.encodeBytes32String("Advisors"),
-              TOKEN_UNIT * BigInt(2000000), // 2M tokens (more than available)
-              180,
-              24,
-              3,
-              10
-          );
+    it("should revert if already initiated", async function () {
+        await distributionEngine.connect(owner).initiateTGE();
+        
+        await expect(
+            distributionEngine.connect(owner).initiateTGE()
+        ).to.be.revertedWithCustomError(distributionEngine, "TGEAlreadyInitiated");
+    });
 
-          await expect(
-              tokenDistributionEngine.connect(admin).InitiateTGE()
-          ).to.be.revertedWithCustomError(
-              tokenDistributionEngine, 
-              "InsufficientContractBalance"
-          );
-      });
+    it("should revert if contract has insufficient balance", async function () {
+        // Add another cap that would exceed balance
+        await distributionEngine.connect(owner).addVestingCap(
+            2,
+            ethers.encodeBytes32String("Test Cap 2"),
+            BigInt(3) * CAP_ALLOCATION,
+            30,
+            12,
+            1,
+            10
+        );
 
-      it("should emit TGEInitiated event", async () => {
-          const tx = await tokenDistributionEngine.connect(admin).InitiateTGE();
-          const receipt = await tx.wait();
-          const block = await ethers.provider.getBlock(receipt!.blockNumber);
-          
-          await expect(tx)
-              .to.emit(tokenDistributionEngine, "TGEInitiated")
-              .withArgs(block!.timestamp, block!.number);
-      });
+        await expect(
+            distributionEngine.connect(owner).initiateTGE()
+        ).to.be.revertedWithCustomError(
+            distributionEngine, 
+            "InsufficientContractBalance"
+        );
+    });
 
-      it("should revert when called by non-admin", async () => {
-          await expect(
-              tokenDistributionEngine.connect(addr1).InitiateTGE()
-          ).to.be.reverted;
-      });
-  });
+    it("should revert when called by non-admin", async function () {
+        await expect(
+            distributionEngine.connect(otherAccount).initiateTGE()
+        ).to.be.revertedWithCustomError(
+            distributionEngine, 
+            "AccessControlUnauthorizedAccount"
+        );
+    });
+
+    it("should revert when contract is paused", async function () {
+        // Wait for emergency cooldown
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Pause contract
+        await distributionEngine.connect(owner).emergencyPause();
+
+        await expect(
+            distributionEngine.connect(owner).initiateTGE()
+        ).to.be.revertedWithCustomError(distributionEngine, "EnforcedPause");
+    });
+
+    it("should set correct start dates for all caps", async function () {
+        // Add another cap
+        await distributionEngine.connect(owner).addVestingCap(
+            2,
+            ethers.encodeBytes32String("Test Cap 2"),
+            CAP_ALLOCATION / BigInt(2),
+            30,
+            12,
+            1,
+            10
+        );
+
+        const initTime = await time.latest();
+        await distributionEngine.connect(owner).initiateTGE();
+
+        const cap1 = await distributionEngine.vestingCaps(1);
+        const cap2 = await distributionEngine.vestingCaps(2);
+
+        expect(cap1.startDate).to.equal(initTime +1);
+        expect(cap2.startDate).to.equal(initTime +1);
+    });
 });
 
-describe("TokenDistributionEngine - Token Claims", () => {
-  let tokenDistributionEngine: TokenDistributionEngine;
-  let storageToken: StorageToken;
-  let owner: SignerWithAddress;
-  let admin: SignerWithAddress;
-  let addr1: SignerWithAddress;
-  const TOKEN_UNIT = ethers.parseEther("1");
-  const CAP_ID = 1;
-
-  beforeEach(async () => {
-      [owner, admin, addr1] = await ethers.getSigners();
-      
-      // Deploy StorageToken
-      const StorageToken = await ethers.getContractFactory("StorageToken");
-      storageToken = (await upgrades.deployProxy(StorageToken, [
-          owner.address,
-          admin.address,
-          ethers.parseEther("1000000000")
-      ])) as StorageToken;
-      await storageToken.waitForDeployment();
-
-      // Deploy TokenDistributionEngine
-      const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-      tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
-          await storageToken.getAddress(),
-          owner.address,
-          admin.address
-      ])) as TokenDistributionEngine;
-      await tokenDistributionEngine.waitForDeployment();
-
-      // Wait for timelock
-      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-      await ethers.provider.send("evm_mine", []);
-
-      // Set quorum for ADMIN_ROLE in StorageToken
-      const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
-      await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
-
-      // Setup vesting cap
-      await tokenDistributionEngine.connect(admin).addVestingCap(
-          CAP_ID,
-          ethers.encodeBytes32String("Team"),
-          TOKEN_UNIT * BigInt(1000), // 1000 tokens
-          180, // 180 days cliff
-          24,  // 24 months vesting
-          3,   // quarterly vesting
-          10   // 10% initial release
-      );
-
-      // Setup contract operator role and whitelist
-      const CONTRACT_OPERATOR_ROLE = await storageToken.CONTRACT_OPERATOR_ROLE();
-      const tx = await storageToken.connect(owner).createProposal(
-          0, // RoleChange
-          addr1.address,
-          CONTRACT_OPERATOR_ROLE,
-          0,
-          ZeroAddress,
-          true
-      );
-      
-      const receipt = await tx.wait();
-      const event = receipt?.logs
-          .map((log) => storageToken.interface.parseLog(log))
-          .find((parsedLog) => parsedLog?.name === "ProposalCreated");
-      
-      const proposalId = event?.args?.proposalId;
-      await storageToken.connect(admin).approveProposal(proposalId);
-      
-      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-      await storageToken.connect(owner).executeProposal(proposalId);
-
-      // Whitelist distribution contract
-      const tx2 = await storageToken.connect(owner).createProposal(
-          3, // Whitelist
-          await tokenDistributionEngine.getAddress(),
-          ethers.ZeroHash,
-          0,
-          ZeroAddress,
-          true
-      );
-      
-      const receipt2 = await tx2.wait();
-      const event2 = receipt2?.logs
-          .map((log) => storageToken.interface.parseLog(log))
-          .find((parsedLog) => parsedLog?.name === "ProposalCreated");
-      
-      const proposalId2 = event2?.args?.proposalId;
-      await storageToken.connect(admin).approveProposal(proposalId2);
-      
-      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-      await storageToken.connect(owner).executeProposal(proposalId2);
-      await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), TOKEN_UNIT * BigInt(1000));
-      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-
-      // Transfer tokens to distribution contract
-      await storageToken.connect(admin).transferFromContract(
-          await tokenDistributionEngine.getAddress(),
-          TOKEN_UNIT * BigInt(1000)
-      );
-
-      await tokenDistributionEngine.connect(admin).setRoleQuorum(await tokenDistributionEngine.ADMIN_ROLE(), 2);
-      // Add wallet to cap
-      const addWalletTx = await tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
-          CAP_ID,
-          [addr1.address],
-          [ethers.encodeBytes32String("Test Wallet")],
-          [TOKEN_UNIT * BigInt(100)]
-      );
-      
-
-      const addWalletReceipt = await addWalletTx.wait();
-      const addWalletEvent = addWalletReceipt?.logs
-          .map((log) => tokenDistributionEngine.interface.parseLog(log))
-          .find((parsedLog) => parsedLog?.name === "ProposalCreated");
-      const addWalletProposalId = addWalletEvent?.args?.proposalId;
-
-      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-
-      const tx3 = await tokenDistributionEngine.connect(owner).approveProposal(addWalletProposalId);
-      const receipt3 = await tx3.wait();
-      const event3 = receipt3?.logs
-          .map((log) => tokenDistributionEngine.interface.parseLog(log))
-          .find((parsedLog) => parsedLog?.name === "ProposalApproved");
-      const addWalletApprovedProposalId = event3?.args?.proposalId;
-      const executionAttempted = event3?.args?.executionAttempted;
-      expect(addWalletApprovedProposalId).to.be.eq(addWalletProposalId);
-      expect(executionAttempted).to.be.eq(true);
-      
-
-      // Initiate TGE
-      await tokenDistributionEngine.connect(admin).InitiateTGE();
-  });
-
-  describe("calculateDueTokens", () => {
-      it("should return 0 before cliff period", async () => {
-          await expect(
-              tokenDistributionEngine.calculateDueTokens(addr1.address, CAP_ID)
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "CliffNotReached");
-      });
-
-      it("should calculate initial release after cliff", async () => {
-          // Move past cliff period
-          await ethers.provider.send("evm_increaseTime", [180 * 24 * 60 * 60 + 1]);
-          await ethers.provider.send("evm_mine", []);
-
-          const dueTokens = await tokenDistributionEngine.calculateDueTokens(addr1.address, CAP_ID);
-          // 10% of 100 tokens
-          expect(dueTokens).to.equal(TOKEN_UNIT * BigInt(10));
-      });
-
-      it("should calculate vested tokens after one quarter", async () => {
-          // Move past cliff period plus one quarter
-          await ethers.provider.send("evm_increaseTime", [180 * 24 * 60 * 60 + 90 * 24 * 60 * 60]);
-          await ethers.provider.send("evm_mine", []);
-
-          const dueTokens = await tokenDistributionEngine.calculateDueTokens(addr1.address, CAP_ID);
-          // Initial 10% plus ~11.25% of remaining 90%
-          const expectedTokens = TOKEN_UNIT * BigInt(10) + 
-            (TOKEN_UNIT * BigInt(100) - TOKEN_UNIT * BigInt(10)) * 
-            BigInt(3) / BigInt(24);
-          expect(dueTokens).to.be.eq(expectedTokens);
-      });
-  });
-
-  describe("claimTokens", () => {
-      it("should revert when nothing is due", async () => {
-          await expect(
-              tokenDistributionEngine.connect(addr1).claimTokens(CAP_ID, 1)
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "CliffNotReached");
-      });
-
-      it("should successfully claim tokens after cliff", async () => {
-          // Move past cliff period
-          await ethers.provider.send("evm_increaseTime", [180 * 24 * 60 * 60 + 1]);
-          await ethers.provider.send("evm_mine", []);
-
-          const initialBalance = await storageToken.balanceOf(addr1.address);
-          await tokenDistributionEngine.connect(addr1).claimTokens(CAP_ID, 1);
-          const finalBalance = await storageToken.balanceOf(addr1.address);
-
-          expect(finalBalance - initialBalance).to.equal(TOKEN_UNIT * BigInt(10));
-      });
-
-      it("should emit TokensClaimed event", async () => {
-          await ethers.provider.send("evm_increaseTime", [180 * 24 * 60 * 60 + 1]);
-          await ethers.provider.send("evm_mine", []);
-
-          await expect(tokenDistributionEngine.connect(addr1).claimTokens(CAP_ID, 1))
-              .to.emit(tokenDistributionEngine, "TokensClaimed");
-      });
-
-      it("should update claimed tokens after successful claim", async () => {
-          await ethers.provider.send("evm_increaseTime", [180 * 24 * 60 * 60 + 1]);
-          await ethers.provider.send("evm_mine", []);
-
-          await tokenDistributionEngine.connect(addr1).claimTokens(CAP_ID, 1);
-          const claimed = await tokenDistributionEngine.claimedTokens(addr1.address, CAP_ID);
-          expect(claimed).to.equal(TOKEN_UNIT * BigInt(10));
-      });
-  });
-});
-
-describe("TokenDistributionEngine - Add Wallets to Cap", () => {
-  let tokenDistributionEngine: TokenDistributionEngine;
-  let storageToken: StorageToken;
-  let owner: SignerWithAddress;
-  let admin: SignerWithAddress;
-  let addr1: SignerWithAddress;
-  let addr2: SignerWithAddress;
-  const TOKEN_UNIT = ethers.parseEther("1");
-  const CAP_ID = 1;
-
-  beforeEach(async () => {
-      [owner, admin, addr1, addr2] = await ethers.getSigners();
-      
-      // Deploy StorageToken
-      const StorageToken = await ethers.getContractFactory("StorageToken");
-      storageToken = (await upgrades.deployProxy(StorageToken, [
-          owner.address,
-          admin.address,
-          ethers.parseEther("1000000000")
-      ])) as StorageToken;
-      await storageToken.waitForDeployment();
-
-      // Deploy TokenDistributionEngine
-      const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-      tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
-          await storageToken.getAddress(),
-          owner.address,
-          admin.address
-      ])) as TokenDistributionEngine;
-      await tokenDistributionEngine.waitForDeployment();
-
-      // Wait for timelock
-      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-      await ethers.provider.send("evm_mine", []);
-
-      // Set quorum for ADMIN_ROLE
-      await tokenDistributionEngine.connect(owner).setRoleQuorum(await tokenDistributionEngine.ADMIN_ROLE(), 2);
-
-      // Setup vesting cap
-      await tokenDistributionEngine.connect(admin).addVestingCap(
-          CAP_ID,
-          ethers.encodeBytes32String("Team"),
-          TOKEN_UNIT * BigInt(1000),
-          180,
-          24,
-          3,
-          10
-      );
-  });
-
-  describe("proposeAddWalletsToCap", () => {
-      it("should create proposal to add wallets", async () => {
-          const wallets = [addr1.address, addr2.address];
-          const names = [
-              ethers.encodeBytes32String("Wallet1"),
-              ethers.encodeBytes32String("Wallet2")
-          ];
-          const allocations = [TOKEN_UNIT * BigInt(100), TOKEN_UNIT * BigInt(200)];
-
-          const tx = await tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
-              CAP_ID,
-              wallets,
-              names,
-              allocations
-          );
-
-          const receipt = await tx.wait();
-          const event = receipt?.logs
-              .map((log) => tokenDistributionEngine.interface.parseLog(log))
-              .find((parsedLog) => parsedLog?.name === "ProposalCreated");
-
-          expect(event?.args?.flags).to.equal(2); // WalletAddition type
-          expect(event?.args?.proposer).to.equal(admin.address);
-      });
-
-      it("should revert when arrays have different lengths", async () => {
-          const wallets = [addr1.address];
-          const names = [ethers.encodeBytes32String("Wallet1")];
-          const allocations = [TOKEN_UNIT * BigInt(100), TOKEN_UNIT * BigInt(200)];
-
-          await expect(
-              tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
-                  CAP_ID,
-                  wallets,
-                  names,
-                  allocations
-              )
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "LengthMisMatch");
-      });
-
-      it("should revert when cap does not exist", async () => {
-          const nonExistentCapId = 999;
-          await expect(
-              tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
-                  nonExistentCapId,
-                  [addr1.address],
-                  [ethers.encodeBytes32String("Wallet1")],
-                  [TOKEN_UNIT * BigInt(100)]
-              )
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "CapNotFound");
-      });
-
-      it("should revert when called by non-admin", async () => {
-          await expect(
-              tokenDistributionEngine.connect(addr1).proposeAddWalletsToCap(
-                  CAP_ID,
-                  [addr1.address],
-                  [ethers.encodeBytes32String("Wallet1")],
-                  [TOKEN_UNIT * BigInt(100)]
-              )
-          ).to.be.reverted;
-      });
-
-      it("should revert when allocation exceeds cap total", async () => {
-          await expect(
-              tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
-                  CAP_ID,
-                  [addr1.address],
-                  [ethers.encodeBytes32String("Wallet1")],
-                  [TOKEN_UNIT * BigInt(2000)] // Exceeds cap total of 1000
-              )
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "AllocationTooHigh");
-      });
-  });
-});
-
-
-describe("TokenDistributionEngine - Proposal Approval", () => {
-  let tokenDistributionEngine: TokenDistributionEngine;
-  let storageToken: StorageToken;
-  let owner: SignerWithAddress;
-  let admin: SignerWithAddress;
-  let addr1: SignerWithAddress;
-  let addr2: SignerWithAddress;
-  const TOKEN_UNIT = ethers.parseEther("1");
-  const CAP_ID = 1;
-
-  beforeEach(async () => {
-      [owner, admin, addr1, addr2] = await ethers.getSigners();
-      
-      // Deploy StorageToken
-      const StorageToken = await ethers.getContractFactory("StorageToken");
-      storageToken = (await upgrades.deployProxy(StorageToken, [
-          owner.address,
-          admin.address,
-          ethers.parseEther("1000000000")
-      ])) as StorageToken;
-      await storageToken.waitForDeployment();
-
-      // Deploy TokenDistributionEngine
-      const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-      tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
-          await storageToken.getAddress(),
-          owner.address,
-          admin.address
-      ])) as TokenDistributionEngine;
-      await tokenDistributionEngine.waitForDeployment();
-
-      // Wait for timelock
-      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-      await ethers.provider.send("evm_mine", []);
-
-      // Set quorum for ADMIN_ROLE
-      await tokenDistributionEngine.connect(owner).setRoleQuorum(await tokenDistributionEngine.ADMIN_ROLE(), 2);
-
-      // Setup vesting cap
-      await tokenDistributionEngine.connect(admin).addVestingCap(
-          CAP_ID,
-          ethers.encodeBytes32String("Team"),
-          TOKEN_UNIT * BigInt(1000),
-          180,
-          24,
-          3,
-          10
-      );
-  });
-
-  describe("approveProposal", () => {
-      let proposalId: string;
-
-      beforeEach(async () => {
-          const tx = await tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
-              CAP_ID,
-              [addr1.address],
-              [ethers.encodeBytes32String("Test Wallet")],
-              [TOKEN_UNIT * BigInt(100)]
-          );
-
-          const receipt = await tx.wait();
-          const event = receipt?.logs
-              .map((log) => tokenDistributionEngine.interface.parseLog(log))
-              .find((parsedLog) => parsedLog?.name === "ProposalCreated");
-
-          proposalId = event?.args?.proposalId;
-      });
-
-      it("should approve proposal successfully", async () => {
-          await tokenDistributionEngine.connect(owner).approveProposal(proposalId);
-          const proposal = await tokenDistributionEngine.proposals(proposalId);
-          expect(proposal.config.approvals).to.equal(2);
-      });
-
-      it("should revert when non-admin tries to approve", async () => {
-          await expect(
-              tokenDistributionEngine.connect(addr1).approveProposal(proposalId)
-          ).to.be.reverted;
-      });
-
-      it("should revert when proposal does not exist", async () => {
-          const nonExistentProposalId = ethers.id("nonexistent");
-          await expect(
-              tokenDistributionEngine.connect(owner).approveProposal(nonExistentProposalId)
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "ProposalError").withArgs(1);
-      });
-
-      it("should revert when proposal has expired", async () => {
-          await ethers.provider.send("evm_increaseTime", [72 * 60 * 60 + 1]); // 72 hours + 1 second
-          await ethers.provider.send("evm_mine", []);
-
-          await expect(
-              tokenDistributionEngine.connect(owner).approveProposal(proposalId)
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "ProposalError").withArgs(2);
-      });
-
-      it("should emit ProposalApproved event", async () => {
-        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]); // 72 hours + 1 second
-        await ethers.provider.send("evm_mine", []);
-
-          await expect(tokenDistributionEngine.connect(owner).approveProposal(proposalId))
-              .to.emit(tokenDistributionEngine, "ProposalApproved")
-              .withArgs(proposalId, true, owner.address);
-      });
-
-      it("should revert when same admin approves twice", async () => {
-          await tokenDistributionEngine.connect(owner).approveProposal(proposalId);
-          await expect(
-              tokenDistributionEngine.connect(owner).approveProposal(proposalId)
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "ProposalError").withArgs(4);
-      });
-  });
-});
-
-describe("TokenDistributionEngine - Execute Proposal", () => {
-  let tokenDistributionEngine: TokenDistributionEngine;
-  let storageToken: StorageToken;
-  let owner: SignerWithAddress;
-  let admin: SignerWithAddress;
-  let addr1: SignerWithAddress;
-  let addr2: SignerWithAddress;
-  const TOKEN_UNIT = ethers.parseEther("1");
-  const CAP_ID = 1;
-
-  beforeEach(async () => {
-      [owner, admin, addr1, addr2] = await ethers.getSigners();
-      
-      // Deploy StorageToken
-      const StorageToken = await ethers.getContractFactory("StorageToken");
-      storageToken = (await upgrades.deployProxy(StorageToken, [
-          owner.address,
-          admin.address,
-          ethers.parseEther("1000000000")
-      ])) as StorageToken;
-      await storageToken.waitForDeployment();
-
-      // Deploy TokenDistributionEngine
-      const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-      tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
-          await storageToken.getAddress(),
-          owner.address,
-          admin.address
-      ])) as TokenDistributionEngine;
-      await tokenDistributionEngine.waitForDeployment();
-
-      // Wait for timelock
-      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-      await ethers.provider.send("evm_mine", []);
-
-      // Set quorum for ADMIN_ROLE
-      await tokenDistributionEngine.connect(owner).setRoleQuorum(await tokenDistributionEngine.ADMIN_ROLE(), 2);
-
-      // Setup vesting cap
-      await tokenDistributionEngine.connect(admin).addVestingCap(
-          CAP_ID,
-          ethers.encodeBytes32String("Team"),
-          TOKEN_UNIT * BigInt(1000),
-          180,
-          24,
-          3,
-          10
-      );
-  });
-
-  describe("executeProposal", () => {
-      let proposalId: string;
-
-      beforeEach(async () => {
-          const tx = await tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
-              CAP_ID,
-              [addr1.address],
-              [ethers.encodeBytes32String("Test Wallet")],
-              [TOKEN_UNIT * BigInt(100)]
-          );
-
-          const receipt = await tx.wait();
-          const event = receipt?.logs
-              .map((log) => tokenDistributionEngine.interface.parseLog(log))
-              .find((parsedLog) => parsedLog?.name === "ProposalCreated");
-
-          proposalId = event?.args?.proposalId;
-          await tokenDistributionEngine.connect(owner).approveProposal(proposalId);
-      });
-
-      it("should revert when execution delay not met", async () => {
-          await expect(
-              tokenDistributionEngine.connect(admin).executeProposal(proposalId)
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "ProposalExecutionError");
-      });
-
-      it("should revert when quorum not met", async () => {
-          const tx = await tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
-              CAP_ID,
-              [addr2.address],
-              [ethers.encodeBytes32String("Test Wallet 2")],
-              [TOKEN_UNIT * BigInt(100)]
-          );
-          const receipt = await tx.wait();
-          const newProposalId = receipt?.logs
-              .map((log) => tokenDistributionEngine.interface.parseLog(log))
-              .find((parsedLog) => parsedLog?.name === "ProposalCreated")?.args?.proposalId;
-
-          await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-          await expect(
-              tokenDistributionEngine.connect(admin).executeProposal(newProposalId)
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "ProposalExecutionError");
-      });
-
-      it("should emit ProposalExecuted event", async () => {
-          await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-          await ethers.provider.send("evm_mine", []);
-
-          await expect(tokenDistributionEngine.connect(admin).executeProposal(proposalId))
-              .to.emit(tokenDistributionEngine, "ProposalExecuted")
-              .withArgs(proposalId, 2, addr1.address);
-      });
-
-      it("should revert when executing same proposal twice", async () => {
-          await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-          await ethers.provider.send("evm_mine", []);
-
-          await tokenDistributionEngine.connect(admin).executeProposal(proposalId);
-          await expect(
-              tokenDistributionEngine.connect(admin).executeProposal(proposalId)
-          ).to.be.revertedWithCustomError(tokenDistributionEngine, "ProposalError");
-      });
-  });
-});
-
-describe("TokenDistributionEngine - Contract Upgrade", () => {
-  let tokenDistributionEngine: TokenDistributionEngine;
-  let storageToken: StorageToken;
-  let owner: SignerWithAddress;
-  let admin: SignerWithAddress;
-  let addr1: SignerWithAddress;
-
-  beforeEach(async () => {
-      [owner, admin, addr1] = await ethers.getSigners();
-      
-      // Deploy StorageToken
-      const StorageToken = await ethers.getContractFactory("StorageToken");
-      storageToken = (await upgrades.deployProxy(StorageToken, [
-          owner.address,
-          admin.address,
-          ethers.parseEther("1000000000")
-      ])) as StorageToken;
-      await storageToken.waitForDeployment();
-
-      // Deploy TokenDistributionEngine
-      const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-      tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
-          await storageToken.getAddress(),
-          owner.address,
-          admin.address
-      ])) as TokenDistributionEngine;
-      await tokenDistributionEngine.waitForDeployment();
-
-      // Wait for timelock
-      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-      await ethers.provider.send("evm_mine", []);
-
-      // Set quorum for ADMIN_ROLE
-      await tokenDistributionEngine.connect(owner).setRoleQuorum(await tokenDistributionEngine.ADMIN_ROLE(), 2);
-  });
-
-  describe("Contract Upgrade Process", () => {
-      it("should successfully propose and execute upgrade", async () => {
-          // Deploy new implementation using upgrades plugin
-          const TokenDistributionEngineV2 = await ethers.getContractFactory("TokenDistributionEngine");
-          const implementationV2 = await upgrades.deployImplementation(TokenDistributionEngineV2);
-          
-          // Propose upgrade
-          const tx = await tokenDistributionEngine.connect(owner).proposeUpgrade(implementationV2);
-          const receipt = await tx.wait();
-          
-          // Get proposalId from event
-          const event = receipt?.logs
-              .map((log) => tokenDistributionEngine.interface.parseLog(log))
-              .find((parsedLog) => parsedLog?.name === "ProposalCreated");
-          const proposalId = event?.args?.proposalId;
-
-          // Approve proposal
-          await tokenDistributionEngine.connect(admin).approveProposal(proposalId);
-
-          // Wait for execution delay
-          await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-          await ethers.provider.send("evm_mine", []);
-
-          // Execute proposal
-          await tokenDistributionEngine.connect(owner).executeProposal(proposalId);
-
-          // Verify upgrade
-          const implementationAddress = await upgrades.erc1967.getImplementationAddress(
-              await tokenDistributionEngine.getAddress()
-          );
-          expect(implementationAddress.toLowerCase()).to.equal(implementationV2.toLowerCase());
-      });
-
-      // ... rest of the tests remain the same
-  });
-});
-
-describe("TokenDistributionEngine - Full Distribution Flow", () => {
-    let tokenDistributionEngine: TokenDistributionEngine;
+describe("addVestingCap", function () {
+    let distributionEngine: TokenDistributionEngine;
     let storageToken: StorageToken;
     let owner: SignerWithAddress;
     let admin: SignerWithAddress;
-    let investor1: SignerWithAddress;
-    let investor2: SignerWithAddress;
-    let investor3: SignerWithAddress;
-    let investor4: SignerWithAddress;
+    let otherAccount: SignerWithAddress;
+    
+    // Constants
     const TOKEN_UNIT = ethers.parseEther("1");
-    const MONTH = 30 * 24 * 60 * 60; // 30 days in seconds
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+    const INITIAL_SUPPLY = TOTAL_SUPPLY / BigInt(2); // 1 billion tokens
+    const CAP_ALLOCATION = ethers.parseEther("1000000"); // 1 million tokens
 
-    beforeEach(async () => {
-        [owner, admin, investor1, investor2, investor3, investor4] = await ethers.getSigners();
+    beforeEach(async function () {
+        [owner, admin, otherAccount] = await ethers.getSigners();
         
         // Deploy StorageToken
         const StorageToken = await ethers.getContractFactory("StorageToken");
-        storageToken = (await upgrades.deployProxy(StorageToken, [
-            owner.address,
-            admin.address,
-            ethers.parseEther("1000000000")
-        ])) as StorageToken;
+        storageToken = await upgrades.deployProxy(
+            StorageToken,
+            [owner.address, admin.address, INITIAL_SUPPLY],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as StorageToken;
         await storageToken.waitForDeployment();
 
         // Deploy TokenDistributionEngine
         const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-        tokenDistributionEngine = (await upgrades.deployProxy(TokenDistributionEngine, [
-            await storageToken.getAddress(),
-            owner.address,
-            admin.address
-        ])) as TokenDistributionEngine;
-        await tokenDistributionEngine.waitForDeployment();
+        distributionEngine = await upgrades.deployProxy(
+            TokenDistributionEngine,
+            [await storageToken.getAddress(), owner.address, admin.address],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as TokenDistributionEngine;
+        await distributionEngine.waitForDeployment();
 
-        // Wait for timelock
+        // Wait for timelock to expire and set quorum
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-        await ethers.provider.send("evm_mine", []);
-
-        // Set quorum for ADMIN_ROLE
-        await tokenDistributionEngine.connect(owner).setRoleQuorum(await tokenDistributionEngine.ADMIN_ROLE(), 2);
-
-        // Setup vesting caps
-        await tokenDistributionEngine.connect(admin).addVestingCap(
-            1, // First cap
-            ethers.encodeBytes32String("First Cap"),
-            TOKEN_UNIT * BigInt(750), // 250 + 500
-            4 * MONTH,  // 4 month cliff
-            15 * MONTH, // 15 month vesting
-            1,          // monthly vesting
-            10         // 10% initial release
-        );
-
-        await tokenDistributionEngine.connect(admin).addVestingCap(
-            2, // Second cap
-            ethers.encodeBytes32String("Second Cap"),
-            TOKEN_UNIT * BigInt(200),
-            6 * MONTH,  // 6 month cliff
-            18 * MONTH, // 18 month vesting
-            1,          // monthly vesting
-            5          // 5% initial release
-        );
-
-        await tokenDistributionEngine.connect(admin).addVestingCap(
-            3, // Third cap
-            ethers.encodeBytes32String("Third Cap"),
-            TOKEN_UNIT * BigInt(50),
-            0,          // no cliff
-            6 * MONTH,  // 6 month vesting
-            1,          // monthly vesting
-            20         // 20% initial release
-        );
-
-        // Add investors to caps
-        const tx1 = await tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
-            1,
-            [investor1.address, investor2.address],
-            [ethers.encodeBytes32String("Investor1"), ethers.encodeBytes32String("Investor2")],
-            [TOKEN_UNIT * BigInt(250), TOKEN_UNIT * BigInt(500)]
-        );
-        const receipt1 = await tx1.wait();
-        const proposalId1 = receipt1?.logs
-            .map((log) => tokenDistributionEngine.interface.parseLog(log))
-            .find((parsedLog) => parsedLog?.name === "ProposalCreated")?.args?.proposalId;
-        await tokenDistributionEngine.connect(owner).approveProposal(proposalId1);
-
-        const tx2 = await tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
-            2,
-            [investor3.address],
-            [ethers.encodeBytes32String("Investor3")],
-            [TOKEN_UNIT * BigInt(200)]
-        );
-        const receipt2 = await tx2.wait();
-        const proposalId2 = receipt2?.logs
-            .map((log) => tokenDistributionEngine.interface.parseLog(log))
-            .find((parsedLog) => parsedLog?.name === "ProposalCreated")?.args?.proposalId;
-        await tokenDistributionEngine.connect(owner).approveProposal(proposalId2);
-
-        const tx3 = await tokenDistributionEngine.connect(admin).proposeAddWalletsToCap(
-            3,
-            [investor4.address],
-            [ethers.encodeBytes32String("Investor4")],
-            [TOKEN_UNIT * BigInt(50)]
-        );
-        const receipt3 = await tx3.wait();
-        const proposalId3 = receipt3?.logs
-            .map((log) => tokenDistributionEngine.interface.parseLog(log))
-            .find((parsedLog) => parsedLog?.name === "ProposalCreated")?.args?.proposalId;
-        await tokenDistributionEngine.connect(owner).approveProposal(proposalId3);
-
-        // Whitelist distribution contract
+        await ethers.provider.send("evm_mine");
         await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
-        const tx4 = await storageToken.connect(owner).createProposal(
-            3, // Whitelist
-            await tokenDistributionEngine.getAddress(),
+        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), CAP_ALLOCATION);
+
+        // Create whitelist proposal for distribution engine
+        const addWhitelistType = 5; // AddWhitelist type
+        const tx = await storageToken.connect(owner).createProposal(
+            addWhitelistType,
+            0,
+            await distributionEngine.getAddress(),
             ethers.ZeroHash,
             0,
-            ZeroAddress,
-            true
+            ZeroAddress
         );
         
-        const receipt4 = await tx4.wait();
-        const event4 = receipt4?.logs
-            .map((log) => storageToken.interface.parseLog(log))
-            .find((parsedLog) => parsedLog?.name === "ProposalCreated");
-        
-        const proposalId4 = event4?.args?.proposalId;
-        await storageToken.connect(admin).approveProposal(proposalId4);
-        
-        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-        await storageToken.connect(owner).executeProposal(proposalId2);
-        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), TOKEN_UNIT * BigInt(1000));
-        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        const receipt = await tx.wait();
+        const event = receipt?.logs[0];
+        const proposalId = event?.topics[1];
 
-        // Transfer tokens to distribution contract
-        await storageToken.connect(admin).transferFromContract(
-            await tokenDistributionEngine.getAddress(),
-            TOKEN_UNIT * BigInt(1000)
+        // Wait for execution delay
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Approve whitelist proposal
+        await storageToken.connect(admin).approveProposal(proposalId);
+
+        // Wait for whitelist lock
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Transfer tokens to distribution engine
+        await storageToken.connect(owner).transferFromContract(
+            await distributionEngine.getAddress(),
+            CAP_ALLOCATION
         );
-
-        await tokenDistributionEngine.connect(admin).setRoleQuorum(await tokenDistributionEngine.ADMIN_ROLE(), 2);
-
-        // Initiate TGE
-        await tokenDistributionEngine.connect(admin).InitiateTGE();
     });
 
-    it("should handle complete vesting flow for all investors", async () => {
-        // TGE Claims
+    it("should correctly add a vesting cap", async function () {
+        const capId = 1;
+        const capName = ethers.encodeBytes32String("Test Cap");
+        
+        await expect(distributionEngine.connect(owner).addVestingCap(
+            capId,
+            capName,
+            CAP_ALLOCATION,
+            30, // 30 days cliff
+            12, // 12 months vesting
+            1,  // monthly vesting plan
+            10  // 10% initial release
+        )).to.emit(distributionEngine, "VestingCapAction")
+          .withArgs(capId, capName, 1); // 1 for ADD action
+
+        const cap = await distributionEngine.vestingCaps(capId);
+        expect(cap.totalAllocation).to.equal(CAP_ALLOCATION);
+        expect(cap.name).to.equal(capName);
+        expect(cap.cliff).to.equal(30 * 24 * 60 * 60); // 30 days in seconds
+        expect(cap.vestingTerm).to.equal(12 * 30 * 24 * 60 * 60); // 12 months in seconds
+        expect(cap.vestingPlan).to.equal(1 * 30 * 24 * 60 * 60); // 1 month in seconds
+        expect(cap.initialRelease).to.equal(10);
+    });
+
+    it("should revert when cap already exists", async function () {
+        const capId = 1;
+        await distributionEngine.connect(owner).addVestingCap(
+            capId,
+            ethers.encodeBytes32String("Test Cap"),
+            CAP_ALLOCATION,
+            30,
+            12,
+            1,
+            10
+        );
+
         await expect(
-            tokenDistributionEngine.connect(investor1).claimTokens(1, 1)
-        ).to.be.revertedWithCustomError(tokenDistributionEngine, "CliffNotReached");
+            distributionEngine.connect(owner).addVestingCap(
+                capId,
+                ethers.encodeBytes32String("Test Cap 2"),
+                CAP_ALLOCATION,
+                30,
+                12,
+                1,
+                10
+            )
+        ).to.be.revertedWithCustomError(distributionEngine, "CapExists")
+        .withArgs(capId);
+    });
+
+    it("should revert with invalid parameters", async function () {
+        const capId = 1;
+        const capName = ethers.encodeBytes32String("Test Cap");
+
+        // Zero allocation
+        await expect(
+            distributionEngine.connect(owner).addVestingCap(
+                capId,
+                capName,
+                0,
+                30,
+                12,
+                1,
+                10
+            )
+        ).to.be.revertedWithCustomError(distributionEngine, "InvalidAllocation");
+
+        // Initial release > 100%
+        await expect(
+            distributionEngine.connect(owner).addVestingCap(
+                capId,
+                capName,
+                CAP_ALLOCATION,
+                30,
+                12,
+                1,
+                101
+            )
+        ).to.be.revertedWithCustomError(distributionEngine, "InitialReleaseTooLarge");
+
+        // Vesting plan >= vesting term
+        await expect(
+            distributionEngine.connect(owner).addVestingCap(
+                capId,
+                capName,
+                CAP_ALLOCATION,
+                30,
+                12,
+                12,
+                10
+            )
+        ).to.be.revertedWithCustomError(distributionEngine, "OutOfRangeVestingPlan");
+    });
+
+    it("should revert when called by non-admin", async function () {
+        await expect(
+            distributionEngine.connect(otherAccount).addVestingCap(
+                1,
+                ethers.encodeBytes32String("Test Cap"),
+                CAP_ALLOCATION,
+                30,
+                12,
+                1,
+                10
+            )
+        ).to.be.revertedWithCustomError(
+            distributionEngine,
+            "AccessControlUnauthorizedAccount"
+        );
+    });
+
+    it("should revert when contract is paused", async function () {
+        // Wait for emergency cooldown
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Pause contract
+        await distributionEngine.connect(owner).emergencyPause();
+
+        await expect(
+            distributionEngine.connect(owner).addVestingCap(
+                1,
+                ethers.encodeBytes32String("Test Cap"),
+                CAP_ALLOCATION,
+                30,
+                12,
+                1,
+                10
+            )
+        ).to.be.revertedWithCustomError(distributionEngine, "EnforcedPause");
+    });
+
+    it("should track caps in capIds array", async function () {
+        const capId1 = 1;
+        const capId2 = 2;
+
+        await distributionEngine.connect(owner).addVestingCap(
+            capId1,
+            ethers.encodeBytes32String("Test Cap 1"),
+            CAP_ALLOCATION / BigInt(2),
+            30,
+            12,
+            1,
+            10
+        );
+
+        await distributionEngine.connect(owner).addVestingCap(
+            capId2,
+            ethers.encodeBytes32String("Test Cap 2"),
+            CAP_ALLOCATION / BigInt(2),
+            30,
+            12,
+            1,
+            10
+        );
+
+        const capIds = [];
+        let i = 0;
+        while (true) {
+            try {
+                capIds.push(await distributionEngine.capIds(i));
+                i++;
+            } catch {
+                break;
+            }
+        }
+
+        expect(capIds).to.deep.equal([capId1, capId2]);
+    });
+});
+
+describe("removeVestingCap", function () {
+    let distributionEngine: TokenDistributionEngine;
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let otherAccount: SignerWithAddress;
+    
+    // Constants
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+    const INITIAL_SUPPLY = TOTAL_SUPPLY / BigInt(2); // 1 billion tokens
+    const CAP_ALLOCATION = ethers.parseEther("1000000"); // 1 million tokens
+
+    beforeEach(async function () {
+        [owner, admin, otherAccount] = await ethers.getSigners();
+        
+        // Deploy StorageToken
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = await upgrades.deployProxy(
+            StorageToken,
+            [owner.address, admin.address, INITIAL_SUPPLY],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Deploy TokenDistributionEngine
+        const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
+        distributionEngine = await upgrades.deployProxy(
+            TokenDistributionEngine,
+            [await storageToken.getAddress(), owner.address, admin.address],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as TokenDistributionEngine;
+        await distributionEngine.waitForDeployment();
+
+        // Wait for timelock to expire and set quorum
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
+        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), CAP_ALLOCATION);
+
+        // Create whitelist proposal for distribution engine
+        const addWhitelistType = 5; // AddWhitelist type
+        const tx = await storageToken.connect(owner).createProposal(
+            addWhitelistType,
+            0,
+            await distributionEngine.getAddress(),
+            ethers.ZeroHash,
+            0,
+            ZeroAddress
+        );
+        
+        const receipt = await tx.wait();
+        const event = receipt?.logs[0];
+        const proposalId = event?.topics[1];
+
+        // Wait for execution delay
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Approve whitelist proposal
+        await storageToken.connect(admin).approveProposal(proposalId);
+
+        // Wait for whitelist lock
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Transfer tokens to distribution engine
+        await storageToken.connect(owner).transferFromContract(
+            await distributionEngine.getAddress(),
+            CAP_ALLOCATION
+        );
+
+        // Add a vesting cap
+        const capId = 1;
+        await distributionEngine.connect(owner).addVestingCap(
+            capId,
+            ethers.encodeBytes32String("Test Cap"),
+            CAP_ALLOCATION,
+            30, // 30 days cliff
+            12, // 12 months vesting
+            1,  // monthly vesting plan
+            10  // 10% initial release
+        );
+    });
+
+    it("should correctly remove a vesting cap", async function () {
+        const capId = 1;
+        const cap = await distributionEngine.vestingCaps(capId);
+        const capName = cap.name;
+
+        await expect(distributionEngine.connect(owner).removeVestingCap(capId))
+            .to.emit(distributionEngine, "VestingCapAction")
+            .withArgs(capId, capName, 2); // 2 for REMOVE action
+
+        const removedCap = await distributionEngine.vestingCaps(capId);
+        expect(removedCap.totalAllocation).to.equal(0);
+
+        // Check capIds array
+        const capIds = [];
+        let i = 0;
+        while (true) {
+            try {
+                capIds.push(await distributionEngine.capIds(i));
+                i++;
+            } catch {
+                break;
+            }
+        }
+        expect(capIds).to.not.include(capId);
+    });
+
+    it("should revert when cap has wallets", async function () {
+        const capId = 1;
+        
+        // Add wallet to cap through proposal
+        const addWalletType = 7; // AddDistributionWallets type
+        const walletName = ethers.encodeBytes32String("Test Wallet");
+        const walletAllocation = ethers.parseEther("100000");
+        await distributionEngine.connect(owner).setRoleQuorum(distributionEngine.ADMIN_ROLE(), 2);
+
+        const tx = await distributionEngine.connect(owner).createProposal(
+            addWalletType,
+            capId,
+            otherAccount.address,
+            walletName,
+            walletAllocation,
+            ZeroAddress
+        );
+
+        const receipt = await tx.wait();
+        const event = receipt?.logs[0];
+        const proposalId = event?.topics[1];
+
+        // Wait for execution delay
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Approve proposal
+        await distributionEngine.connect(admin).approveProposal(proposalId);
+
+        await expect(
+            distributionEngine.connect(owner).removeVestingCap(capId)
+        ).to.be.revertedWithCustomError(distributionEngine, "CapHasWallets");
+    });
+
+    it("should revert with invalid cap id", async function () {
+        const invalidCapId = 999;
+        await expect(
+            distributionEngine.connect(owner).removeVestingCap(invalidCapId)
+        ).to.be.revertedWithCustomError(distributionEngine, "InvalidCapId")
+        .withArgs(invalidCapId);
+    });
+
+    it("should revert when called by non-admin", async function () {
+        await expect(
+            distributionEngine.connect(otherAccount).removeVestingCap(1)
+        ).to.be.revertedWithCustomError(
+            distributionEngine,
+            "AccessControlUnauthorizedAccount"
+        );
+    });
+
+    it("should revert when contract is paused", async function () {
+        // Wait for emergency cooldown
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Pause contract
+        await distributionEngine.connect(owner).emergencyPause();
+
+        await expect(
+            distributionEngine.connect(owner).removeVestingCap(1)
+        ).to.be.revertedWithCustomError(distributionEngine, "EnforcedPause");
+    });
+});
+
+describe("calculateDueTokens", function () {
+    let distributionEngine: TokenDistributionEngine;
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let beneficiary: SignerWithAddress;
+    let otherAccount: SignerWithAddress;
+    
+    // Constants
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+    const INITIAL_SUPPLY = TOTAL_SUPPLY / BigInt(2); // 1 billion tokens
+    const CAP_ALLOCATION = ethers.parseEther("1000000"); // 1 million tokens
+    const WALLET_ALLOCATION = ethers.parseEther("100000"); // 100k tokens
+
+    beforeEach(async function () {
+        [owner, admin, beneficiary, otherAccount] = await ethers.getSigners();
+        
+        // Deploy StorageToken
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = await upgrades.deployProxy(
+            StorageToken,
+            [owner.address, admin.address, INITIAL_SUPPLY],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Deploy TokenDistributionEngine
+        const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
+        distributionEngine = await upgrades.deployProxy(
+            TokenDistributionEngine,
+            [await storageToken.getAddress(), owner.address, admin.address],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as TokenDistributionEngine;
+        await distributionEngine.waitForDeployment();
+
+        // Wait for timelock to expire and set quorums
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
+        await distributionEngine.connect(owner).setRoleQuorum(await distributionEngine.ADMIN_ROLE(), 2);
+        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), CAP_ALLOCATION);
+
+        // Create whitelist proposal for distribution engine
+        const addWhitelistType = 5; // AddWhitelist type
+        const tx = await storageToken.connect(owner).createProposal(
+            addWhitelistType,
+            0,
+            await distributionEngine.getAddress(),
+            ethers.ZeroHash,
+            0,
+            ZeroAddress
+        );
+        
+        const receipt = await tx.wait();
+        const event = receipt?.logs[0];
+        const proposalId = event?.topics[1];
+
+        // Wait for execution delay
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Approve whitelist proposal
+        await storageToken.connect(admin).approveProposal(proposalId);
+
+        // Wait for whitelist lock
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Transfer tokens to distribution engine
+        await storageToken.connect(owner).transferFromContract(
+            await distributionEngine.getAddress(),
+            CAP_ALLOCATION
+        );
+
+        // Add a vesting cap
+        const capId = 1;
+        await distributionEngine.connect(owner).addVestingCap(
+            capId,
+            ethers.encodeBytes32String("Test Cap"),
+            CAP_ALLOCATION,
+            30, // 30 days cliff
+            12, // 12 months vesting
+            1,  // monthly vesting plan
+            10  // 10% initial release
+        );
+
+        // Add wallet to cap through proposal
+        const addWalletType = 7; // AddDistributionWallets type
+        const walletName = ethers.encodeBytes32String("Test Wallet");
+        
+        const addWalletTx = await distributionEngine.connect(owner).createProposal(
+            addWalletType,
+            capId,
+            beneficiary.address,
+            walletName,
+            WALLET_ALLOCATION,
+            ZeroAddress
+        );
+
+        const addWalletReceipt = await addWalletTx.wait();
+        const addWalletEvent = addWalletReceipt?.logs[0];
+        const addWalletProposalId = addWalletEvent?.topics[1];
+
+        // Wait for execution delay
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Approve proposal
+        await distributionEngine.connect(admin).approveProposal(addWalletProposalId);
+
+        // Initiate TGE
+        await distributionEngine.connect(owner).initiateTGE();
+    });
+
+    it("should return 0 before cliff period", async function () {
+        await expect(
+            distributionEngine.calculateDueTokens(beneficiary.address, 1)
+        ).to.be.revertedWithCustomError(distributionEngine, "CliffNotReached");
+    });
+
+    it("should calculate initial release after cliff", async function () {
+        // Move past cliff period
+        await ethers.provider.send("evm_increaseTime", [31 * 24 * 60 * 60]); // 31 days
+        await ethers.provider.send("evm_mine");
+
+        const dueTokens = await distributionEngine.calculateDueTokens(beneficiary.address, 1);
+        const expectedInitialRelease = WALLET_ALLOCATION * BigInt(10) / BigInt(100); // 10% initial release
+        expect(dueTokens).to.equal(expectedInitialRelease);
+    });
+
+    it("should calculate linear vesting after cliff", async function () {
+        // Move past cliff and 6 months into vesting
+        await ethers.provider.send("evm_increaseTime", [31 * 24 * 60 * 60]); // 31 days cliff
+        await ethers.provider.send("evm_increaseTime", [6 * 30 * 24 * 60 * 60]); // 6 months
+        await ethers.provider.send("evm_mine");
+
+        const dueTokens = await distributionEngine.calculateDueTokens(beneficiary.address, 1);
+        
+        // Calculate expected tokens:
+        // Initial 10% + (90% * 6/12 months)
+        const initialRelease = WALLET_ALLOCATION * BigInt(10) / BigInt(100);
+        const remainingAllocation = WALLET_ALLOCATION - initialRelease;
+        const vestedPortion = remainingAllocation * BigInt(6) / BigInt(12);
+        const expectedTokens = initialRelease + vestedPortion;
+
+        // Allow for small rounding differences
+        const difference = dueTokens > expectedTokens ? 
+            dueTokens - expectedTokens : 
+            expectedTokens - dueTokens;
+        expect(difference).to.be.lessThan(1000000); // Less than 0.000001 token difference
+    });
+
+    it("should return full amount after vesting period", async function () {
+        // Move past full vesting period
+        await ethers.provider.send("evm_increaseTime", [31 * 24 * 60 * 60]); // 31 days cliff
+        await ethers.provider.send("evm_increaseTime", [12 * 30 * 24 * 60 * 60]); // 12 months
+        await ethers.provider.send("evm_mine");
+
+        const dueTokens = await distributionEngine.calculateDueTokens(beneficiary.address, 1);
+        expect(dueTokens).to.equal(WALLET_ALLOCATION);
+    });
+
+    it("should revert for non-existent cap", async function () {
+        await expect(
+            distributionEngine.calculateDueTokens(beneficiary.address, 999)
+        ).to.be.revertedWithCustomError(distributionEngine, "InvalidAllocationParameters");
+    });
+
+    it("should revert for non-existent wallet", async function () {
+        await expect(
+            distributionEngine.calculateDueTokens(otherAccount.address, 1)
+        ).to.be.revertedWithCustomError(distributionEngine, "NothingToClaim");
+    });
+
+    it("should handle multiple vesting intervals correctly", async function () {
+        // Move past cliff and 3 vesting intervals
+        await ethers.provider.send("evm_increaseTime", [31 * 24 * 60 * 60]); // 31 days cliff
+        await ethers.provider.send("evm_increaseTime", [3 * 30 * 24 * 60 * 60]); // 3 months
+        await ethers.provider.send("evm_mine");
+
+        const dueTokens = await distributionEngine.calculateDueTokens(beneficiary.address, 1);
+        
+        // Calculate expected tokens:
+        // Initial 10% + (90% * 3/12 months)
+        const initialRelease = WALLET_ALLOCATION * BigInt(10) / BigInt(100);
+        const remainingAllocation = WALLET_ALLOCATION - initialRelease;
+        const vestedPortion = remainingAllocation * BigInt(3) / BigInt(12);
+        const expectedTokens = initialRelease + vestedPortion;
+
+        const difference = dueTokens > expectedTokens ? 
+            dueTokens - expectedTokens : 
+            expectedTokens - dueTokens;
+        expect(difference).to.be.lessThan(1000000);
+    });
+});
+
+describe("claimTokens", function () {
+    let distributionEngine: TokenDistributionEngine;
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let beneficiary: SignerWithAddress;
+    let otherAccount: SignerWithAddress;
+    
+    // Constants
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+    const INITIAL_SUPPLY = TOTAL_SUPPLY / BigInt(2); // 1 billion tokens
+    const CAP_ALLOCATION = ethers.parseEther("1000000"); // 1 million tokens
+    const WALLET_ALLOCATION = ethers.parseEther("100000"); // 100k tokens
+    const CHAIN_ID = 1;
+
+    beforeEach(async function () {
+        [owner, admin, beneficiary, otherAccount] = await ethers.getSigners();
+        
+        // Deploy StorageToken
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = await upgrades.deployProxy(
+            StorageToken,
+            [owner.address, admin.address, INITIAL_SUPPLY],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Deploy TokenDistributionEngine
+        const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
+        distributionEngine = await upgrades.deployProxy(
+            TokenDistributionEngine,
+            [await storageToken.getAddress(), owner.address, admin.address],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as TokenDistributionEngine;
+        await distributionEngine.waitForDeployment();
+
+        // Wait for timelock to expire and set quorums
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
+        await distributionEngine.connect(owner).setRoleQuorum(await distributionEngine.ADMIN_ROLE(), 2);
+        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), CAP_ALLOCATION);
+
+        // Create whitelist proposal for distribution engine
+        const addWhitelistType = 5; // AddWhitelist type
+        const tx = await storageToken.connect(owner).createProposal(
+            addWhitelistType,
+            0,
+            await distributionEngine.getAddress(),
+            ethers.ZeroHash,
+            0,
+            ZeroAddress
+        );
+        
+        const receipt = await tx.wait();
+        const event = receipt?.logs[0];
+        const proposalId = event?.topics[1];
+
+        // Wait for execution delay
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Approve whitelist proposal
+        await storageToken.connect(admin).approveProposal(proposalId);
+
+        // Wait for whitelist lock
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Transfer tokens to distribution engine
+        await storageToken.connect(owner).transferFromContract(
+            await distributionEngine.getAddress(),
+            CAP_ALLOCATION
+        );
+
+        // Add a vesting cap
+        const capId = 1;
+        await distributionEngine.connect(owner).addVestingCap(
+            capId,
+            ethers.encodeBytes32String("Test Cap"),
+            CAP_ALLOCATION,
+            30, // 30 days cliff
+            12, // 12 months vesting
+            1,  // monthly vesting plan
+            10  // 10% initial release
+        );
+
+        // Add wallet to cap through proposal
+        const addWalletType = 7; // AddDistributionWallets type
+        const walletName = ethers.encodeBytes32String("Test Wallet");
+        
+        const addWalletTx = await distributionEngine.connect(owner).createProposal(
+            addWalletType,
+            capId,
+            beneficiary.address,
+            walletName,
+            WALLET_ALLOCATION,
+            ZeroAddress
+        );
+
+        const addWalletReceipt = await addWalletTx.wait();
+        const addWalletEvent = addWalletReceipt?.logs[0];
+        const addWalletProposalId = addWalletEvent?.topics[1];
+
+        // Wait for execution delay
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Approve proposal
+        await distributionEngine.connect(admin).approveProposal(addWalletProposalId);
+
+        // Initiate TGE
+        await distributionEngine.connect(owner).initiateTGE();
+    });
+
+    it("should correctly claim tokens after cliff", async function () {
+        // Move past cliff period
+        await ethers.provider.send("evm_increaseTime", [31 * 24 * 60 * 60]); // 31 days
+        await ethers.provider.send("evm_mine");
+
+        const expectedClaim = WALLET_ALLOCATION * BigInt(10) / BigInt(100); // 10% initial release
+        const initialBalance = await storageToken.balanceOf(beneficiary.address);
+
+        await expect(distributionEngine.connect(beneficiary).claimTokens(1, CHAIN_ID))
+            .to.emit(distributionEngine, "TokensClaimed")
+            .withArgs(beneficiary.address, expectedClaim)
+            .to.emit(distributionEngine, "ClaimProcessed")
+            .withArgs(beneficiary.address, 1, expectedClaim, await time.latest() +1, CHAIN_ID);
+
+        const finalBalance = await storageToken.balanceOf(beneficiary.address);
+        expect(finalBalance - initialBalance).to.equal(expectedClaim);
+
+        // Check claimed amount is recorded
+        const walletInfo = await distributionEngine.vestingWallets(beneficiary.address, 1);
+        expect(walletInfo.claimed).to.equal(expectedClaim);
+    });
+
+    it("should revert when TGE not initiated", async function () {
+        // Deploy new instance without TGE
+        const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
+        const newDistributionEngine = await upgrades.deployProxy(
+            TokenDistributionEngine,
+            [await storageToken.getAddress(), owner.address, admin.address],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as TokenDistributionEngine;
+
+        await expect(
+            newDistributionEngine.connect(beneficiary).claimTokens(1, CHAIN_ID)
+        ).to.be.revertedWithCustomError(newDistributionEngine, "TGENotInitiated");
+    });
+
+    it("should revert when nothing is due", async function () {
+        await expect(
+            distributionEngine.connect(beneficiary).claimTokens(1, CHAIN_ID)
+        ).to.be.revertedWithCustomError(distributionEngine, "CliffNotReached");
+    });
+
+    it("should revert when contract is paused", async function () {
+        // Move past cliff period
+        await ethers.provider.send("evm_increaseTime", [31 * 24 * 60 * 60]); // 31 days
+        await ethers.provider.send("evm_mine");
+
+        // Pause contract
+        await distributionEngine.connect(owner).emergencyPause();
+
+        await expect(
+            distributionEngine.connect(beneficiary).claimTokens(1, CHAIN_ID)
+        ).to.be.revertedWithCustomError(distributionEngine, "EnforcedPause");
+    });
+
+    it("should handle multiple claims correctly", async function () {
+        // Move past cliff and 3 months
+        await ethers.provider.send("evm_increaseTime", [31 * 24 * 60 * 60]); // 31 days cliff
+        await ethers.provider.send("evm_increaseTime", [3 * 30 * 24 * 60 * 60]); // 3 months
+        await ethers.provider.send("evm_mine");
+
+        // First claim
+        await distributionEngine.connect(beneficiary).claimTokens(1, CHAIN_ID);
+        const firstClaimAmount = await storageToken.balanceOf(beneficiary.address);
+
+        // Move forward 3 more months
+        await ethers.provider.send("evm_increaseTime", [3 * 30 * 24 * 60 * 60]); // 3 more months
+        await ethers.provider.send("evm_mine");
+
+        // Second claim
+        await distributionEngine.connect(beneficiary).claimTokens(1, CHAIN_ID);
+        const totalClaimedAmount = await storageToken.balanceOf(beneficiary.address);
+
+        expect(totalClaimedAmount).to.be.gt(firstClaimAmount);
+        
+        const walletInfo = await distributionEngine.vestingWallets(beneficiary.address, 1);
+        expect(walletInfo.claimed).to.equal(totalClaimedAmount);
+    });
+
+    it("should revert if contract has insufficient balance", async function () {
+        // Move past cliff
+        await ethers.provider.send("evm_increaseTime", [31 * 24 * 60 * 60]); // 31 days
+        await ethers.provider.send("evm_mine");
+
+        // Create proposal to recover tokens from distribution engine (simulating balance drain)
+        const recoveryType = 4; // Recovery type
+        const tx = await distributionEngine.connect(owner).createProposal(
+            recoveryType,
+            0,
+            owner.address,
+            ethers.ZeroHash,
+            CAP_ALLOCATION,
+            await storageToken.getAddress()
+        );
+
+        const receipt = await tx.wait();
+        const event = receipt?.logs[0];
+        const proposalId = event?.topics[1];
+
+        // Wait for execution delay and approve
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+        await distributionEngine.connect(admin).approveProposal(proposalId);
+
+        await expect(
+            distributionEngine.connect(beneficiary).claimTokens(1, CHAIN_ID)
+        ).to.be.revertedWithCustomError(distributionEngine, "LowContractBalance");
+    });
+});
+
+
+describe("Custom Proposals", function () {
+    let distributionEngine: TokenDistributionEngine;
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let beneficiary: SignerWithAddress;
+    let otherAccount: SignerWithAddress;
+    
+    // Constants
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+    const INITIAL_SUPPLY = TOTAL_SUPPLY / BigInt(2); // 1 billion tokens
+    const CAP_ALLOCATION = ethers.parseEther("1000000"); // 1 million tokens
+    const WALLET_ALLOCATION = ethers.parseEther("100000"); // 100k tokens
+
+    beforeEach(async function () {
+        [owner, admin, beneficiary, otherAccount] = await ethers.getSigners();
+        
+        // Deploy StorageToken
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = await upgrades.deployProxy(
+            StorageToken,
+            [owner.address, admin.address, INITIAL_SUPPLY],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Deploy TokenDistributionEngine
+        const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
+        distributionEngine = await upgrades.deployProxy(
+            TokenDistributionEngine,
+            [await storageToken.getAddress(), owner.address, admin.address],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as TokenDistributionEngine;
+        await distributionEngine.waitForDeployment();
+
+        // Wait for timelock to expire and set quorums
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
+        await distributionEngine.connect(owner).setRoleQuorum(await distributionEngine.ADMIN_ROLE(), 2);
+        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), CAP_ALLOCATION);
+
+        // Create whitelist proposal for distribution engine
+        const addWhitelistType = 5; // AddWhitelist type
+        const tx = await storageToken.connect(owner).createProposal(
+            addWhitelistType,
+            0,
+            await distributionEngine.getAddress(),
+            ethers.ZeroHash,
+            0,
+            ZeroAddress
+        );
+        
+        const receipt = await tx.wait();
+        const event = receipt?.logs[0];
+        const proposalId = event?.topics[1];
+
+        // Wait for execution delay
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Approve whitelist proposal
+        await storageToken.connect(admin).approveProposal(proposalId);
+
+        // Wait for whitelist lock
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Transfer tokens to distribution engine
+        await storageToken.connect(owner).transferFromContract(
+            await distributionEngine.getAddress(),
+            CAP_ALLOCATION
+        );
+
+        // Add a vesting cap
+        const capId = 1;
+        await distributionEngine.connect(owner).addVestingCap(
+            capId,
+            ethers.encodeBytes32String("Test Cap"),
+            CAP_ALLOCATION,
+            30, // 30 days cliff
+            12, // 12 months vesting
+            1,  // monthly vesting plan
+            10  // 10% initial release
+        );
+    });
+
+    describe("Add Distribution Wallet Proposal", function () {
+        it("should create and execute add wallet proposal", async function () {
+            const capId = 1;
+            const walletName = ethers.encodeBytes32String("Test Wallet");
+            
+            // Create proposal
+            const tx = await distributionEngine.connect(owner).createProposal(
+                7, // AddDistributionWallets type
+                capId,
+                beneficiary.address,
+                walletName,
+                WALLET_ALLOCATION,
+                ZeroAddress
+            );
+
+            const receipt = await tx.wait();
+            const event = receipt?.logs[0];
+            const proposalId = event?.topics[1];
+
+            // Wait for execution delay
+            await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+            await ethers.provider.send("evm_mine");
+
+            // Approve and execute
+            await expect(distributionEngine.connect(admin).approveProposal(proposalId))
+                .to.emit(distributionEngine, "DistributionWalletAdded")
+                .withArgs(
+                    beneficiary.address,
+                    WALLET_ALLOCATION,
+                    (await distributionEngine.vestingCaps(capId)).startDate,
+                    (await distributionEngine.vestingCaps(capId)).cliff,
+                    (await distributionEngine.vestingCaps(capId)).vestingTerm
+                );
+
+            // Verify wallet was added
+            const walletInfo = await distributionEngine.vestingWallets(beneficiary.address, capId);
+            expect(walletInfo.amount).to.equal(WALLET_ALLOCATION);
+            expect(walletInfo.name).to.equal(walletName);
+        });
+
+        it("should handle proposal expiry correctly", async function () {
+            const capId = 1;
+            
+            // Create proposal
+            const tx = await distributionEngine.connect(owner).createProposal(
+                7, // AddDistributionWallets type
+                capId,
+                beneficiary.address,
+                ethers.encodeBytes32String("Test Wallet"),
+                WALLET_ALLOCATION,
+                ZeroAddress
+            );
+
+            const receipt = await tx.wait();
+            const event = receipt?.logs[0];
+            const proposalId = event?.topics[1];
+
+            // Wait for proposal to expire (48 hours)
+            await ethers.provider.send("evm_increaseTime", [48 * 60 * 60 + 1]);
+            await ethers.provider.send("evm_mine");
+
+            // Try to approve expired proposal
+            await expect(
+                distributionEngine.connect(admin).approveProposal(proposalId)
+            ).to.be.revertedWithCustomError(distributionEngine, "ProposalExpiredErr");
+
+            // Verify no wallet was added
+            const walletInfo = await distributionEngine.vestingWallets(beneficiary.address, capId);
+            expect(walletInfo.amount).to.equal(0);
+        });
+    });
+
+    describe("Remove Distribution Wallet Proposal", function () {
+        beforeEach(async function () {
+            // Add wallet first
+            const addTx = await distributionEngine.connect(owner).createProposal(
+                7, // AddDistributionWallets type
+                1,
+                beneficiary.address,
+                ethers.encodeBytes32String("Test Wallet"),
+                WALLET_ALLOCATION,
+                ZeroAddress
+            );
+
+            const receipt = await addTx.wait();
+            const event = receipt?.logs[0];
+            const proposalId = event?.topics[1];
+
+            await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+            await distributionEngine.connect(admin).approveProposal(proposalId);
+        });
+
+        it("should create and execute remove wallet proposal", async function () {
+            const capId = 1;
+            
+            // Create removal proposal
+            const tx = await distributionEngine.connect(owner).createProposal(
+                8, // RemoveDistributionWallet type
+                capId,
+                beneficiary.address,
+                ethers.ZeroHash,
+                0,
+                ZeroAddress
+            );
+
+            const receipt = await tx.wait();
+            const event = receipt?.logs[0];
+            const proposalId = event?.topics[1];
+
+            // Wait for execution delay
+            await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+            await ethers.provider.send("evm_mine");
+
+            // Approve and execute
+            await expect(distributionEngine.connect(admin).approveProposal(proposalId))
+                .to.emit(distributionEngine, "DistributionWalletRemoved")
+                .withArgs(beneficiary.address, capId);
+
+            // Verify wallet was removed
+            const walletInfo = await distributionEngine.vestingWallets(beneficiary.address, capId);
+            expect(walletInfo.amount).to.equal(0);
+        });
+
+        it("should revert when removing non-existent wallet", async function () {
+            await expect(
+                distributionEngine.connect(owner).createProposal(
+                    8, // RemoveDistributionWallet type
+                    1,
+                    otherAccount.address,
+                    ethers.ZeroHash,
+                    0,
+                    ZeroAddress
+                )
+            ).to.be.revertedWithCustomError(distributionEngine, "WalletNotInCap");
+        });
+    });
+
+    it("should revert with invalid proposal type", async function () {
+        await expect(
+            distributionEngine.connect(owner).createProposal(
+                99, // Invalid type
+                1,
+                beneficiary.address,
+                ethers.ZeroHash,
+                WALLET_ALLOCATION,
+                ZeroAddress
+            )
+        ).to.be.revertedWithCustomError(distributionEngine, "InvalidProposalTypeErr");
+    });
+});
+
+
+  describe("Complete Token Lifecycle", function () {
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let receiver: SignerWithAddress;
+    let bridgeOperator: SignerWithAddress;
+    
+    // Constants
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+    const INITIAL_SUPPLY = TOTAL_SUPPLY / BigInt(2); // 1 billion tokens
+    const MINT_AMOUNT = ethers.parseEther("100000"); // 100k tokens
+    const TRANSFER_AMOUNT = ethers.parseEther("50000"); // 50k tokens
+    const SOURCE_CHAIN_ID = 1;
+    const NONCE = 1;
+  
+    beforeEach(async function () {
+      [owner, admin, receiver, bridgeOperator] = await ethers.getSigners();
+      
+      // Deploy and initialize contract
+      const StorageToken = await ethers.getContractFactory("StorageToken");
+      storageToken = await upgrades.deployProxy(
+        StorageToken,
+        [owner.address, admin.address, INITIAL_SUPPLY],
+        { kind: 'uups', initializer: 'initialize' }
+      ) as StorageToken;
+      await storageToken.waitForDeployment();
+    });
+  
+    it("should execute complete token lifecycle process", async function () {
+      // Initial state verification
+      expect(await storageToken.balanceOf(await storageToken.getAddress())).to.equal(INITIAL_SUPPLY);
+      expect(await storageToken.totalSupply()).to.equal(INITIAL_SUPPLY);
+  
+      // Wait for timelock to expire
+      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+      await ethers.provider.send("evm_mine");
+  
+      // Set up roles and limits
+      const adminRole = await storageToken.ADMIN_ROLE();
+      const bridgeOperatorRole = await storageToken.BRIDGE_OPERATOR_ROLE();
+  
+      // Set quorum and transaction limits
+      await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
+      await storageToken.connect(owner).setRoleQuorum(bridgeOperatorRole, 2);
+      await storageToken.connect(owner).setRoleTransactionLimit(adminRole, TRANSFER_AMOUNT);
+      await storageToken.connect(owner).setRoleTransactionLimit(bridgeOperatorRole, MINT_AMOUNT);
+  
+      // Set up bridge operator
+      const addRoleType = 1; // AddRole type
+      const bridgeRoleTx = await storageToken.connect(owner).createProposal(
+        addRoleType,
+        0,
+        bridgeOperator.address,
+        bridgeOperatorRole,
+        0,
+        ZeroAddress
+      );
+      
+      const bridgeRoleReceipt = await bridgeRoleTx.wait();
+      const bridgeRoleProposalId = bridgeRoleReceipt?.logs[0].topics[1];
+  
+      // Wait for execution delay
+      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+      await ethers.provider.send("evm_mine");
+  
+      // Approve and execute bridge operator role
+      await storageToken.connect(admin).approveProposal(bridgeRoleProposalId);
+  
+      // Set up supported chain
+      await storageToken.connect(owner).setSupportedChain(SOURCE_CHAIN_ID, true);
+  
+      // Mint additional tokens through bridge
+      await expect(storageToken.connect(bridgeOperator).bridgeMint(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE))
+        .to.emit(storageToken, "BridgeOperationDetails")
+        .withArgs(bridgeOperator.address, "MINT", MINT_AMOUNT, SOURCE_CHAIN_ID, await time.latest() +1);
+  
+      // Create whitelist proposal for receiver
+      const addWhitelistType = 5; // AddWhitelist type
+      const whitelistTx = await storageToken.connect(owner).createProposal(
+        addWhitelistType,
+        0,
+        receiver.address,
+        ethers.ZeroHash,
+        0,
+        ZeroAddress
+      );
+  
+      const whitelistReceipt = await whitelistTx.wait();
+      const whitelistProposalId = whitelistReceipt?.logs[0].topics[1];
+  
+      // Wait for execution delay
+      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+      await ethers.provider.send("evm_mine");
+  
+      // Approve and execute whitelist proposal
+      await expect(storageToken.connect(admin).approveProposal(whitelistProposalId))
+        .to.emit(storageToken, "WalletWhitelistedWithLock");
+  
+      // Wait for whitelist lock duration
+      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+      await ethers.provider.send("evm_mine");
+  
+      // Transfer tokens to whitelisted address
+      const contractAddress = await storageToken.getAddress();
+      await expect(storageToken.connect(owner).transferFromContract(receiver.address, TRANSFER_AMOUNT))
+        .to.emit(storageToken, "TransferFromContract")
+        .withArgs(contractAddress, receiver.address, TRANSFER_AMOUNT, owner.address)
+        .to.emit(storageToken, "Transfer")
+        .withArgs(contractAddress, receiver.address, TRANSFER_AMOUNT);
+  
+      // Final state verification
+      expect(await storageToken.balanceOf(receiver.address)).to.equal(TRANSFER_AMOUNT);
+      expect(await storageToken.balanceOf(contractAddress)).to.equal(INITIAL_SUPPLY + MINT_AMOUNT - TRANSFER_AMOUNT);
+      expect(await storageToken.totalSupply()).to.equal(INITIAL_SUPPLY + MINT_AMOUNT);
+    });
+  });
+
+  describe("transferBackToStorage", function () {
+    let distributionEngine: TokenDistributionEngine;
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let otherAccount: SignerWithAddress;
+    
+    // Constants
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+    const INITIAL_SUPPLY = TOTAL_SUPPLY / BigInt(2); // 1 billion tokens
+    const TRANSFER_AMOUNT = ethers.parseEther("100000"); // 100k tokens
+
+    beforeEach(async function () {
+        [owner, admin, otherAccount] = await ethers.getSigners();
+        
+        // Deploy StorageToken
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = await upgrades.deployProxy(
+            StorageToken,
+            [owner.address, admin.address, INITIAL_SUPPLY],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Deploy TokenDistributionEngine
+        const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
+        distributionEngine = await upgrades.deployProxy(
+            TokenDistributionEngine,
+            [await storageToken.getAddress(), owner.address, admin.address],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as TokenDistributionEngine;
+        await distributionEngine.waitForDeployment();
+
+        // Wait for timelock to expire and set quorums
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
+        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), TRANSFER_AMOUNT);
+
+        // Create whitelist proposal for distribution engine
+        const addWhitelistType = 5; // AddWhitelist type
+        const tx = await storageToken.connect(owner).createProposal(
+            addWhitelistType,
+            0,
+            await distributionEngine.getAddress(),
+            ethers.ZeroHash,
+            0,
+            ZeroAddress
+        );
+        
+        const receipt = await tx.wait();
+        const event = receipt?.logs[0];
+        const proposalId = event?.topics[1];
+
+        // Wait for execution delay
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Approve whitelist proposal
+        await storageToken.connect(admin).approveProposal(proposalId);
+
+        // Wait for whitelist lock
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Transfer tokens to distribution engine
+        await storageToken.connect(owner).transferFromContract(
+            await distributionEngine.getAddress(),
+            TRANSFER_AMOUNT
+        );
+    });
+
+    it("should correctly transfer tokens back to storage token", async function () {
+        const storageTokenAddress = await storageToken.getAddress();
+        const initialStorageBalance = await storageToken.balanceOf(storageTokenAddress);
+        const initialDistributionBalance = await storageToken.balanceOf(await distributionEngine.getAddress());
+
+        await expect(distributionEngine.connect(owner).transferBackToStorage(TRANSFER_AMOUNT))
+            .to.emit(distributionEngine, "TokensReturnedToStorage")
+            .withArgs(TRANSFER_AMOUNT);
+
+        expect(await storageToken.balanceOf(storageTokenAddress))
+            .to.equal(initialStorageBalance + TRANSFER_AMOUNT);
+        expect(await storageToken.balanceOf(await distributionEngine.getAddress()))
+            .to.equal(initialDistributionBalance - TRANSFER_AMOUNT);
+    });
+
+    it("should revert with zero amount", async function () {
+        await expect(
+            distributionEngine.connect(owner).transferBackToStorage(0)
+        ).to.be.revertedWithCustomError(distributionEngine, "AmountMustBePositive");
+    });
+
+    it("should revert with insufficient balance", async function () {
+        const excessAmount = TRANSFER_AMOUNT + BigInt(1);
+        await expect(
+            distributionEngine.connect(owner).transferBackToStorage(excessAmount)
+        ).to.be.revertedWithCustomError(distributionEngine, "LowContractBalance");
+    });
+
+    it("should revert when called by non-admin", async function () {
+        await expect(
+            distributionEngine.connect(otherAccount).transferBackToStorage(TRANSFER_AMOUNT)
+        ).to.be.revertedWithCustomError(
+            distributionEngine,
+            "AccessControlUnauthorizedAccount"
+        );
+    });
+
+    it("should revert when contract is paused", async function () {
+        await distributionEngine.connect(owner).emergencyPause();
+
+        await expect(
+            distributionEngine.connect(owner).transferBackToStorage(TRANSFER_AMOUNT)
+        ).to.be.revertedWithCustomError(distributionEngine, "EnforcedPause");
+    });
+});
+
+  
+  describe("Upgrade Process", function () {
+    let distributionEngine: TokenDistributionEngine;
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let beneficiary: SignerWithAddress;
+    let otherAccount: SignerWithAddress;
+    
+    // Constants
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+    const INITIAL_SUPPLY = TOTAL_SUPPLY / BigInt(2); // 1 billion tokens
+    const CAP_ALLOCATION = ethers.parseEther("1000000"); // 1 million tokens
+    const WALLET_ALLOCATION = ethers.parseEther("100000"); // 100k tokens
+
+    beforeEach(async function () {
+        [owner, admin, beneficiary, otherAccount] = await ethers.getSigners();
+        
+        // Deploy StorageToken
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = await upgrades.deployProxy(
+            StorageToken,
+            [owner.address, admin.address, INITIAL_SUPPLY],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as StorageToken;
+        await storageToken.waitForDeployment();
+
+        // Deploy TokenDistributionEngine
+        const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
+        distributionEngine = await upgrades.deployProxy(
+            TokenDistributionEngine,
+            [await storageToken.getAddress(), owner.address, admin.address],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as TokenDistributionEngine;
+        await distributionEngine.waitForDeployment();
+
+        // Wait for timelock to expire and set quorums
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+        await distributionEngine.connect(owner).setRoleQuorum(await distributionEngine.ADMIN_ROLE(), 2);
+    });
+
+    it("should properly handle contract upgrades", async function () {
+        // Get the implementation address for upgrade
+        const TokenDistributionEngineV2 = await ethers.getContractFactory("TokenDistributionEngine");
+        const implementationAddress = await upgrades.prepareUpgrade(
+            await distributionEngine.getAddress(),
+            TokenDistributionEngineV2,
+            { kind: 'uups' }
+        );
+
+        // Create upgrade proposal
+        const upgradeType = 3; // Upgrade type
+        const tx = await distributionEngine.connect(owner).createProposal(
+            upgradeType,
+            0,
+            implementationAddress,
+            ethers.ZeroHash,
+            0,
+            ZeroAddress
+        );
+
+        const receipt = await tx.wait();
+        const event = receipt?.logs[0];
+        const proposalId = event?.topics[1];
+
+        // Wait for execution delay
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Approve upgrade proposal
+        await distributionEngine.connect(admin).approveProposal(proposalId);
+
+        // Perform the upgrade
+        const upgradedDistribution = await upgrades.upgradeProxy(
+            await distributionEngine.getAddress(),
+            TokenDistributionEngineV2,
+            { kind: 'uups' }
+        );
+
+        // Verify state is maintained
+        expect(await upgradedDistribution.storageToken()).to.equal(await storageToken.getAddress());
+        expect(await upgradedDistribution.hasRole(await upgradedDistribution.ADMIN_ROLE(), owner.address)).to.be.true;
+    });
+
+    it("should revert upgrade when paused", async function () {
+        // Get implementation address
+        const TokenDistributionEngineV2 = await ethers.getContractFactory("TokenDistributionEngine");
+        const implementationAddress = await upgrades.prepareUpgrade(
+            await distributionEngine.getAddress(),
+            TokenDistributionEngineV2,
+            { kind: 'uups' }
+        );
+
+        // Create upgrade proposal
+        const upgradeType = 3; // Upgrade type
+        const tx = await distributionEngine.connect(owner).createProposal(
+            upgradeType,
+            0,
+            implementationAddress,
+            ethers.ZeroHash,
+            0,
+            ZeroAddress
+        );
+
+        const receipt = await tx.wait();
+        const event = receipt?.logs[0];
+        const proposalId = event?.topics[1];
+
+        // Wait for execution delay
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Approve upgrade proposal
+        await distributionEngine.connect(admin).approveProposal(proposalId);
+
+        // Pause contract
+        await distributionEngine.connect(owner).emergencyPause();
+
+        // Try to upgrade when paused
+        await expect(
+            upgrades.upgradeProxy(
+                await distributionEngine.getAddress(),
+                TokenDistributionEngineV2,
+                { kind: 'uups' }
+            )
+        ).to.be.revertedWithCustomError(distributionEngine, "EnforcedPause");
+    });
+
+    it("should revert upgrade without proper proposal approval", async function () {
+        const TokenDistributionEngineV2 = await ethers.getContractFactory("TokenDistributionEngine");
+        await expect(
+            upgrades.upgradeProxy(
+                await distributionEngine.getAddress(),
+                TokenDistributionEngineV2,
+                { kind: 'uups' }
+            )
+        ).to.be.reverted;
+    });
+
+    it("should revert upgrade when called by non-admin", async function () {
+        const TokenDistributionEngineV2 = await ethers.getContractFactory("TokenDistributionEngine", otherAccount);
         
         await expect(
-            tokenDistributionEngine.connect(investor2).claimTokens(1, 1)
-        ).to.be.revertedWithCustomError(tokenDistributionEngine, "CliffNotReached");
+            upgrades.upgradeProxy(
+                await distributionEngine.getAddress(),
+                TokenDistributionEngineV2,
+                { kind: 'uups' }
+            )
+        ).to.be.revertedWithCustomError(distributionEngine, "AccessControlUnauthorizedAccount");
+    });
+});
 
-        await expect(
-            tokenDistributionEngine.connect(investor3).claimTokens(2, 1)
-        ).to.be.revertedWithCustomError(tokenDistributionEngine, "CliffNotReached");
 
-        // Investor 4 can claim initial release at TGE
-        await tokenDistributionEngine.connect(investor4).claimTokens(3, 1);
-        expect(await storageToken.balanceOf(investor4.address)).to.equal(TOKEN_UNIT * BigInt(10)); // 20% of 50
+describe("Complex Vesting Scenarios", function () {
+    let distributionEngine: TokenDistributionEngine;
+    let storageToken: StorageToken;
+    let owner: SignerWithAddress;
+    let admin: SignerWithAddress;
+    let wallets: SignerWithAddress[];
+    
+    // Constants
+    const TOKEN_UNIT = ethers.parseEther("1");
+    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+    const INITIAL_SUPPLY = TOTAL_SUPPLY / BigInt(2); // 1 billion tokens
+    const CAP_ALLOCATION = ethers.parseEther("1000000"); // 1 million tokens per cap
+    const WALLET_ALLOCATION = ethers.parseEther("100000"); // 100k tokens per wallet
+    const CHAIN_ID = 1;
 
-        // Move to month 4 (cliff for investors 1 & 2)
-        await ethers.provider.send("evm_increaseTime", [4 * MONTH]);
-        await ethers.provider.send("evm_mine", []);
+    // Vesting parameters
+    const vestingCaps = [
+        {
+            id: 1,
+            name: "Long Term Vesting",
+            initialRelease: 5,
+            cliff: 8,        // 8 months
+            vestingTerm: 18, // 18 months
+            vestingPlan: 1   // monthly
+        },
+        {
+            id: 2,
+            name: "Medium Term Vesting",
+            initialRelease: 10,
+            cliff: 6,        // 6 months
+            vestingTerm: 15, // 15 months
+            vestingPlan: 1   // monthly
+        },
+        {
+            id: 3,
+            name: "Short Term Vesting",
+            initialRelease: 20,
+            cliff: 0,        // no cliff
+            vestingTerm: 6,  // 6 months
+            vestingPlan: 1   // monthly
+        }
+    ];
 
-        // Investors 1 & 2 claim initial release + 1 month vesting
-        await tokenDistributionEngine.connect(investor1).claimTokens(1, 1);
-        await tokenDistributionEngine.connect(investor2).claimTokens(1, 1);
+    beforeEach(async function () {
+        [owner, admin, ...wallets] = await ethers.getSigners();
+        
+        // Deploy StorageToken
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        storageToken = await upgrades.deployProxy(
+            StorageToken,
+            [owner.address, admin.address, INITIAL_SUPPLY],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as StorageToken;
+        await storageToken.waitForDeployment();
 
-        // Move to month 5
-        await ethers.provider.send("evm_increaseTime", [MONTH]);
-        await ethers.provider.send("evm_mine", []);
+        // Deploy TokenDistributionEngine
+        const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
+        distributionEngine = await upgrades.deployProxy(
+            TokenDistributionEngine,
+            [await storageToken.getAddress(), owner.address, admin.address],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as TokenDistributionEngine;
+        await distributionEngine.waitForDeployment();
 
-        // All investors claim
-        await tokenDistributionEngine.connect(investor1).claimTokens(1, 1);
-        await tokenDistributionEngine.connect(investor2).claimTokens(1, 1);
-        await expect(
-            tokenDistributionEngine.connect(investor3).claimTokens(2, 1)
-        ).to.be.revertedWithCustomError(tokenDistributionEngine, "CliffNotReached");
-        await tokenDistributionEngine.connect(investor4).claimTokens(3, 1);
+        // Wait for timelock to expire and set quorums
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
+        await distributionEngine.connect(owner).setRoleQuorum(await distributionEngine.ADMIN_ROLE(), 2);
+        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), CAP_ALLOCATION * BigInt(3));
 
-        // Skip to month 8
-        await ethers.provider.send("evm_increaseTime", [3 * MONTH]);
-        await ethers.provider.send("evm_mine", []);
+        // Create whitelist proposal for distribution engine
+        const addWhitelistType = 5; // AddWhitelist type
+        const tx = await storageToken.connect(owner).createProposal(
+            addWhitelistType,
+            0,
+            await distributionEngine.getAddress(),
+            ethers.ZeroHash,
+            0,
+            ZeroAddress
+        );
+        
+        const receipt = await tx.wait();
+        const event = receipt?.logs[0];
+        const proposalId = event?.topics[1];
 
-        // Investors 1 & 2 claim accumulated tokens
-        await tokenDistributionEngine.connect(investor1).claimTokens(1, 1);
-        await tokenDistributionEngine.connect(investor2).claimTokens(1, 1);
+        // Wait for execution delay
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
 
-        // Move to end of vesting for investor 4
-        await ethers.provider.send("evm_increaseTime", [6 * MONTH]);
-        await ethers.provider.send("evm_mine", []);
+        // Approve whitelist proposal
+        await storageToken.connect(admin).approveProposal(proposalId);
 
-        // Investor 4 claims remaining tokens
-        await tokenDistributionEngine.connect(investor4).claimTokens(3, 1);
-        await expect(
-            tokenDistributionEngine.connect(investor4).claimTokens(3, 1)
-        ).to.be.revertedWithCustomError(tokenDistributionEngine, "NoTokensDue");
+        // Wait for whitelist lock
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
 
-        // Move to end of vesting for all investors
-        await ethers.provider.send("evm_increaseTime", [15 * MONTH]);
-        await ethers.provider.send("evm_mine", []);
+        // Transfer tokens to distribution engine
+        await storageToken.connect(owner).transferFromContract(
+            await distributionEngine.getAddress(),
+            CAP_ALLOCATION * BigInt(3)
+        );
 
-        // Final claims and verify balances
-        await tokenDistributionEngine.connect(investor1).claimTokens(1, 1);
-        await tokenDistributionEngine.connect(investor2).claimTokens(1, 1);
-        await tokenDistributionEngine.connect(investor3).claimTokens(2, 1);
+        // Create vesting caps
+        for (const cap of vestingCaps) {
+            await distributionEngine.connect(owner).addVestingCap(
+                cap.id,
+                ethers.encodeBytes32String(cap.name),
+                CAP_ALLOCATION,
+                cap.cliff * 30, // convert months to days
+                cap.vestingTerm,
+                cap.vestingPlan,
+                cap.initialRelease
+            );
+        }
 
-        // Verify final balances
-        expect(await storageToken.balanceOf(investor1.address)).to.equal(TOKEN_UNIT * BigInt(250));
-        expect(await storageToken.balanceOf(investor2.address)).to.equal(TOKEN_UNIT * BigInt(500));
-        expect(await storageToken.balanceOf(investor3.address)).to.equal(TOKEN_UNIT * BigInt(200));
-        expect(await storageToken.balanceOf(investor4.address)).to.equal(TOKEN_UNIT * BigInt(50));
+        // Add wallets to caps (2 wallets per cap)
+        for (let i = 0; i < vestingCaps.length; i++) {
+            const cap = vestingCaps[i];
+            for (let j = 0; j < 2; j++) {
+                const walletIndex = i * 2 + j;
+                const wallet = wallets[walletIndex];
+                const walletName = ethers.encodeBytes32String(`Wallet ${walletIndex + 1}`);
 
-        // Verify no more claims possible
-        await expect(
-            tokenDistributionEngine.connect(investor1).claimTokens(1, 1)
-        ).to.be.revertedWithCustomError(tokenDistributionEngine, "NoTokensDue");
+                const addWalletTx = await distributionEngine.connect(owner).createProposal(
+                    7, // AddDistributionWallets type
+                    cap.id,
+                    wallet.address,
+                    walletName,
+                    WALLET_ALLOCATION,
+                    ZeroAddress
+                );
+
+                const addWalletReceipt = await addWalletTx.wait();
+                const addWalletEvent = addWalletReceipt?.logs[0];
+                const addWalletProposalId = addWalletEvent?.topics[1];
+
+                // Wait for execution delay
+                await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+                await ethers.provider.send("evm_mine");
+
+                // Approve proposal
+                await distributionEngine.connect(admin).approveProposal(addWalletProposalId);
+            }
+        }
+    });
+
+    it("should handle complex vesting scenarios correctly", async function () {
+        // Try claiming before TGE
+        for (let i = 0; i < 6; i++) {
+            await expect(
+                distributionEngine.connect(wallets[i]).claimTokens(Math.floor(i/2) + 1, CHAIN_ID)
+            ).to.be.revertedWithCustomError(distributionEngine, "TGENotInitiated");
+        }
+
+        // Initiate TGE
+        await distributionEngine.connect(owner).initiateTGE();
+        const tgeTime = await time.latest();
+
+        // Track claims for each wallet
+        const claims = Array(6).fill(0n);
+        
+        // Simulate 26 months (longest vesting period + 1 month buffer)
+        for (let month = 0; month <= 26; month++) {
+            console.log(`\nMonth ${month}:`);
+
+            // Try claims for all wallets
+            for (let walletIndex = 0; walletIndex < 6; walletIndex++) {
+                const capIndex = Math.floor(walletIndex / 2);
+                const cap = vestingCaps[capIndex];
+                const wallet = wallets[walletIndex];
+                const capId = cap.id;
+
+                try {
+                    const beforeBalance = await storageToken.balanceOf(wallet.address);
+                    await distributionEngine.connect(wallet).claimTokens(capId, CHAIN_ID);
+                    const afterBalance = await storageToken.balanceOf(wallet.address);
+                    const claimed = afterBalance - beforeBalance;
+                    claims[walletIndex] += claimed;
+
+                    if (claimed > 0n) {
+                        console.log(`Wallet ${walletIndex + 1} claimed: ${ethers.formatEther(claimed)} tokens`);
+                    }
+
+                    // Verify against calculateDueTokens
+                    const dueTokens = await distributionEngine.calculateDueTokens(wallet.address, capId);
+                    expect(dueTokens).to.equal(0); // All due tokens should be claimed
+
+                } catch (error: any) {
+                    if (error.message.includes("NothingDue")) {
+                        // Expected when nothing is available to claim
+                        continue;
+                    }
+                    if (error.message.includes("CliffNotReached")) {
+                        console.log(`Wallet ${walletIndex + 1} cliff not reached`);
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+
+            // Move forward one month
+            await ethers.provider.send("evm_increaseTime", [30 * 24 * 60 * 60]);
+            await ethers.provider.send("evm_mine");
+        }
+
+        // Verify final claimed amounts
+        for (let walletIndex = 0; walletIndex < 6; walletIndex++) {
+            const capIndex = Math.floor(walletIndex / 2);
+            const cap = vestingCaps[capIndex];
+            
+            console.log(`\nWallet ${walletIndex + 1} (Cap ${cap.id}):`);
+            console.log(`Total claimed: ${ethers.formatEther(claims[walletIndex])} tokens`);
+            
+            // Verify total claimed equals allocation
+            expect(claims[walletIndex]).to.equal(WALLET_ALLOCATION);
+
+            // Verify no more tokens can be claimed
+            await expect(
+                distributionEngine.connect(wallets[walletIndex]).claimTokens(cap.id, CHAIN_ID)
+            ).to.be.revertedWithCustomError(distributionEngine, "NothingDue");
+        }
     });
 });

@@ -11,8 +11,9 @@
     "deploy:deployMultichain": "yarn hardhat run scripts/deployToken.ts --network sepolia --show-stack-traces",
     "deploy:deployMultichainBytecode": "yarn hardhat run scripts/deployMultichainBytecode.ts --network sepolia",
     "deploy:localhost": "yarn hardhat run scripts/localhost.ts",
-    "test:token": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/StorageToken.test.ts",
     "test:governance": "set REPORT_GAS=true && yarn hardhat test test/governance/GovernanceModule.test.ts",
+    "test:token": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/StorageToken.test.ts",
+    "test:distribution": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/TokenDistributionEngine.test.ts",
     "test": "yarn hardhat test"
   },
   "devDependencies": {

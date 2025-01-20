@@ -59,6 +59,7 @@ contract TokenDistributionEngine is GovernanceModule {
     );
     event DistributionWalletAdded(address indexed beneficiary, uint256 amount, uint256 startTime, uint256 cliffPeriod, uint256 vestingPeriod);
     event DistributionWalletRemoved(address indexed wallet, uint256 indexed capId);
+    event TokensReturnedToStorage(uint256 amount);
 
 
     error TGENotInitiated();
@@ -315,15 +316,15 @@ contract TokenDistributionEngine is GovernanceModule {
     function calculateDueTokens(address wallet, uint256 capId) public view returns (uint256) {
         VestingCap storage cap = vestingCaps[capId];
         VestingWalletInfo storage walletInfo = vestingWallets[wallet][capId];
+        if(cap.vestingPlan == 0) revert InvalidAllocationParameters();
+
+        uint256 allocation = walletInfo.amount;
+        if(allocation <= 0) revert NothingToClaim();
         
         // Initial validations
         if (cap.startDate == 0 || block.timestamp < cap.startDate + cap.cliff) {
             revert CliffNotReached(block.timestamp, cap.startDate, cap.startDate + cap.cliff);
         }
-
-        uint256 allocation = walletInfo.amount;
-        if(allocation <= 0) revert NothingToClaim();
-        if(cap.vestingPlan == 0) revert InvalidAllocationParameters();
 
         // Get token decimals and adjust precision
         uint8 tokenDecimals = IERC20Metadata(address(storageToken)).decimals();
@@ -622,6 +623,30 @@ contract TokenDistributionEngine is GovernanceModule {
         delete pendingProposals[proposal.target];
         
         _updateActivityTimestamp();
+    }
+
+    /// @notice Transfers tokens back to the StorageToken contract
+    /// @param amount Amount of tokens to transfer back
+    function transferBackToStorage(uint256 amount) 
+        external 
+        nonReentrant 
+        whenNotPaused
+        onlyRole(ADMIN_ROLE) 
+    {
+        if (amount == 0) revert AmountMustBePositive();
+        
+        uint256 contractBalance = storageToken.balanceOf(address(this));
+        if (contractBalance < amount) {
+            revert LowContractBalance(contractBalance, amount);
+        }
+
+        // Use SafeERC20 for transfer
+        try storageToken.transfer(address(storageToken), amount) {
+            _updateActivityTimestamp();
+            emit TokensReturnedToStorage(amount);
+        } catch {
+            revert TransferFailed();
+        }
     }
 
     function _authorizeUpgrade(address newImplementation) 
