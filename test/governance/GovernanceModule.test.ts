@@ -401,6 +401,7 @@ describe("GovernanceModule", function () {
       await expect(
         storageToken.connect(owner).createProposal(
           proposalType,
+          0,
           otherAccount.address,
           adminRole,
           0,
@@ -421,6 +422,7 @@ describe("GovernanceModule", function () {
       // Get proposal ID from event
       const receipt = await storageToken.connect(owner).createProposal(
         proposalType,
+        0,
         newAccount.address,
         adminRole,
         0,
@@ -449,6 +451,7 @@ describe("GovernanceModule", function () {
       await expect(
         storageToken.connect(owner).createProposal(
           1,
+          0,
           ZeroAddress,
           adminRole,
           0,
@@ -470,6 +473,7 @@ describe("GovernanceModule", function () {
       await expect(
         storageToken.connect(owner).createProposal(
           1,
+          0,
           otherAccount.address,
           invalidRole,
           0,
@@ -490,6 +494,7 @@ describe("GovernanceModule", function () {
       // Create first proposal
       await storageToken.connect(owner).createProposal(
         1,
+        0,
         otherAccount.address,
         adminRole,
         0,
@@ -500,6 +505,7 @@ describe("GovernanceModule", function () {
       await expect(
         storageToken.connect(owner).createProposal(
           1,
+          0,
           otherAccount.address,
           adminRole,
           0,
@@ -532,6 +538,7 @@ describe("GovernanceModule", function () {
       // Create a proposal first
       const tx = await storageToken.connect(owner).createProposal(
         proposalType,
+        0,
         otherAccount.address,
         adminRole,
         0,
@@ -576,6 +583,7 @@ describe("GovernanceModule", function () {
       // Create proposal
       const tx = await storageToken.connect(owner).createProposal(
         proposalType,
+        0,
         otherAccount.address,
         adminRole,
         0,
@@ -599,6 +607,7 @@ describe("GovernanceModule", function () {
       // Create proposal
       const tx = await storageToken.connect(owner).createProposal(
         proposalType,
+        0,
         otherAccount.address,
         adminRole,
         0,
@@ -638,6 +647,7 @@ describe("GovernanceModule", function () {
       // Create proposal
       const tx = await storageToken.connect(owner).createProposal(
         proposalType,
+        0,
         otherAccount.address,
         adminRole,
         0,
@@ -679,6 +689,7 @@ describe("GovernanceModule", function () {
       // Create proposal
       const tx = await storageToken.connect(owner).createProposal(
         proposalType,
+        0,
         otherAccount.address,
         adminRole,
         0,
@@ -703,6 +714,7 @@ describe("GovernanceModule", function () {
       // Create proposal
       const tx = await storageToken.connect(owner).createProposal(
         proposalType,
+        0,
         otherAccount.address,
         adminRole,
         0,
@@ -907,6 +919,7 @@ describe("GovernanceModule", function () {
             for(let i = 0; i < 3; i++) {
               await storageToken.connect(owner).createProposal(
                 proposalType,
+                0,
                 await wallets[i].getAddress(), // Generate new address for each proposal
                 adminRole,
                 0,
@@ -952,6 +965,7 @@ describe("GovernanceModule", function () {
           // Create a proposal
           await storageToken.connect(owner).createProposal(
             proposalType,
+            0,
             await wallets[0].getAddress(),
             adminRole,
             0,
@@ -1004,6 +1018,7 @@ describe("GovernanceModule", function () {
       // Create a proposal
       const tx = await storageToken.connect(owner).createProposal(
         proposalType,
+        0,
         otherAccount.address,
         adminRole,
         amount,
@@ -1034,6 +1049,7 @@ describe("GovernanceModule", function () {
       // Create a proposal
       const tx = await storageToken.connect(owner).createProposal(
         proposalType,
+        0,
         otherAccount.address,
         adminRole,
         0,
@@ -1072,6 +1088,7 @@ describe("GovernanceModule", function () {
       // Create a proposal
       const tx = await storageToken.connect(owner).createProposal(
         proposalType,
+        0,
         otherAccount.address,
         adminRole,
         0,
@@ -1110,6 +1127,7 @@ describe("GovernanceModule", function () {
       const addRoleType = 1; // AddRole type
       const addTx = await storageToken.connect(owner).createProposal(
         addRoleType,
+        0,
         otherAccount.address,
         bridgeOperatorRole,
         0,
@@ -1138,6 +1156,7 @@ describe("GovernanceModule", function () {
       const removeRoleType = 2; // RemoveRole type
       const removeTx = await storageToken.connect(owner).createProposal(
         removeRoleType,
+        0,
         otherAccount.address,
         bridgeOperatorRole,
         0,
@@ -1196,6 +1215,7 @@ describe("StorageToken", () => {
         // Setup operator role through proposal
         const tx = await storageToken.connect(owner).createProposal(
             1, // RoleChange
+            0,
             addr1.address,
             ADMIN_ROLE,
             0,
@@ -1238,6 +1258,7 @@ describe("StorageToken", () => {
             // Create and execute upgrade proposal first
             const tx = await storageToken.connect(addr1).createProposal(
                 3, // Upgrade
+                0,
                 implementationAddress,
                 ethers.ZeroHash,
                 0,

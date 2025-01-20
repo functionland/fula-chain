@@ -77,7 +77,7 @@ describe("StorageToken", function () {
           [owner.address, admin.address, exceedingSupply],
           { kind: 'uups', initializer: 'initialize' }
         )
-      ).to.be.revertedWithCustomError(StorageToken, "ES")
+      ).to.be.revertedWithCustomError(StorageToken, "ExceedsSupply")
       .withArgs(exceedingSupply, TOTAL_SUPPLY);
     });
 
@@ -183,6 +183,7 @@ describe("transferFromContract", function () {
     const addWhitelistType = 5; // AddWhitelist type
     const tx = await storageToken.connect(owner).createProposal(
       addWhitelistType,
+      0,
       otherAccount.address,
       ethers.ZeroHash,
       0,
@@ -289,6 +290,7 @@ describe("transferFromContract", function () {
       const addWhitelistType = 5; // AddWhitelist type
       const tx = await storageToken.connect(owner).createProposal(
         addWhitelistType,
+        0,
         receiver.address,
         ethers.ZeroHash,
         0,
@@ -339,7 +341,7 @@ describe("transferFromContract", function () {
   
       await expect(
         storageToken.connect(owner).transferFromContract(receiver.address, excessAmount)
-      ).to.be.revertedWithCustomError(storageToken, "ES")
+      ).to.be.revertedWithCustomError(storageToken, "ExceedsSupply")
       .withArgs(excessAmount, contractBalance);
     });
   
@@ -419,6 +421,7 @@ describe("transferFromContract", function () {
       const addWhitelistType = 5; // AddWhitelist type
       const tx = await storageToken.connect(owner).createProposal(
         addWhitelistType,
+        0,
         otherAccount.address,
         ethers.ZeroHash,
         0,
@@ -530,6 +533,7 @@ describe("transferFromContract", function () {
       const addRoleType = 1; // AddRole type
       const tx = await storageToken.connect(owner).createProposal(
         addRoleType,
+        0,
         bridgeOperator.address,
         bridgeOperatorRole,
         0,
@@ -676,6 +680,7 @@ describe("transferFromContract", function () {
       const addRoleType = 1; // AddRole type
       const tx = await storageToken.connect(owner).createProposal(
         addRoleType,
+        0,
         bridgeOperator.address,
         bridgeOperatorRole,
         0,
@@ -923,6 +928,7 @@ describe("transferFromContract", function () {
         const addWhitelistType = 5; // AddWhitelist type
         const tx = await storageToken.connect(owner).createProposal(
           addWhitelistType,
+          0,
           receiver1.address,
           ethers.ZeroHash,
           0,
@@ -955,6 +961,7 @@ describe("transferFromContract", function () {
         const addWhitelistType = 5; // AddWhitelist type
         let tx = await storageToken.connect(owner).createProposal(
           addWhitelistType,
+          0,
           receiver1.address,
           ethers.ZeroHash,
           0,
@@ -971,6 +978,7 @@ describe("transferFromContract", function () {
         const removeWhitelistType = 6; // RemoveWhitelist type
         tx = await storageToken.connect(owner).createProposal(
           removeWhitelistType,
+          0,
           receiver1.address,
           ethers.ZeroHash,
           0,
@@ -997,6 +1005,7 @@ describe("transferFromContract", function () {
         const addWhitelistType = 5; // AddWhitelist type
         const tx1 = await storageToken.connect(owner).createProposal(
           addWhitelistType,
+          0,
           receiver1.address,
           ethers.ZeroHash,
           0,
@@ -1005,6 +1014,7 @@ describe("transferFromContract", function () {
   
         const tx2 = await storageToken.connect(owner).createProposal(
           addWhitelistType,
+          0,
           receiver2.address,
           ethers.ZeroHash,
           0,
@@ -1050,6 +1060,7 @@ describe("transferFromContract", function () {
         const addWhitelistType = 5;
         const tx = await mockToken.connect(owner).createProposal(
           addWhitelistType,
+          0,
           await storageToken.getAddress(),
           ethers.ZeroHash,
           0,
@@ -1073,6 +1084,7 @@ describe("transferFromContract", function () {
         const recoveryType = 4; // Recovery type
         const recoveryTx = await storageToken.connect(owner).createProposal(
           recoveryType,
+          0,
           receiver1.address,
           ethers.ZeroHash,
           TRANSFER_AMOUNT,
@@ -1099,6 +1111,7 @@ describe("transferFromContract", function () {
         await expect(
           storageToken.connect(owner).createProposal(
             recoveryType,
+            0,
             receiver1.address,
             ethers.ZeroHash,
             TRANSFER_AMOUNT,
@@ -1161,6 +1174,7 @@ describe("transferFromContract", function () {
       const addRoleType = 1; // AddRole type
       const bridgeRoleTx = await storageToken.connect(owner).createProposal(
         addRoleType,
+        0,
         bridgeOperator.address,
         bridgeOperatorRole,
         0,
@@ -1189,6 +1203,7 @@ describe("transferFromContract", function () {
       const addWhitelistType = 5; // AddWhitelist type
       const whitelistTx = await storageToken.connect(owner).createProposal(
         addWhitelistType,
+        0,
         receiver.address,
         ethers.ZeroHash,
         0,

@@ -7,6 +7,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./libraries/ProposalTypes.sol";
 import "hardhat/console.sol";
 
@@ -63,6 +64,8 @@ abstract contract GovernanceModule is
     error AmountMustBePositive();
     error TransferRestricted();
     error ProposalError(uint8 code);  // codes: 1=ProposalNotFound, 2=ProposalExpiredErr, 3=ProposalAlreadyExecuted, 4=ProposalAlreadyApproved, 
+    error Failed(uint8 status); //1: recovery contract is same as current contract, 2: unknown
+    error LowBalance(uint256 walletBalance, uint256 requiredBalance);
 
     /// @notice Event emitted when a proposal is executed
     /// @param proposalId The ID of the executed proposal
@@ -75,6 +78,7 @@ abstract contract GovernanceModule is
     // Flag Constants
     uint8 constant INITIATED = 1;
     uint8 constant PENDING_OWNERSHIP = 2;
+    uint8 constant TGE_INITIATED = 4;
 
     /// @notice Role constants
     bytes32 public constant BRIDGE_OPERATOR_ROLE = ProposalTypes.BRIDGE_OPERATOR_ROLE;
@@ -261,6 +265,7 @@ abstract contract GovernanceModule is
     /// @notice Create a new proposal
     function createProposal(
         uint8 proposalType,
+        uint256 id,
         address target,
         bytes32 role,
         uint256 amount,
@@ -300,9 +305,31 @@ abstract contract GovernanceModule is
             proposalId = _createUpgradeProposal(target);
             upgradeProposals[target] = proposalId;
         }
+        else if (proposalType == uint8(ProposalTypes.ProposalType.Recovery)) {
+            if(tokenAddress == address(this)) revert Failed(1);
+            if (amount <= 0) revert AmountMustBePositive();
+            if (pendingProposals[target].proposalType != 0) {
+                revert ExistingActiveProposal(target);
+            }
+
+            proposalId = _createProposalId(
+                proposalType,
+                keccak256(abi.encodePacked(target, tokenAddress, amount))
+            );
+
+            ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
+            _initializeProposal(
+                proposal,
+                target
+            );
+
+            proposal.proposalType = proposalType;
+            proposal.tokenAddress = tokenAddress;
+            proposal.amount = amount;
+        }
         else {
             // Contract-specific proposals
-            proposalId = _createCustomProposal(proposalType, target, role, amount, tokenAddress);
+            proposalId = _createCustomProposal(proposalType, id, target, role, amount, tokenAddress);
         }
 
         // Register proposal
@@ -426,6 +453,7 @@ abstract contract GovernanceModule is
     // Virtual function for contract-specific proposals
     function _createCustomProposal(
         uint8 proposalType,
+        uint256 id,
         address target,
         bytes32 role,
         uint256 amount,
@@ -519,6 +547,16 @@ abstract contract GovernanceModule is
             _removeFromRegistry(proposalId);
         } else if (proposal.proposalType == uint8(ProposalTypes.ProposalType.Upgrade)) {
             // Nothing
+        } else if (proposal.proposalType == uint8(ProposalTypes.ProposalType.Recovery)) {
+            if(proposal.tokenAddress == address(this)) revert Failed(1);
+            if(proposal.amount <= 0) revert AmountMustBePositive();
+            
+            IERC20 token = IERC20(proposal.tokenAddress);
+            uint256 balance = token.balanceOf(address(this));
+            if(balance < proposal.amount) revert LowBalance(balance, proposal.amount);
+            
+            bool success = token.transfer(proposal.target, proposal.amount);
+            if (!success) revert Failed(2);
         } else {
             _executeCustomProposal(proposalId);
             emit ProposalExecuted(proposalId, proposal.proposalType, proposal.target);

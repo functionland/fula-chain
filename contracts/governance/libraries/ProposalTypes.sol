@@ -13,7 +13,9 @@ library ProposalTypes {
         Upgrade,     // For contract upgrades
         Recovery,    // For token recovery operations
         AddWhitelist,    // For whitelist management
-        RemoveWhitelist
+        RemoveWhitelist,
+        AddDistributionWallets, //Adding wallet to distribution cap
+        RemoveDistributionWallet
     }
 
     /// @notice Time-related constants for proposal lifecycle
@@ -41,12 +43,13 @@ library ProposalTypes {
     struct UnifiedProposal {
         // Basic proposal info
         uint8 proposalType;
-        bytes32 role;
-        address target;
+        bytes32 role; //multi-purpose for both role in AddRole Proposals and Add wallet name Vesting Wallet proposal
+        address target; //multi-purpose for both role recipient in AddRole Proposals and Add token recipient wallet Vesting Wallet proposal
         address tokenAddress;
         
         // Token and amount related
-        uint256 amount;
+        uint256 amount; //Multi-purpose for both amount in whitelist proposal and allocated amount in add vesting wallet
+        uint256 id; //multi-purpose for capId in add vesting wallet
         
         // Packed configuration
         ProposalConfig config;

@@ -3,16 +3,15 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../governance/GovernanceModule.sol";
 
 /// @title StorageToken
 /// @notice ERC20 token with governance capabilities
 /// @dev Inherits governance functionality from GovernanceModule
 contract StorageToken is 
+    GovernanceModule,
     ERC20Upgradeable,
-    ERC20PermitUpgradeable,
-    GovernanceModule 
+    ERC20PermitUpgradeable
 {
 
     /// @notice Token constants
@@ -36,15 +35,13 @@ contract StorageToken is
     event WalletWhitelistedWithLock(address indexed wallet, uint256 lockUntil, address caller);
     event WalletRemovedFromWhitelist(address indexed wallet, address caller);
     
-    error Failed();
     error NotWhitelisted(address to);
     error LocktimeActive(address to);
-    error ES(uint256 requested, uint256 supply);
+    error ExceedsSupply(uint256 requested, uint256 supply);
     error LowAllowance(uint256 allowance, uint256 limit);
     error UsedNonce(uint256 nonce);
     error Unsupported(uint256 chain);
     error ExceedsMaximumSupply(uint256 requested, uint256 maxSupply);
-    error LowBalance(uint256 walletBalance, uint256 requiredBalance);
     error AccountWhitelisted(address target);
     error InvalidChain(uint256 chainId);
     
@@ -70,7 +67,7 @@ contract StorageToken is
     ) public reinitializer(1) {
         // Validate addresses
         if (initialOwner == address(0) || initialAdmin == address(0)) revert InvalidAddress(address(0));
-        if (initialMintedTokens > TOTAL_SUPPLY) revert ES(initialMintedTokens, TOTAL_SUPPLY);
+        if (initialMintedTokens > TOTAL_SUPPLY) revert ExceedsSupply(initialMintedTokens, TOTAL_SUPPLY);
         
         // Initialize ERC20 and Permit
         __ERC20_init("Placeholder Token", "PLACEHOLDER");
@@ -118,7 +115,7 @@ contract StorageToken is
         _checkWhitelisted(to);
         
         uint256 contractBalance = balanceOf(address(this));
-        if (amount > contractBalance) revert ES(amount, contractBalance);
+        if (amount > contractBalance) revert ExceedsSupply(amount, contractBalance);
         
         ProposalTypes.RoleConfig storage roleConfig = roleConfigs[ADMIN_ROLE];
         if (amount > roleConfig.transactionLimit) revert LowAllowance(roleConfig.transactionLimit, amount);
@@ -133,7 +130,7 @@ contract StorageToken is
     function transfer(address to, uint256 amount) 
         public 
         virtual 
-        override 
+        override
         whenNotPaused 
         nonReentrant
         returns (bool) 
@@ -195,6 +192,7 @@ contract StorageToken is
 
     function _createCustomProposal(
         uint8 proposalType,
+        uint256 id,
         address target,
         bytes32 role,
         uint256 amount,
@@ -223,28 +221,6 @@ contract StorageToken is
             proposal.proposalType = proposalType;
             pendingProposals[target].proposalType = proposalType;
             
-            return proposalId;
-        }
-        else if (proposalType == uint8(ProposalTypes.ProposalType.Recovery)) {
-            if(tokenAddress == address(this)) revert Failed();
-            if (amount <= 0) revert AmountMustBePositive();
-            if (pendingProposals[target].proposalType != 0) revert ExistingActiveProposal(target);
-            bytes32 proposalId = _createProposalId(
-                uint8(ProposalTypes.ProposalType.Recovery),
-                keccak256(abi.encodePacked(target, tokenAddress, amount))
-            );
-
-            ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
-            _initializeProposal(
-                proposal,
-                target
-            );
-
-            proposal.proposalType = proposalType;
-            proposal.tokenAddress = tokenAddress;
-            proposal.amount = amount;
-            pendingProposals[target].proposalType = proposalType;
-
             return proposalId;
         }
         
@@ -279,17 +255,7 @@ contract StorageToken is
             delete timeConfigs[target].whitelistLockTime;
             emit WalletRemovedFromWhitelist(target, msg.sender);
         }  
-        else if (proposalTypeVal == uint8(ProposalTypes.ProposalType.Recovery)) {
-            if(proposal.tokenAddress == address(this)) revert Failed();
-            if(proposal.amount <= 0) revert AmountMustBePositive();
-            
-            IERC20 token = IERC20(proposal.tokenAddress);
-            uint256 balance = token.balanceOf(address(this));
-            if(balance < proposal.amount) revert LowBalance(balance, proposal.amount);
-            
-            bool success = token.transfer(target, proposal.amount);
-            if (!success) revert Failed();
-        } else {
+        else {
             revert InvalidProposalTypeErr(proposalTypeVal);
         }
     }
