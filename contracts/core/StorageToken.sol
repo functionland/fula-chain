@@ -6,6 +6,7 @@ import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUp
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
 import "../governance/Treasury.sol";
 import "../governance/GovernanceModule.sol";
+import "../governance/interfaces/IStorageToken.sol";
 
 /// @title StorageToken
 /// @notice ERC20 token with governance capabilities
@@ -14,7 +15,8 @@ contract StorageToken is
     GovernanceModule,
     ERC20Upgradeable,
     ERC20PermitUpgradeable,
-    ERC20BurnableUpgradeable
+    ERC20BurnableUpgradeable,
+    IStorageToken
 {
 
     /// @notice Token constants
@@ -34,31 +36,6 @@ contract StorageToken is
 
     uint256 private proposalCount;
     PackedVars private packedVars;
-
-    /// @notice Events specific to token operations
-    event BridgeOperationDetails(address indexed operator, uint8 operation, uint256 amount, uint256 chainId, uint256 timestamp);
-    event TokensAllocatedToContract(uint256 indexed amount);
-    event SupportedChainChanged(uint256 indexed chainId, bool supported, address caller);
-    event TransferFromContract(address indexed from, address indexed to, uint256 amount, address caller);
-    event TokensMinted(address to, uint256 amount);
-    event WalletWhitelistedOp(address indexed wallet, address caller, uint256 lockUntil, uint8 status); //status: 1 added, 2 removed
-    event BlackListOp(address indexed account, address indexed by, uint8 status); //status: 1 added, status 2 removed
-    event TreasuryDeployed(address indexed treasury);
-    event PlatformFeeUpdated(uint256 newFee);
-    
-    error NotWhitelisted(address to);
-    error LocktimeActive(address to);
-    error ExceedsSupply(uint256 requested, uint256 supply);
-    error LowAllowance(uint256 allowance, uint256 limit);
-    error UsedNonce(uint256 nonce);
-    error Unsupported(uint256 chain);
-    error ExceedsMaximumSupply(uint256 requested, uint256 maxSupply);
-    error AlreadyWhitelisted(address target);
-    error InvalidChain(uint256 chainId);
-    error BlacklistedAddress(address account);
-    error AccountBlacklisted(address target);
-    error AccountNotBlacklisted(address target);
-    error FeeExceedsMax(uint256 fee);
 
     /// @notice Initialize the token contract
     /// @param initialOwner Address of the initial owner
@@ -96,7 +73,7 @@ contract StorageToken is
             vars.flags |= INITIATED;
         }
     }
-    
+
 
     /// @notice Returns the maximum token supply
     function maxSupply() public pure returns (uint256) {
@@ -145,7 +122,7 @@ contract StorageToken is
     function _blacklistOp(address account, uint8 status) 
         internal
         whenNotPaused 
-        onlyRole(ADMIN_ROLE) 
+        onlyRole(ProposalTypes.ADMIN_ROLE) 
     {
         if(account == address(0)) revert InvalidAddress();
         blacklisted[account] = (status == 1 ? true : false);
@@ -158,7 +135,7 @@ contract StorageToken is
         virtual 
         whenNotPaused 
         nonReentrant 
-        onlyRole(ADMIN_ROLE) 
+        onlyRole(ProposalTypes.ADMIN_ROLE) 
         returns (bool) 
     {
         if (amount <= 0) revert AmountMustBePositive();
@@ -167,7 +144,7 @@ contract StorageToken is
         uint256 contractBalance = balanceOf(address(this));
         if (amount > contractBalance) revert ExceedsSupply(amount, contractBalance);
         
-        ProposalTypes.RoleConfig storage roleConfig = roleConfigs[ADMIN_ROLE];
+        ProposalTypes.RoleConfig storage roleConfig = roleConfigs[ProposalTypes.ADMIN_ROLE];
         if (amount > roleConfig.transactionLimit) revert LowAllowance(roleConfig.transactionLimit, amount);
         
         _transfer(address(this), to, amount);
@@ -324,7 +301,7 @@ contract StorageToken is
         external 
         whenNotPaused 
         nonReentrant 
-        onlyRole(ADMIN_ROLE)
+        onlyRole(ProposalTypes.ADMIN_ROLE)
     {
         if (chainId <= 0) revert InvalidChain(chainId);
         supportedChains[chainId] = supported;
@@ -336,7 +313,7 @@ contract StorageToken is
         internal 
         nonReentrant
         whenNotPaused
-        onlyRole(ADMIN_ROLE) 
+        onlyRole(ProposalTypes.ADMIN_ROLE) 
         override 
     {
         // Delegate the authorization to the governance module

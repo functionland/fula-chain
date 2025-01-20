@@ -2,7 +2,6 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "../governance/GovernanceModule.sol";
@@ -132,7 +131,7 @@ contract TokenDistributionEngine is GovernanceModule {
         external 
         nonReentrant 
         whenNotPaused
-        onlyRole(ADMIN_ROLE) 
+        onlyRole(ProposalTypes.ADMIN_ROLE) 
     {
         PackedVars storage vars = packedVars;
         if ((vars.flags & TGE_INITIATED) != 0) revert TGEAlreadyInitiated();
@@ -199,7 +198,7 @@ contract TokenDistributionEngine is GovernanceModule {
         external 
         nonReentrant 
         whenNotPaused
-        onlyRole(ADMIN_ROLE) 
+        onlyRole(ProposalTypes.ADMIN_ROLE) 
     {
         if(vestingCaps[capId].totalAllocation != 0) revert CapExists(capId);
         if(totalAllocation <= 0) revert InvalidAllocation();
@@ -242,7 +241,7 @@ contract TokenDistributionEngine is GovernanceModule {
         external 
         nonReentrant 
         whenNotPaused
-        onlyRole(ADMIN_ROLE) 
+        onlyRole(ProposalTypes.ADMIN_ROLE) 
     {
         VestingCap storage cap = vestingCaps[capId];
         bytes32 capName = cap.name;
@@ -272,7 +271,7 @@ contract TokenDistributionEngine is GovernanceModule {
     /// @notice Removes a wallet from the vesting cap and any pending proposal
     /// @param capId the unique id
     /// @param wallet the wallet address to be removed from cap
-    function _removeWallet(uint256 capId, address wallet) internal whenNotPaused  onlyRole(ADMIN_ROLE) {
+    function _removeWallet(uint256 capId, address wallet) internal whenNotPaused  onlyRole(ProposalTypes.ADMIN_ROLE) {
         VestingCap storage cap = vestingCaps[capId];
         address[] storage wallets = cap.wallets;
         for (uint i = 0; i < wallets.length; i++) {
@@ -631,7 +630,7 @@ contract TokenDistributionEngine is GovernanceModule {
         external 
         nonReentrant 
         whenNotPaused
-        onlyRole(ADMIN_ROLE) 
+        onlyRole(ProposalTypes.ADMIN_ROLE) 
     {
         if (amount == 0) revert AmountMustBePositive();
         
@@ -653,7 +652,7 @@ contract TokenDistributionEngine is GovernanceModule {
         internal 
         nonReentrant
         whenNotPaused
-        onlyRole(ADMIN_ROLE) 
+        onlyRole(ProposalTypes.ADMIN_ROLE) 
         override 
     {
         // Delegate the authorization to the governance module

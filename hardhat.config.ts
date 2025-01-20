@@ -5,7 +5,7 @@ import '@openzeppelin/hardhat-upgrades';
 
 const config: HardhatUserConfig = {
     solidity: {
-        version: "0.8.24",  // Updated from 0.8.19
+        version: "0.8.24",
         settings: {
             optimizer: {
                 enabled: true,
@@ -43,11 +43,6 @@ const config: HardhatUserConfig = {
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 974399131
         }
-    },
-    etherscan: {
-      apiKey: {
-        sepolia: 'R9XBFPYRFBARE9C79SDJAVGNJ3HEQ7XJRZ'
-      }
     }
 };
 
