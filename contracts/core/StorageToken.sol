@@ -25,8 +25,10 @@ contract StorageToken is
     uint256 private constant WHITELIST_LOCK_DURATION = 1 days;
 
     /// @notice Bridge-related storage
-    mapping(uint256 => mapping(uint256 => bool)) private _usedNonces;
-    mapping(uint256 => bool) public supportedChains;
+    uint8 private constant NONCE_USED = 1;
+    uint8 private constant SUPPORTED_CHAIN = 2;
+
+    mapping(uint256 => mapping(uint256 => uint8)) private _usedNonces;
     mapping(address => bool) public blacklisted;
 
     // @notice fee collection related storage
@@ -177,8 +179,8 @@ contract StorageToken is
         nonReentrant 
         onlyRole(ProposalTypes.BRIDGE_OPERATOR_ROLE)
     {
-        if (_usedNonces[chain][nonce]) revert UsedNonce(nonce);
-        if (!supportedChains[chain]) revert Unsupported(chain);
+        if ((_usedNonces[chain][nonce] & SUPPORTED_CHAIN) == 0) revert UsedNonce(nonce);
+        if ((_usedNonces[chain][nonce] & NONCE_USED) != 0) revert UsedNonce(nonce);
         if (amount == 0) revert AmountMustBePositive();
         
         uint256 currentSupply = totalSupply();
@@ -195,18 +197,18 @@ contract StorageToken is
             _burn(address(this), amount);
         else 
             revert Unsupported(chain);
-        _usedNonces[chain][nonce] = true;
+        _usedNonces[chain][nonce] |= NONCE_USED;
         _updateActivityTimestamp();
         emit BridgeOperationDetails(msg.sender, op, amount, chain, block.timestamp);
     }
 
     function _createCustomProposal(
         uint8 proposalType,
-        uint40 id,
+        uint40,
         address target,
-        bytes32 role,
+        bytes32,
         uint96 amount,
-        address tokenAddress
+        address
     ) internal virtual override returns (bytes32) {
         if (proposalType == uint8(ProposalTypes.ProposalType.AddWhitelist) || proposalType == uint8(ProposalTypes.ProposalType.RemoveWhitelist)) {
             ProposalTypes.TimeConfig storage targetTimeConfig = timeConfigs[target];
@@ -297,15 +299,15 @@ contract StorageToken is
     }
 
     /// @notice Set supported chains for cross-chain operations
-    function setSupportedChain(uint256 chainId, bool supported) 
+    function setSupportedChain(uint256 chainId, uint256 nonce, bool supported) 
         external 
         whenNotPaused 
         nonReentrant 
         onlyRole(ProposalTypes.ADMIN_ROLE)
     {
         if (chainId <= 0) revert InvalidChain(chainId);
-        supportedChains[chainId] = supported;
         _updateActivityTimestamp();
+        _usedNonces[chainId][nonce] |= SUPPORTED_CHAIN;
         emit SupportedChainChanged(chainId, supported, msg.sender);
     }
 
