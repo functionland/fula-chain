@@ -36,7 +36,7 @@ abstract contract GovernanceModule is
 
     // Errors
     error ProposalErr(uint8 err); // 1: not found, 2: expired, 3: ProposalAlreadyExecuted, 4: ProposalAlreadyApproved, 5: DuplicateProposal, 6: UnauthorizedProposalApproverErr
-    error InsufficientApprovalsErr(uint16 requiredApprovals, uint16 approvals);
+    error InsufficientApprovals(uint16 requiredApprovals, uint16 approvals);
     error InvalidProposalType(uint8 proposalType);
     error ExecutionDelayNotMet(uint256 allowedTime);
     error InvalidQuorumErr(bytes32 role, uint16 quorum);
@@ -434,7 +434,7 @@ abstract contract GovernanceModule is
         if (adminConfig.quorum < 2) revert InvalidQuorumErr(ProposalTypes.ADMIN_ROLE, adminConfig.quorum);
         
         // Check approvals first
-        if (proposal.config.approvals < adminConfig.quorum) revert InsufficientApprovalsErr(adminConfig.quorum, proposal.config.approvals);
+        if (proposal.config.approvals < adminConfig.quorum) revert InsufficientApprovals(adminConfig.quorum, proposal.config.approvals);
         
         // Check execution status
         if (proposal.config.status != 0) revert ProposalErr(3);
@@ -516,23 +516,9 @@ abstract contract GovernanceModule is
             } else if(proposal.proposalType == uint8(ProposalTypes.ProposalType.RemoveRole)) {
                 // Prevent removing the last admin
                 if (role == ProposalTypes.ADMIN_ROLE) {
-                    // Additional validation for admin role
-                    if (getRoleMemberCount(ProposalTypes.ADMIN_ROLE) <= 2) revert MinimumRoleNoRequired();
-
-                    uint256 activeAdminCount = 0;
                     uint256 adminCount = getRoleMemberCount(ProposalTypes.ADMIN_ROLE);
-                    
-                    for (uint256 i = 0; i < adminCount; i++) {
-                        address currentAdmin = getRoleMember(ProposalTypes.ADMIN_ROLE, i);
-                        if (currentAdmin != account && 
-                            block.timestamp - timeConfigs[currentAdmin].lastActivityTime <= ProposalTypes.INACTIVITY_THRESHOLD) {
-                            activeAdminCount++;
-                        }
-                    }
-                    
-                    if (activeAdminCount < ((adminCount - 1) / 2 + 1)) {
-                        revert MinimumRoleNoRequired();
-                    }
+                    // Additional validation for admin role
+                    if (adminCount <= 2) revert MinimumRoleNoRequired();
                 }
                 
                 _revokeRole(role, account);
@@ -615,9 +601,7 @@ abstract contract GovernanceModule is
         
         // Use RoleConfig struct for role-related values
         ProposalTypes.RoleConfig storage adminConfig = roleConfigs[ProposalTypes.ADMIN_ROLE];
-        if (adminConfig.quorum < 2) {
-            revert InvalidQuorumErr(ProposalTypes.ADMIN_ROLE, adminConfig.quorum);
-        }
+        if (adminConfig.quorum < 2) revert InvalidQuorumErr(ProposalTypes.ADMIN_ROLE, adminConfig.quorum);
         
         // Cache current timestamp
         uint256 currentTime = block.timestamp;
@@ -644,13 +628,9 @@ abstract contract GovernanceModule is
         
         // Cache required approvals
         uint16 requiredApprovals = adminConfig.quorum;
-        if (currentProposal.config.approvals < requiredApprovals) {
-            revert InsufficientApprovalsErr(requiredApprovals, currentProposal.config.approvals);
-        }
+        if (currentProposal.config.approvals < requiredApprovals) revert InsufficientApprovals(requiredApprovals, currentProposal.config.approvals);
         
-        if (currentTime < currentProposal.config.executionTime) {
-            revert ExecutionDelayNotMet(currentProposal.config.executionTime);
-        }
+        if (currentTime < currentProposal.config.executionTime) revert ExecutionDelayNotMet(currentProposal.config.executionTime);
         
         // Update state
         delete upgradeProposals[newImplementation];
