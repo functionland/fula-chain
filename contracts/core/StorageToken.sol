@@ -37,7 +37,7 @@ contract StorageToken is
 
     /// @notice Events specific to token operations
     event BridgeOperationDetails(address indexed operator, uint8 operation, uint256 amount, uint256 chainId, uint256 timestamp);
-    event TokensAllocatedToContract(uint256 indexed amount, string tag);
+    event TokensAllocatedToContract(uint256 indexed amount);
     event SupportedChainChanged(uint256 indexed chainId, bool supported, address caller);
     event TransferFromContract(address indexed from, address indexed to, uint256 amount, address caller);
     event TokensMinted(address to, uint256 amount);
@@ -90,12 +90,13 @@ contract StorageToken is
         if ((vars.flags & INITIATED) == 0) {
             _mint(address(this), initialMintedTokens);
             proposalCount = 0;
-            emit TokensAllocatedToContract(initialMintedTokens, "INITIAL_MINT");
+            emit TokensAllocatedToContract(initialMintedTokens);
             emit TokensMinted(address(this), initialMintedTokens);
             emit TreasuryDeployed(address(treasury));
             vars.flags |= INITIATED;
         }
     }
+    
 
     /// @notice Returns the maximum token supply
     function maxSupply() public pure returns (uint256) {

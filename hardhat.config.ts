@@ -1,9 +1,6 @@
 import { HardhatUserConfig, vars } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
-import "@chainsafe/hardhat-ts-artifact-plugin";
 import "@nomicfoundation/hardhat-web3-v4";
-import "@chainsafe/hardhat-plugin-multichain-deploy";
-import { Environment } from "@buildwithsygma/sygma-sdk-core";
 import '@openzeppelin/hardhat-upgrades';
 
 const config: HardhatUserConfig = {
@@ -46,9 +43,6 @@ const config: HardhatUserConfig = {
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 974399131
         }
-    },
-    multichain: {
-        environment: Environment.TESTNET
     },
     etherscan: {
       apiKey: {

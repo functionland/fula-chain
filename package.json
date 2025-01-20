@@ -17,9 +17,6 @@
     "test": "yarn hardhat test"
   },
   "devDependencies": {
-    "@buildwithsygma/sygma-sdk-core": "^2.7",
-    "@chainsafe/hardhat-plugin-multichain-deploy": "^1.0.4",
-    "@chainsafe/hardhat-ts-artifact-plugin": "^1.0.0",
     "@nomicfoundation/hardhat-chai-matchers": "^2.0.4",
     "@nomicfoundation/hardhat-ethers": "^3.0.8",
     "@nomicfoundation/hardhat-ignition-ethers": "0.15.0",
@@ -55,14 +52,6 @@
     "@openzeppelin/contracts": "^5.0.2",
     "@openzeppelin/contracts-upgradeable": "^5.0.2",
     "@openzeppelin/upgrades-core": "^1.41.0",
-    "@polkadot/api": "^15.0.2",
-    "@polkadot/keyring": "^13.2.3",
-    "@polkadot/types": "^15.0.2",
-    "@polkadot/types-codec": "^15.0.2",
-    "@polkadot/types-create": "^15.0.2",
-    "@polkadot/types-known": "^15.0.2",
-    "@polkadot/types-support": "^15.0.2",
-    "@polkadot/util": "^13.2.3",
     "tslib": "^2.8.1"
   }
 }
