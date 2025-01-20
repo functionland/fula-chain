@@ -422,14 +422,13 @@ contract TokenDistributionEngine is GovernanceModule {
     /// @param target the wallet that intends to receive the tokens
     /// @param role This stores the name of the recipient
     /// @param amount this is the total amount allocated to the recipient
-    /// @param tokenAddress this is used for recovery of other tokens from the contract address if needed
     function _createCustomProposal(
         uint8 proposalType,
         uint40 id,
         address target,
         bytes32 role,
         uint96 amount,
-        address tokenAddress
+        address
     ) internal virtual override returns (bytes32) {
         // For adding wallet to cap
         if (proposalType == uint8(ProposalTypes.ProposalType.AddDistributionWallets)) {
@@ -524,7 +523,6 @@ contract TokenDistributionEngine is GovernanceModule {
             // Clean up pending proposal for the target wallet
             delete pendingProposals[proposal.target];
         }
-        // Recovery proposal handling is now in governance module
     }
 
     function _executeCustomProposal(bytes32 proposalId) internal virtual override {

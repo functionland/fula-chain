@@ -184,20 +184,19 @@ contract StorageToken is
         if (amount == 0) revert AmountMustBePositive();
         
         uint256 currentSupply = totalSupply();
-        if (currentSupply + amount > TOTAL_SUPPLY) {
-            revert ExceedsMaximumSupply(amount, TOTAL_SUPPLY);
-        }
+        if (currentSupply + amount > TOTAL_SUPPLY) revert ExceedsMaximumSupply(amount, TOTAL_SUPPLY);
 
         ProposalTypes.RoleConfig storage roleConfig = roleConfigs[ProposalTypes.BRIDGE_OPERATOR_ROLE];
         if (amount > roleConfig.transactionLimit) revert LowAllowance(roleConfig.transactionLimit, amount);
 
-        if (op == uint8(1)) 
+        if (op == uint8(1))  {
             _mint(address(this), amount);
-        else if (op == uint8(2)) 
+            _usedNonces[chain][nonce] |= NONCE_USED;
+        } else if (op == uint8(2)) 
             _burn(address(this), amount);
         else 
             revert Unsupported(chain);
-        _usedNonces[chain][nonce] |= NONCE_USED;
+
         _updateActivityTimestamp();
         emit BridgeOperationDetails(msg.sender, op, amount, chain, block.timestamp);
     }
@@ -265,9 +264,6 @@ contract StorageToken is
         if (proposal.proposalType == uint8(ProposalTypes.ProposalType.AddWhitelist)) {
             ProposalTypes.TimeConfig storage timeConfig = timeConfigs[proposal.target];
             delete timeConfig.whitelistLockTime;
-        }
-        else if (proposal.proposalType == uint8(ProposalTypes.ProposalType.Recovery)) {
-            // No additional cleanup needed for recovery proposals
         }
     }
 
