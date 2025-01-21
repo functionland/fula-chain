@@ -2,9 +2,11 @@ import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
 import { StorageToken } from "../typechain-types";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
-import { ZeroAddress } from "ethers";
+import { ZeroAddress, BytesLike } from "ethers";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
 
+const ADMIN_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
+const BRIDGE_OPERATOR_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("BRIDGE_OPERATOR_ROLE"));
 
 describe("StorageToken", function () {
   let storageToken: StorageToken;
@@ -40,7 +42,7 @@ describe("StorageToken", function () {
       expect(await storageToken.totalSupply()).to.equal(INITIAL_SUPPLY);
 
       // Check roles
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       expect(await storageToken.hasRole(adminRole, owner.address)).to.be.true;
       expect(await storageToken.hasRole(adminRole, admin.address)).to.be.true;
     });
@@ -54,8 +56,7 @@ describe("StorageToken", function () {
           [ZeroAddress, admin.address, INITIAL_SUPPLY],
           { kind: 'uups', initializer: 'initialize' }
         )
-      ).to.be.revertedWithCustomError(StorageToken, "InvalidAddress")
-      .withArgs(ZeroAddress);
+      ).to.be.revertedWithCustomError(StorageToken, "InvalidAddress");
 
       await expect(
         upgrades.deployProxy(
@@ -63,8 +64,7 @@ describe("StorageToken", function () {
           [owner.address, ZeroAddress, INITIAL_SUPPLY],
           { kind: 'uups', initializer: 'initialize' }
         )
-      ).to.be.revertedWithCustomError(StorageToken, "InvalidAddress")
-      .withArgs(ZeroAddress);
+      ).to.be.revertedWithCustomError(StorageToken, "InvalidAddress");
     });
 
     it("should revert with supply exceeding total supply", async function () {
@@ -91,7 +91,7 @@ describe("StorageToken", function () {
 
       await expect(newStorageToken.deploymentTransaction())
         .to.emit(newStorageToken, "TokensAllocatedToContract")
-        .withArgs(INITIAL_SUPPLY, "INITIAL_MINT")
+        .withArgs(INITIAL_SUPPLY)
         .to.emit(newStorageToken, "TokensMinted")
         .withArgs(await newStorageToken.getAddress(), INITIAL_SUPPLY);
     });
@@ -163,7 +163,7 @@ describe("transferFromContract", function () {
     await ethers.provider.send("evm_mine");
 
     // Set transaction limit for admin role
-    const adminRole = await storageToken.ADMIN_ROLE();
+    const adminRole = ADMIN_ROLE;
     await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
     await storageToken.connect(owner).setRoleTransactionLimit(adminRole, TRANSFER_AMOUNT * BigInt(2));
 
@@ -216,8 +216,9 @@ describe("transferFromContract", function () {
   });
 
   it("should revert when amount exceeds transaction limit", async function () {
-    const adminRole = await storageToken.ADMIN_ROLE();
-    const limit = await storageToken.getRoleTransactionLimit(adminRole);
+    const adminRole = ADMIN_ROLE;
+    const roleConfig = await storageToken.roleConfigs(adminRole);
+    const limit = roleConfig.transactionLimit;
     const exceedingAmount = limit + BigInt(1);
     
     await expect(
@@ -233,7 +234,7 @@ describe("transferFromContract", function () {
   });
 
   it("should revert when contract is paused", async function () {
-    await storageToken.connect(owner).emergencyPause();
+    await storageToken.connect(owner).emergencyAction(1);
     
     await expect(
       storageToken.connect(owner).transferFromContract(otherAccount.address, TRANSFER_AMOUNT)
@@ -270,7 +271,7 @@ describe("transferFromContract", function () {
       await ethers.provider.send("evm_mine");
   
       // Set quorum for admin role
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
       await storageToken.connect(owner).setRoleTransactionLimit(adminRole, TRANSFER_AMOUNT);
   
@@ -334,8 +335,10 @@ describe("transferFromContract", function () {
     });
   
     it("should revert when transfer amount exceeds role transaction limit", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
-      const limit = await storageToken.getRoleTransactionLimit(adminRole);
+      const adminRole = ADMIN_ROLE;
+      const roleConfig = await storageToken.roleConfigs(adminRole);
+      const limit = roleConfig.transactionLimit;
+
       const excessAmount = limit + BigInt(1);
   
       await expect(
@@ -345,7 +348,7 @@ describe("transferFromContract", function () {
     });
   
     it("should revert when called by non-admin", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       
       await expect(
         storageToken.connect(otherAccount).transferFromContract(receiver.address, TRANSFER_AMOUNT)
@@ -365,7 +368,7 @@ describe("transferFromContract", function () {
       await ethers.provider.send("evm_mine");
   
       // Pause contract
-      await storageToken.connect(owner).emergencyPause();
+      await storageToken.connect(owner).emergencyAction(1);
   
       await expect(
         storageToken.connect(owner).transferFromContract(receiver.address, TRANSFER_AMOUNT)
@@ -401,7 +404,7 @@ describe("transferFromContract", function () {
       await ethers.provider.send("evm_mine");
   
       // Set quorum for admin role
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
       await storageToken.connect(owner).setRoleTransactionLimit(adminRole, TRANSFER_AMOUNT);
   
@@ -449,8 +452,7 @@ describe("transferFromContract", function () {
     it("should revert when transferring to zero address", async function () {
       await expect(
         storageToken.connect(otherAccount).transfer(ZeroAddress, TRANSFER_AMOUNT)
-      ).to.be.revertedWithCustomError(storageToken, "InvalidAddress")
-      .withArgs(ZeroAddress);
+      ).to.be.revertedWithCustomError(storageToken, "InvalidAddress");
     });
   
     it("should revert when amount is zero", async function () {
@@ -474,7 +476,7 @@ describe("transferFromContract", function () {
       await ethers.provider.send("evm_mine");
   
       // Pause contract
-      await storageToken.connect(owner).emergencyPause();
+      await storageToken.connect(owner).emergencyAction(1);
   
       await expect(
         storageToken.connect(otherAccount).transfer(receiver.address, TRANSFER_AMOUNT)
@@ -513,11 +515,11 @@ describe("transferFromContract", function () {
       await ethers.provider.send("evm_mine");
   
       // Set quorum for admin role
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
   
       // Create proposal for bridge operator role
-      const bridgeOperatorRole = await storageToken.BRIDGE_OPERATOR_ROLE();
+      const bridgeOperatorRole = BRIDGE_OPERATOR_ROLE;
       const addRoleType = 1; // AddRole type
       const tx = await storageToken.connect(owner).createProposal(
         addRoleType,
@@ -595,7 +597,7 @@ describe("transferFromContract", function () {
     });
   
     it("should revert when amount exceeds transaction limit", async function () {
-      const bridgeOperatorRole = await storageToken.BRIDGE_OPERATOR_ROLE();
+      const bridgeOperatorRole = BRIDGE_OPERATOR_ROLE;
       const limit = await storageToken.getRoleTransactionLimit(bridgeOperatorRole);
       const excessAmount = limit + BigInt(1);
   
@@ -606,7 +608,7 @@ describe("transferFromContract", function () {
     });
   
     it("should revert when called by non-bridge operator", async function () {
-      const bridgeOperatorRole = await storageToken.BRIDGE_OPERATOR_ROLE();
+      const bridgeOperatorRole = BRIDGE_OPERATOR_ROLE;
       
       await expect(
         storageToken.connect(otherAccount).bridgeMint(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE)
@@ -620,7 +622,7 @@ describe("transferFromContract", function () {
       await ethers.provider.send("evm_mine");
   
       // Pause contract
-      await storageToken.connect(owner).emergencyPause();
+      await storageToken.connect(owner).emergencyAction(1);
   
       await expect(
         storageToken.connect(bridgeOperator).bridgeMint(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE)
@@ -660,11 +662,11 @@ describe("transferFromContract", function () {
       await ethers.provider.send("evm_mine");
   
       // Set quorum for admin role
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
   
       // Create proposal for bridge operator role
-      const bridgeOperatorRole = await storageToken.BRIDGE_OPERATOR_ROLE();
+      const bridgeOperatorRole = BRIDGE_OPERATOR_ROLE;
       const addRoleType = 1; // AddRole type
       const tx = await storageToken.connect(owner).createProposal(
         addRoleType,
@@ -740,7 +742,7 @@ describe("transferFromContract", function () {
     });
   
     it("should revert when amount exceeds transaction limit", async function () {
-      const bridgeOperatorRole = await storageToken.BRIDGE_OPERATOR_ROLE();
+      const bridgeOperatorRole = BRIDGE_OPERATOR_ROLE;
       const limit = await storageToken.getRoleTransactionLimit(bridgeOperatorRole);
       const excessAmount = limit + BigInt(1);
   
@@ -751,7 +753,7 @@ describe("transferFromContract", function () {
     });
   
     it("should revert when called by non-bridge operator", async function () {
-      const bridgeOperatorRole = await storageToken.BRIDGE_OPERATOR_ROLE();
+      const bridgeOperatorRole = BRIDGE_OPERATOR_ROLE;
       
       await expect(
         storageToken.connect(otherAccount).bridgeBurn(BURN_AMOUNT, TARGET_CHAIN_ID, NONCE)
@@ -765,7 +767,7 @@ describe("transferFromContract", function () {
       await ethers.provider.send("evm_mine");
   
       // Pause contract
-      await storageToken.connect(owner).emergencyPause();
+      await storageToken.connect(owner).emergencyAction(1);
   
       await expect(
         storageToken.connect(bridgeOperator).bridgeBurn(BURN_AMOUNT, TARGET_CHAIN_ID, NONCE)
@@ -801,7 +803,7 @@ describe("transferFromContract", function () {
       await ethers.provider.send("evm_mine");
   
       // Set quorum for admin role
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
     });
   
@@ -820,7 +822,7 @@ describe("transferFromContract", function () {
     });
   
     it("should revert when called by non-admin", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       
       await expect(
         storageToken.connect(otherAccount).setSupportedChain(TEST_CHAIN_ID, true)
@@ -841,7 +843,7 @@ describe("transferFromContract", function () {
       await ethers.provider.send("evm_mine");
   
       // Pause contract
-      await storageToken.connect(owner).emergencyPause();
+      await storageToken.connect(owner).emergencyAction(1);
   
       await expect(
         storageToken.connect(owner).setSupportedChain(TEST_CHAIN_ID, true)
@@ -905,7 +907,7 @@ describe("transferFromContract", function () {
       await ethers.provider.send("evm_mine");
   
       // Set quorum for admin role
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
       await storageToken.connect(owner).setRoleTransactionLimit(adminRole, TRANSFER_AMOUNT);
     });
@@ -1149,8 +1151,8 @@ describe("transferFromContract", function () {
       await ethers.provider.send("evm_mine");
   
       // Set up roles and limits
-      const adminRole = await storageToken.ADMIN_ROLE();
-      const bridgeOperatorRole = await storageToken.BRIDGE_OPERATOR_ROLE();
+      const adminRole = ADMIN_ROLE;
+      const bridgeOperatorRole = BRIDGE_OPERATOR_ROLE;
   
       // Set quorum and transaction limits
       await storageToken.connect(owner).setRoleQuorum(adminRole, 2);

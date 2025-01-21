@@ -123,6 +123,22 @@ contract StorageToken is
         emit BlackListOp(account, msg.sender, status);
     }
 
+    // Transfer from caller to an address if contract is not paused
+    function transfer(address to, uint256 amount) 
+        public 
+        virtual 
+        override 
+        whenNotPaused 
+        nonReentrant
+        returns (bool) 
+    {
+        // Combine validation checks into a single require to save gas
+        if (to == address(0)) revert InvalidAddress();
+        if (amount <= 0) revert AmountMustBePositive();
+        
+        return super.transfer(to, amount);
+    }
+
     /// @notice Transfer tokens from contract to whitelisted address
     function transferFromContract(address to, uint256 amount) 
         external 
