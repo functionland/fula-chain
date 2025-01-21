@@ -545,28 +545,28 @@ describe("transferFromContract", function () {
       await storageToken.connect(owner).setRoleTransactionLimit(bridgeOperatorRole, MINT_AMOUNT);
   
       // Set supported chain
-      await storageToken.connect(owner).setSupportedChain(SOURCE_CHAIN_ID, true);
+      await storageToken.connect(owner).setBridgeOpNonce(SOURCE_CHAIN_ID, NONCE);
     });
   
     it("should correctly mint tokens through bridge", async function () {
       const initialSupply = await storageToken.totalSupply();
       const initialContractBalance = await storageToken.balanceOf(await storageToken.getAddress());
   
-      await expect(storageToken.connect(bridgeOperator).bridgeMint(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE))
+      await expect(storageToken.connect(bridgeOperator).bridgeOp(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE, 1))
         .to.emit(storageToken, "BridgeOperationDetails")
-        .withArgs(bridgeOperator.address, "MINT", MINT_AMOUNT, SOURCE_CHAIN_ID, await time.latest())
+        .withArgs(bridgeOperator.address, 1, MINT_AMOUNT, SOURCE_CHAIN_ID, await time.latest())
         .to.emit(storageToken, "BridgeOperationDetails")
-        .withArgs(await bridgeOperator.getAddress(), "MINT", MINT_AMOUNT, SOURCE_CHAIN_ID, await time.latest());
+        .withArgs(await bridgeOperator.getAddress(), 1, MINT_AMOUNT, SOURCE_CHAIN_ID, await time.latest());
   
       expect(await storageToken.totalSupply()).to.equal(initialSupply + MINT_AMOUNT);
       expect(await storageToken.balanceOf(await storageToken.getAddress())).to.equal(initialContractBalance + MINT_AMOUNT);
     });
   
     it("should revert when minting with used nonce", async function () {
-      await storageToken.connect(bridgeOperator).bridgeMint(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE);
+      await storageToken.connect(bridgeOperator).bridgeOp(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE, 1);
   
       await expect(
-        storageToken.connect(bridgeOperator).bridgeMint(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE)
+        storageToken.connect(bridgeOperator).bridgeOp(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE, 1)
       ).to.be.revertedWithCustomError(storageToken, "UsedNonce")
       .withArgs(NONCE);
     });
@@ -575,34 +575,36 @@ describe("transferFromContract", function () {
       const unsupportedChainId = 999;
   
       await expect(
-        storageToken.connect(bridgeOperator).bridgeMint(MINT_AMOUNT, unsupportedChainId, NONCE)
-      ).to.be.revertedWithCustomError(storageToken, "Unsupported")
-      .withArgs(unsupportedChainId);
+        storageToken.connect(bridgeOperator).bridgeOp(MINT_AMOUNT, unsupportedChainId, NONCE, 1)
+      ).to.be.revertedWithCustomError(storageToken, "UsedNonce")
+      .withArgs(NONCE);
     });
   
     it("should revert when amount is zero", async function () {
       await expect(
-        storageToken.connect(bridgeOperator).bridgeMint(0, SOURCE_CHAIN_ID, NONCE)
+        storageToken.connect(bridgeOperator).bridgeOp(0, SOURCE_CHAIN_ID, NONCE, 1)
       ).to.be.revertedWithCustomError(storageToken, "AmountMustBePositive");
     });
   
     it("should revert when amount exceeds total supply limit", async function () {
       const remainingSupply = TOTAL_SUPPLY - await storageToken.totalSupply();
       const excessAmount = remainingSupply + BigInt(1);
+      const initialContractBalance = await storageToken.balanceOf(await storageToken.getAddress());
   
       await expect(
-        storageToken.connect(bridgeOperator).bridgeMint(excessAmount, SOURCE_CHAIN_ID, NONCE)
+        storageToken.connect(bridgeOperator).bridgeOp(excessAmount, SOURCE_CHAIN_ID, NONCE, 1)
       ).to.be.revertedWithCustomError(storageToken, "ExceedsMaximumSupply")
-      .withArgs(excessAmount, TOTAL_SUPPLY);
+      .withArgs(excessAmount, initialContractBalance);
     });
   
     it("should revert when amount exceeds transaction limit", async function () {
       const bridgeOperatorRole = BRIDGE_OPERATOR_ROLE;
-      const limit = await storageToken.getRoleTransactionLimit(bridgeOperatorRole);
+      const roleConfig = await storageToken.roleConfigs(bridgeOperatorRole);
+      const limit = roleConfig.transactionLimit;
       const excessAmount = limit + BigInt(1);
   
       await expect(
-        storageToken.connect(bridgeOperator).bridgeMint(excessAmount, SOURCE_CHAIN_ID, NONCE)
+        storageToken.connect(bridgeOperator).bridgeOp(excessAmount, SOURCE_CHAIN_ID, NONCE, 1)
       ).to.be.revertedWithCustomError(storageToken, "LowAllowance")
       .withArgs(limit, excessAmount);
     });
@@ -611,7 +613,7 @@ describe("transferFromContract", function () {
       const bridgeOperatorRole = BRIDGE_OPERATOR_ROLE;
       
       await expect(
-        storageToken.connect(otherAccount).bridgeMint(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE)
+        storageToken.connect(otherAccount).bridgeOp(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE, 1)
       ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount")
       .withArgs(otherAccount.address, bridgeOperatorRole);
     });
@@ -625,7 +627,7 @@ describe("transferFromContract", function () {
       await storageToken.connect(owner).emergencyAction(1);
   
       await expect(
-        storageToken.connect(bridgeOperator).bridgeMint(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE)
+        storageToken.connect(bridgeOperator).bridgeOp(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE, 1)
       ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
     });
   });
@@ -692,26 +694,26 @@ describe("transferFromContract", function () {
       await storageToken.connect(owner).setRoleTransactionLimit(bridgeOperatorRole, BURN_AMOUNT);
   
       // Set supported chain
-      await storageToken.connect(owner).setSupportedChain(TARGET_CHAIN_ID, true);
+      await storageToken.connect(owner).setBridgeOpNonce(TARGET_CHAIN_ID, NONCE);
     });
   
     it("should correctly burn tokens through bridge", async function () {
       const initialSupply = await storageToken.totalSupply();
       const initialContractBalance = await storageToken.balanceOf(await storageToken.getAddress());
   
-      await expect(storageToken.connect(bridgeOperator).bridgeBurn(BURN_AMOUNT, TARGET_CHAIN_ID, NONCE))
+      await expect(storageToken.connect(bridgeOperator).bridgeOp(BURN_AMOUNT, TARGET_CHAIN_ID, NONCE, 2))
         .to.emit(storageToken, "BridgeOperationDetails")
-        .withArgs(bridgeOperator.address, "BURN", BURN_AMOUNT, TARGET_CHAIN_ID, await time.latest() +1);
+        .withArgs(bridgeOperator.address, 2, BURN_AMOUNT, TARGET_CHAIN_ID, await time.latest() +1);
   
       expect(await storageToken.totalSupply()).to.equal(initialSupply - BURN_AMOUNT);
       expect(await storageToken.balanceOf(await storageToken.getAddress())).to.equal(initialContractBalance - BURN_AMOUNT);
     });
   
     it("should revert when burning with used nonce", async function () {
-      await storageToken.connect(bridgeOperator).bridgeBurn(BURN_AMOUNT, TARGET_CHAIN_ID, NONCE);
+      await storageToken.connect(bridgeOperator).bridgeOp(BURN_AMOUNT, TARGET_CHAIN_ID, NONCE, 2);
   
       await expect(
-        storageToken.connect(bridgeOperator).bridgeBurn(BURN_AMOUNT, TARGET_CHAIN_ID, NONCE)
+        storageToken.connect(bridgeOperator).bridgeOp(BURN_AMOUNT, TARGET_CHAIN_ID, NONCE, 2)
       ).to.be.revertedWithCustomError(storageToken, "UsedNonce")
       .withArgs(NONCE);
     });
@@ -720,14 +722,14 @@ describe("transferFromContract", function () {
       const unsupportedChainId = 999;
   
       await expect(
-        storageToken.connect(bridgeOperator).bridgeBurn(BURN_AMOUNT, unsupportedChainId, NONCE)
-      ).to.be.revertedWithCustomError(storageToken, "Unsupported")
-      .withArgs(unsupportedChainId);
+        storageToken.connect(bridgeOperator).bridgeOp(BURN_AMOUNT, unsupportedChainId, NONCE, 2)
+      ).to.be.revertedWithCustomError(storageToken, "UsedNonce")
+      .withArgs(NONCE);
     });
   
     it("should revert when amount is zero", async function () {
       await expect(
-        storageToken.connect(bridgeOperator).bridgeBurn(0, TARGET_CHAIN_ID, NONCE)
+        storageToken.connect(bridgeOperator).bridgeOp(0, TARGET_CHAIN_ID, NONCE, 2)
       ).to.be.revertedWithCustomError(storageToken, "AmountMustBePositive");
     });
   
@@ -736,18 +738,19 @@ describe("transferFromContract", function () {
       const excessAmount = contractBalance + BigInt(1);
   
       await expect(
-        storageToken.connect(bridgeOperator).bridgeBurn(excessAmount, TARGET_CHAIN_ID, NONCE)
-      ).to.be.revertedWithCustomError(storageToken, "LowBalance")
-      .withArgs(contractBalance, excessAmount);
+        storageToken.connect(bridgeOperator).bridgeOp(excessAmount, TARGET_CHAIN_ID, NONCE, 1)
+      ).to.be.revertedWithCustomError(storageToken, "ExceedsMaximumSupply")
+      .withArgs(excessAmount, contractBalance);
     });
   
     it("should revert when amount exceeds transaction limit", async function () {
       const bridgeOperatorRole = BRIDGE_OPERATOR_ROLE;
-      const limit = await storageToken.getRoleTransactionLimit(bridgeOperatorRole);
+      const roleConfig = await storageToken.roleConfigs(bridgeOperatorRole);
+      const limit = roleConfig.transactionLimit;
       const excessAmount = limit + BigInt(1);
   
       await expect(
-        storageToken.connect(bridgeOperator).bridgeBurn(excessAmount, TARGET_CHAIN_ID, NONCE)
+        storageToken.connect(bridgeOperator).bridgeOp(excessAmount, TARGET_CHAIN_ID, NONCE, 2)
       ).to.be.revertedWithCustomError(storageToken, "LowAllowance")
       .withArgs(limit, excessAmount);
     });
@@ -756,7 +759,7 @@ describe("transferFromContract", function () {
       const bridgeOperatorRole = BRIDGE_OPERATOR_ROLE;
       
       await expect(
-        storageToken.connect(otherAccount).bridgeBurn(BURN_AMOUNT, TARGET_CHAIN_ID, NONCE)
+        storageToken.connect(otherAccount).bridgeOp(BURN_AMOUNT, TARGET_CHAIN_ID, NONCE, 2)
       ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount")
       .withArgs(otherAccount.address, bridgeOperatorRole);
     });
@@ -770,12 +773,12 @@ describe("transferFromContract", function () {
       await storageToken.connect(owner).emergencyAction(1);
   
       await expect(
-        storageToken.connect(bridgeOperator).bridgeBurn(BURN_AMOUNT, TARGET_CHAIN_ID, NONCE)
+        storageToken.connect(bridgeOperator).bridgeOp(BURN_AMOUNT, TARGET_CHAIN_ID, NONCE, 2)
       ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
     });
   });
   
-  describe("setSupportedChain", function () {
+  describe("setBridgeOpNonce", function () {
     let storageToken: StorageToken;
     let owner: SignerWithAddress;
     let admin: SignerWithAddress;
@@ -808,31 +811,29 @@ describe("transferFromContract", function () {
     });
   
     it("should correctly set supported chain status", async function () {
-      await expect(storageToken.connect(owner).setSupportedChain(TEST_CHAIN_ID, true))
+      await expect(storageToken.connect(owner).setBridgeOpNonce(TEST_CHAIN_ID, 123))
         .to.emit(storageToken, "SupportedChainChanged")
-        .withArgs(TEST_CHAIN_ID, true, owner.address);
+        .withArgs(TEST_CHAIN_ID, owner.address);
   
-      expect(await storageToken.supportedChains(TEST_CHAIN_ID)).to.be.true;
   
-      await expect(storageToken.connect(owner).setSupportedChain(TEST_CHAIN_ID, false))
+      await expect(storageToken.connect(owner).setBridgeOpNonce(TEST_CHAIN_ID, 124))
         .to.emit(storageToken, "SupportedChainChanged")
-        .withArgs(TEST_CHAIN_ID, false, owner.address);
+        .withArgs(TEST_CHAIN_ID, owner.address);
   
-      expect(await storageToken.supportedChains(TEST_CHAIN_ID)).to.be.false;
     });
   
     it("should revert when called by non-admin", async function () {
       const adminRole = ADMIN_ROLE;
       
       await expect(
-        storageToken.connect(otherAccount).setSupportedChain(TEST_CHAIN_ID, true)
+        storageToken.connect(otherAccount).setBridgeOpNonce(TEST_CHAIN_ID, 122)
       ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount")
       .withArgs(otherAccount.address, adminRole);
     });
   
     it("should revert when chainId is zero or negative", async function () {
       await expect(
-        storageToken.connect(owner).setSupportedChain(0, true)
+        storageToken.connect(owner).setBridgeOpNonce(0, 121)
       ).to.be.revertedWithCustomError(storageToken, "InvalidChain")
       .withArgs(0);
     });
@@ -846,7 +847,7 @@ describe("transferFromContract", function () {
       await storageToken.connect(owner).emergencyAction(1);
   
       await expect(
-        storageToken.connect(owner).setSupportedChain(TEST_CHAIN_ID, true)
+        storageToken.connect(owner).setBridgeOpNonce(TEST_CHAIN_ID, 120)
       ).to.be.revertedWithCustomError(storageToken, "EnforcedPause");
     });
   
@@ -854,26 +855,22 @@ describe("transferFromContract", function () {
       const chainIds = [1, 56, 137];
       
       for (const chainId of chainIds) {
-        await expect(storageToken.connect(owner).setSupportedChain(chainId, true))
+        await expect(storageToken.connect(owner).setBridgeOpNonce(chainId, 117))
           .to.emit(storageToken, "SupportedChainChanged")
-          .withArgs(chainId, true, owner.address);
+          .withArgs(chainId, owner.address);
   
-        expect(await storageToken.supportedChains(chainId)).to.be.true;
       }
     });
   
     it("should allow toggling chain support multiple times", async function () {
       // Enable support
-      await storageToken.connect(owner).setSupportedChain(TEST_CHAIN_ID, true);
-      expect(await storageToken.supportedChains(TEST_CHAIN_ID)).to.be.true;
+      await storageToken.connect(owner).setBridgeOpNonce(TEST_CHAIN_ID, 115);
   
       // Disable support
-      await storageToken.connect(owner).setSupportedChain(TEST_CHAIN_ID, false);
-      expect(await storageToken.supportedChains(TEST_CHAIN_ID)).to.be.false;
+      await storageToken.connect(owner).setBridgeOpNonce(TEST_CHAIN_ID, 114);
   
       // Re-enable support
-      await storageToken.connect(owner).setSupportedChain(TEST_CHAIN_ID, true);
-      expect(await storageToken.supportedChains(TEST_CHAIN_ID)).to.be.true;
+      await storageToken.connect(owner).setBridgeOpNonce(TEST_CHAIN_ID, 113);
     });
   });
 
@@ -935,7 +932,7 @@ describe("transferFromContract", function () {
   
         // Approve and execute whitelist proposal
         await expect(storageToken.connect(admin).approveProposal(proposalId))
-          .to.emit(storageToken, "WalletWhitelistedWithLock");
+          .to.emit(storageToken, "WalletWhitelistedOp");
   
         // Wait for whitelist lock duration (1 day)
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
@@ -981,7 +978,7 @@ describe("transferFromContract", function () {
         await ethers.provider.send("evm_mine");
   
         await expect(storageToken.connect(admin).approveProposal(proposalId))
-          .to.emit(storageToken, "WalletRemovedFromWhitelist");
+          .to.emit(storageToken, "WalletWhitelistedOp");
   
         // Try transfer to removed address
         await expect(
@@ -1012,16 +1009,33 @@ describe("transferFromContract", function () {
         );
   
         // Get pending proposals
-        const result = await storageToken.getPendingProposals(0, 10);
-        console.log({result});
-        const proposalIds = result[0];
-        const types = result[1];
-        const targets = result[2];
-  
-        expect(proposalIds.length).to.equal(2);
-        expect(types.every(type => type === BigInt(addWhitelistType))).to.be.true;
-        expect(targets).to.include(receiver1.address);
-        expect(targets).to.include(receiver2.address);
+        // Get total proposal count
+        const count = await storageToken.proposalCount();
+
+        // Read proposals directly from storage
+        const proposals: any[] = [];
+        for(let i = 0; i < count; i++) {
+            // Get proposalId from registry
+            const proposalId = await storageToken.proposalRegistry(i);
+            // Get proposal from storage
+            const proposal = await storageToken.proposals(proposalId);
+            
+            // Only include pending proposals
+            if (proposal.config.status === BigInt(0)) {
+                proposals.push({
+                    id: proposalId,
+                    type: proposal.proposalType,
+                    target: proposal.target
+                });
+            }
+        }
+
+        // Verify the results
+        expect(proposals.length).to.equal(2);
+        expect(proposals.every(p => p.type === BigInt(addWhitelistType))).to.be.true;
+        expect(proposals.some(p => p.target === receiver1.address)).to.be.true;
+        expect(proposals.some(p => p.target === receiver2.address)).to.be.true;
+
       });
     });
   
@@ -1040,7 +1054,7 @@ describe("transferFromContract", function () {
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
         await ethers.provider.send("evm_mine");
         // Set transaction limit for admin role
-        const adminRole = await mockToken.ADMIN_ROLE();
+        const adminRole = ADMIN_ROLE;
         await mockToken.connect(owner).setRoleQuorum(adminRole, 2);
         await mockToken.connect(owner).setRoleTransactionLimit(adminRole, TRANSFER_AMOUNT * BigInt(2));
       });
@@ -1182,12 +1196,12 @@ describe("transferFromContract", function () {
       await storageToken.connect(admin).approveProposal(bridgeRoleProposalId);
   
       // Set up supported chain
-      await storageToken.connect(owner).setSupportedChain(SOURCE_CHAIN_ID, true);
+      await storageToken.connect(owner).setBridgeOpNonce(SOURCE_CHAIN_ID, NONCE);
   
       // Mint additional tokens through bridge
-      await expect(storageToken.connect(bridgeOperator).bridgeMint(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE))
+      await expect(storageToken.connect(bridgeOperator).bridgeOp(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE, 1))
         .to.emit(storageToken, "BridgeOperationDetails")
-        .withArgs(bridgeOperator.address, "MINT", MINT_AMOUNT, SOURCE_CHAIN_ID, await time.latest() +1);
+        .withArgs(bridgeOperator.address, 1, MINT_AMOUNT, SOURCE_CHAIN_ID, await time.latest() +1);
   
       // Create whitelist proposal for receiver
       const addWhitelistType = 5; // AddWhitelist type
@@ -1209,7 +1223,7 @@ describe("transferFromContract", function () {
   
       // Approve and execute whitelist proposal
       await expect(storageToken.connect(admin).approveProposal(whitelistProposalId))
-        .to.emit(storageToken, "WalletWhitelistedWithLock");
+        .to.emit(storageToken, "WalletWhitelistedOp");
   
       // Wait for whitelist lock duration
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);

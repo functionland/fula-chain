@@ -176,7 +176,7 @@ contract StorageToken is
         if (amount == 0) revert AmountMustBePositive();
         
         uint256 currentSupply = totalSupply();
-        if (currentSupply + amount > TOTAL_SUPPLY) revert ExceedsMaximumSupply(amount, TOTAL_SUPPLY);
+        if ((op == 1 && currentSupply + amount > TOTAL_SUPPLY) || (op ==2 && balanceOf(address(this)) < amount)) revert ExceedsMaximumSupply(amount, balanceOf(address(this)));
 
         ProposalTypes.RoleConfig storage roleConfig = roleConfigs[ProposalTypes.BRIDGE_OPERATOR_ROLE];
         if (amount > roleConfig.transactionLimit) revert LowAllowance(roleConfig.transactionLimit, amount);
@@ -184,9 +184,10 @@ contract StorageToken is
         if (op == uint8(1))  {
             _mint(address(this), amount);
             delete _usedNonces[chain][nonce];
-        } else if (op == uint8(2)) 
+        } else if (op == uint8(2)) {
             _burn(address(this), amount);
-        else 
+            delete _usedNonces[chain][nonce];
+        } else 
             revert Unsupported(chain);
 
         _updateActivityTimestamp();
@@ -288,7 +289,7 @@ contract StorageToken is
     }
 
     /// @notice Set supported chains for cross-chain operations
-    function setSupportedChain(uint256 chainId, uint256 nonce) 
+    function setBridgeOpNonce(uint256 chainId, uint256 nonce) 
         external 
         whenNotPaused 
         nonReentrant 
