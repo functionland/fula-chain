@@ -69,4 +69,6 @@ main()
     });
 
 // Command to run:
-// TOKEN_ADDRESS=0x... INITIAL_OWNER=0x... INITIAL_ADMIN=0x... npx hardhat run scripts/deployDistributionEngine.ts --network sepolia
+// TOKEN_ADDRESS=Token_Proxy_address INITIAL_OWNER=0x... INITIAL_ADMIN=0x... npx hardhat run scripts/deployTokenDistributionEngine.ts --network sepolia
+// npx hardhat verify <contract_address> --network sepolia
+// npx hardhat verify --contract contracts/TokenDistributionEngine.sol:TokenDistributionEngine <proxy_address> --network sepolia

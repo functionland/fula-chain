@@ -21,7 +21,7 @@ async function main() {
 
     // Calculate initial minted tokens (half of total supply)
     const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
-    const initialMintedTokens = TOTAL_SUPPLY / BigInt(2);
+    const initialMintedTokens = TOTAL_SUPPLY;
 
     // Deploy the proxy contract
     const storageToken = await upgrades.deployProxy(
@@ -73,4 +73,5 @@ main()
 
 // Command to run:
 // INITIAL_OWNER=0x... INITIAL_ADMIN=0x... npx hardhat run scripts/deployToken.ts --network sepolia
-// npx hardhat verify --config verify.config.ts <contract_address> 
+// npx hardhat verify <contract_address> --network sepolia
+// npx hardhat verify --contract contracts/StorageToken.sol:StorageToken <proxy_address> --network sepolia
