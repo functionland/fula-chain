@@ -2,8 +2,11 @@ import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
 import { TokenDistributionEngine, StorageToken } from "../typechain-types";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
-import { ZeroAddress } from "ethers";
+import { ZeroAddress, BytesLike } from "ethers";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
+
+const ADMIN_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
+const BRIDGE_OPERATOR_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("BRIDGE_OPERATOR_ROLE"));
 
 describe("TokenDistributionEngine", function () {
   let distributionEngine: TokenDistributionEngine;
@@ -43,7 +46,7 @@ describe("TokenDistributionEngine", function () {
       expect(await distributionEngine.storageToken()).to.equal(await storageToken.getAddress());
 
       // Check roles
-      const adminRole = await distributionEngine.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       expect(await distributionEngine.hasRole(adminRole, owner.address)).to.be.true;
       expect(await distributionEngine.hasRole(adminRole, admin.address)).to.be.true;
 
@@ -65,7 +68,7 @@ describe("TokenDistributionEngine", function () {
           { kind: 'uups', initializer: 'initialize' }
         )
       ).to.be.revertedWithCustomError(TokenDistributionEngine, "InvalidAddress")
-      .withArgs(ZeroAddress);
+      .withArgs();
 
       await expect(
         upgrades.deployProxy(
@@ -74,7 +77,7 @@ describe("TokenDistributionEngine", function () {
           { kind: 'uups', initializer: 'initialize' }
         )
       ).to.be.revertedWithCustomError(TokenDistributionEngine, "InvalidAddress")
-      .withArgs(ZeroAddress);
+      .withArgs();
 
       await expect(
         upgrades.deployProxy(
@@ -83,7 +86,7 @@ describe("TokenDistributionEngine", function () {
           { kind: 'uups', initializer: 'initialize' }
         )
       ).to.be.revertedWithCustomError(TokenDistributionEngine, "InvalidAddress")
-      .withArgs(ZeroAddress);
+      .withArgs();
     });
 
     it("should emit TokenDistributionInitialized event", async function () {
@@ -175,10 +178,10 @@ describe("initiateTGE", function () {
             { kind: 'uups', initializer: 'initialize' }
         ) as TokenDistributionEngine;
         await distributionEngine.waitForDeployment();
-        await storageToken.connect(owner).setRoleQuorum(storageToken.ADMIN_ROLE(), 2);
+        await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
         await ethers.provider.send("evm_increaseTime", [48 * 60 * 60 + 1]);
         await ethers.provider.send("evm_mine");
-        await storageToken.connect(owner).setRoleTransactionLimit(storageToken.ADMIN_ROLE(), BigInt(2) * CAP_ALLOCATION);
+        await storageToken.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, BigInt(2) * CAP_ALLOCATION);
 
         // Wait for timelock to expire
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
@@ -285,7 +288,7 @@ describe("initiateTGE", function () {
         await ethers.provider.send("evm_mine");
 
         // Pause contract
-        await distributionEngine.connect(owner).emergencyPause();
+        await distributionEngine.connect(owner).emergencyAction(1);
 
         await expect(
             distributionEngine.connect(owner).initiateTGE()
@@ -352,8 +355,8 @@ describe("addVestingCap", function () {
         // Wait for timelock to expire and set quorum
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
         await ethers.provider.send("evm_mine");
-        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
-        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), CAP_ALLOCATION);
+        await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        await storageToken.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, CAP_ALLOCATION);
 
         // Create whitelist proposal for distribution engine
         const addWhitelistType = 5; // AddWhitelist type
@@ -505,7 +508,7 @@ describe("addVestingCap", function () {
         await ethers.provider.send("evm_mine");
 
         // Pause contract
-        await distributionEngine.connect(owner).emergencyPause();
+        await distributionEngine.connect(owner).emergencyAction(1);
 
         await expect(
             distributionEngine.connect(owner).addVestingCap(
@@ -596,8 +599,8 @@ describe("removeVestingCap", function () {
         // Wait for timelock to expire and set quorum
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
         await ethers.provider.send("evm_mine");
-        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
-        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), CAP_ALLOCATION);
+        await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        await storageToken.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, CAP_ALLOCATION);
 
         // Create whitelist proposal for distribution engine
         const addWhitelistType = 5; // AddWhitelist type
@@ -677,7 +680,7 @@ describe("removeVestingCap", function () {
         const addWalletType = 7; // AddDistributionWallets type
         const walletName = ethers.encodeBytes32String("Test Wallet");
         const walletAllocation = ethers.parseEther("100000");
-        await distributionEngine.connect(owner).setRoleQuorum(distributionEngine.ADMIN_ROLE(), 2);
+        await distributionEngine.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
 
         const tx = await distributionEngine.connect(owner).createProposal(
             addWalletType,
@@ -727,7 +730,7 @@ describe("removeVestingCap", function () {
         await ethers.provider.send("evm_mine");
 
         // Pause contract
-        await distributionEngine.connect(owner).emergencyPause();
+        await distributionEngine.connect(owner).emergencyAction(1);
 
         await expect(
             distributionEngine.connect(owner).removeVestingCap(1)
@@ -774,9 +777,9 @@ describe("calculateDueTokens", function () {
         // Wait for timelock to expire and set quorums
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
         await ethers.provider.send("evm_mine");
-        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
-        await distributionEngine.connect(owner).setRoleQuorum(await distributionEngine.ADMIN_ROLE(), 2);
-        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), CAP_ALLOCATION);
+        await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        await distributionEngine.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        await storageToken.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, CAP_ALLOCATION);
 
         // Create whitelist proposal for distribution engine
         const addWhitelistType = 5; // AddWhitelist type
@@ -972,9 +975,9 @@ describe("claimTokens", function () {
         // Wait for timelock to expire and set quorums
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
         await ethers.provider.send("evm_mine");
-        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
-        await distributionEngine.connect(owner).setRoleQuorum(await distributionEngine.ADMIN_ROLE(), 2);
-        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), CAP_ALLOCATION);
+        await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        await distributionEngine.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        await storageToken.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, CAP_ALLOCATION);
 
         // Create whitelist proposal for distribution engine
         const addWhitelistType = 5; // AddWhitelist type
@@ -1096,7 +1099,7 @@ describe("claimTokens", function () {
         await ethers.provider.send("evm_mine");
 
         // Pause contract
-        await distributionEngine.connect(owner).emergencyPause();
+        await distributionEngine.connect(owner).emergencyAction(1);
 
         await expect(
             distributionEngine.connect(beneficiary).claimTokens(1, CHAIN_ID)
@@ -1198,9 +1201,9 @@ describe("Custom Proposals", function () {
         // Wait for timelock to expire and set quorums
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
         await ethers.provider.send("evm_mine");
-        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
-        await distributionEngine.connect(owner).setRoleQuorum(await distributionEngine.ADMIN_ROLE(), 2);
-        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), CAP_ALLOCATION);
+        await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        await distributionEngine.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        await storageToken.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, CAP_ALLOCATION);
 
         // Create whitelist proposal for distribution engine
         const addWhitelistType = 5; // AddWhitelist type
@@ -1438,8 +1441,8 @@ describe("Custom Proposals", function () {
       await ethers.provider.send("evm_mine");
   
       // Set up roles and limits
-      const adminRole = await storageToken.ADMIN_ROLE();
-      const bridgeOperatorRole = await storageToken.BRIDGE_OPERATOR_ROLE();
+      const adminRole = ADMIN_ROLE;
+      const bridgeOperatorRole = BRIDGE_OPERATOR_ROLE;
   
       // Set quorum and transaction limits
       await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
@@ -1469,12 +1472,12 @@ describe("Custom Proposals", function () {
       await storageToken.connect(admin).approveProposal(bridgeRoleProposalId);
   
       // Set up supported chain
-      await storageToken.connect(owner).setSupportedChain(SOURCE_CHAIN_ID, true);
+      await storageToken.connect(owner).setBridgeOpNonce(SOURCE_CHAIN_ID, NONCE);
   
       // Mint additional tokens through bridge
-      await expect(storageToken.connect(bridgeOperator).bridgeMint(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE))
+      await expect(storageToken.connect(bridgeOperator).bridgeOp(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE, 1))
         .to.emit(storageToken, "BridgeOperationDetails")
-        .withArgs(bridgeOperator.address, "MINT", MINT_AMOUNT, SOURCE_CHAIN_ID, await time.latest() +1);
+        .withArgs(bridgeOperator.address, 1, MINT_AMOUNT, SOURCE_CHAIN_ID, await time.latest() +1);
   
       // Create whitelist proposal for receiver
       const addWhitelistType = 5; // AddWhitelist type
@@ -1496,7 +1499,7 @@ describe("Custom Proposals", function () {
   
       // Approve and execute whitelist proposal
       await expect(storageToken.connect(admin).approveProposal(whitelistProposalId))
-        .to.emit(storageToken, "WalletWhitelistedWithLock");
+        .to.emit(storageToken, "WalletWhitelistedOp");
   
       // Wait for whitelist lock duration
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
@@ -1554,8 +1557,8 @@ describe("Custom Proposals", function () {
         // Wait for timelock to expire and set quorums
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
         await ethers.provider.send("evm_mine");
-        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
-        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), TRANSFER_AMOUNT);
+        await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        await storageToken.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, TRANSFER_AMOUNT);
 
         // Create whitelist proposal for distribution engine
         const addWhitelistType = 5; // AddWhitelist type
@@ -1628,7 +1631,7 @@ describe("Custom Proposals", function () {
     });
 
     it("should revert when contract is paused", async function () {
-        await distributionEngine.connect(owner).emergencyPause();
+        await distributionEngine.connect(owner).emergencyAction(1);
 
         await expect(
             distributionEngine.connect(owner).transferBackToStorage(TRANSFER_AMOUNT)
@@ -1676,7 +1679,7 @@ describe("Custom Proposals", function () {
         // Wait for timelock to expire and set quorums
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
         await ethers.provider.send("evm_mine");
-        await distributionEngine.connect(owner).setRoleQuorum(await distributionEngine.ADMIN_ROLE(), 2);
+        await distributionEngine.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
     });
 
     it("should properly handle contract upgrades", async function () {
@@ -1719,7 +1722,7 @@ describe("Custom Proposals", function () {
 
         // Verify state is maintained
         expect(await upgradedDistribution.storageToken()).to.equal(await storageToken.getAddress());
-        expect(await upgradedDistribution.hasRole(await upgradedDistribution.ADMIN_ROLE(), owner.address)).to.be.true;
+        expect(await upgradedDistribution.hasRole(ADMIN_ROLE, owner.address)).to.be.true;
     });
 
     it("should revert upgrade when paused", async function () {
@@ -1754,7 +1757,7 @@ describe("Custom Proposals", function () {
         await distributionEngine.connect(admin).approveProposal(proposalId);
 
         // Pause contract
-        await distributionEngine.connect(owner).emergencyPause();
+        await distributionEngine.connect(owner).emergencyAction(1);
 
         // Try to upgrade when paused
         await expect(
@@ -1858,9 +1861,9 @@ describe("Complex Vesting Scenarios", function () {
         // Wait for timelock to expire and set quorums
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
         await ethers.provider.send("evm_mine");
-        await storageToken.connect(owner).setRoleQuorum(await storageToken.ADMIN_ROLE(), 2);
-        await distributionEngine.connect(owner).setRoleQuorum(await distributionEngine.ADMIN_ROLE(), 2);
-        await storageToken.connect(owner).setRoleTransactionLimit(await storageToken.ADMIN_ROLE(), CAP_ALLOCATION * BigInt(3));
+        await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        await distributionEngine.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        await storageToken.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, CAP_ALLOCATION * BigInt(3));
 
         // Create whitelist proposal for distribution engine
         const addWhitelistType = 5; // AddWhitelist type
