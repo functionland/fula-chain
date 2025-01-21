@@ -1,50 +1,64 @@
 import { ethers, upgrades } from "hardhat";
-import { StorageToken, TokenDistributionEngine } from "../typechain-types";
 
 async function main() {
     const [deployer] = await ethers.getSigners();
     console.log("Deploying contracts with the account:", deployer.address);
 
-    // First get the StorageToken address - assuming it's already deployed
-    const storageTokenAddress = "STORAGE_TOKEN_ADDRESS_HERE"; // Replace with actual address
-    
-    console.log("StorageToken address:", storageTokenAddress);
-
-    // Deploy TokenDistributionEngine
-    console.log("Deploying TokenDistributionEngine...");
+    // Get the contract factory
     const TokenDistributionEngine = await ethers.getContractFactory("TokenDistributionEngine");
-    
-    const tokenDistributionEngine = await upgrades.deployProxy(
+    console.log("Deploying TokenDistributionEngine...");
+
+    // Validate environment variables
+    const storageTokenAddress = process.env.TOKEN_ADDRESS?.trim();
+    const initialOwner = process.env.INITIAL_OWNER?.trim();
+    const initialAdmin = process.env.INITIAL_ADMIN?.trim();
+
+    if (!storageTokenAddress) {
+        throw new Error("TOKEN_ADDRESS environment variable not set");
+    }
+    if (!initialOwner) {
+        throw new Error("INITIAL_OWNER environment variable not set");
+    }
+    if (!initialAdmin) {
+        throw new Error("INITIAL_ADMIN environment variable not set");
+    }
+
+    // Deploy the proxy contract
+    const distributionEngine = await upgrades.deployProxy(
         TokenDistributionEngine,
-        [
-            storageTokenAddress,
-            deployer.address, // owner
-            deployer.address  // admin - can be different address if needed
-        ],
+        [storageTokenAddress, initialOwner, initialAdmin],
         {
-            kind: 'uups',
-            initializer: 'initialize'
+            initializer: "initialize",
+            kind: "uups",
+            unsafeAllow: ["constructor"]
         }
     );
 
-    await tokenDistributionEngine.waitForDeployment();
-    console.log("TokenDistributionEngine deployed to:", await tokenDistributionEngine.getAddress());
+    await distributionEngine.waitForDeployment();
+    const engineAddress = await distributionEngine.getAddress();
+    const implementationAddress = await upgrades.erc1967.getImplementationAddress(engineAddress);
 
-    // Verify contract on Etherscan
-    console.log("Verifying contract on Etherscan...");
-    const implementationAddress = await upgrades.erc1967.getImplementationAddress(
-        await tokenDistributionEngine.getAddress()
-    );
-    
-    try {
-        await run("verify:verify", {
+    console.log("TokenDistributionEngine proxy deployed to:", engineAddress);
+    console.log("Implementation address:", implementationAddress);
+    console.log("Storage token address:", storageTokenAddress);
+    console.log("Initial owner:", initialOwner);
+    console.log("Initial admin:", initialAdmin);
+
+    // Verify contracts
+    if (process.env.ETHERSCAN_API_KEY) {
+        console.log("Waiting for 6 block confirmations before verification...");
+        await distributionEngine.deploymentTransaction()?.wait(6);
+
+        await hre.run("verify:verify", {
             address: implementationAddress,
-            constructorArguments: []
+            contract: "contracts/governance/TokenDistributionEngine.sol:TokenDistributionEngine"
         });
-        console.log("Contract verified on Etherscan");
-    } catch (error) {
-        console.log("Error verifying contract:", error);
     }
+
+    // Save deployment info
+    console.log("\nDeployment addresses for subsequent deployments:");
+    console.log(`export DISTRIBUTION_ENGINE_ADDRESS=${engineAddress}`);
+    console.log(`export DISTRIBUTION_ENGINE_IMPLEMENTATION=${implementationAddress}`);
 }
 
 main()
@@ -54,4 +68,5 @@ main()
         process.exit(1);
     });
 
-// npx hardhat run scripts/deploy-distribution.ts --network <your-network>
+// Command to run:
+// TOKEN_ADDRESS=0x... INITIAL_OWNER=0x... INITIAL_ADMIN=0x... npx hardhat run scripts/deployDistributionEngine.ts --network sepolia

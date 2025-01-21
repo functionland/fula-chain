@@ -2,6 +2,7 @@ import { HardhatUserConfig, vars } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
 import "@nomicfoundation/hardhat-web3-v4";
 import '@openzeppelin/hardhat-upgrades';
+import "@nomicfoundation/hardhat-verify";
 
 const config: HardhatUserConfig = {
     solidity: {
@@ -43,6 +44,17 @@ const config: HardhatUserConfig = {
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 974399131
         }
+    },
+    etherscan: {
+        apiKey: process.env.ETHERSCAN_API_KEY
+    },
+    mocha: {
+        timeout: 40000
+    },
+    gasReporter: {
+        enabled: process.env.REPORT_GAS !== undefined,
+        currency: "USD",
+        excludeContracts: ["contracts/mocks/"]
     }
 };
 

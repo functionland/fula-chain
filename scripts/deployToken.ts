@@ -1,10 +1,15 @@
 import { ethers, upgrades } from "hardhat";
+import { StorageToken } from "../typechain-types";
 
 async function main() {
+    const [deployer] = await ethers.getSigners();
+    console.log("Deploying contracts with the account:", deployer.address);
+
+    // Get the contract factory
     const StorageToken = await ethers.getContractFactory("StorageToken");
     console.log("Deploying StorageToken...");
 
-    // Specify the initial owner and admin addresses
+    // Validate environment variables
     const initialOwner = process.env.INITIAL_OWNER?.trim();
     const initialAdmin = process.env.INITIAL_ADMIN?.trim();
     if (!initialOwner) {
@@ -18,31 +23,54 @@ async function main() {
     const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
     const initialMintedTokens = TOTAL_SUPPLY / BigInt(2);
 
-    const storageToken = await upgrades.deployProxy(StorageToken, [
-        initialOwner,
-        initialAdmin,
-        initialMintedTokens
-    ], {
-        initializer: "initialize",
-        kind: "uups"
-    });
+    // Deploy the proxy contract
+    const storageToken = await upgrades.deployProxy(
+        StorageToken,
+        [initialOwner, initialAdmin, initialMintedTokens],
+        {
+            initializer: "initialize",
+            kind: "uups",
+            unsafeAllow: ["constructor"]
+        }
+    ) as StorageToken;
 
     await storageToken.waitForDeployment();
     const tokenAddress = await storageToken.getAddress();
-    console.log("StorageToken deployed to:", tokenAddress);
+
+    // Get the implementation address
+    const implementationAddress = await upgrades.erc1967.getImplementationAddress(tokenAddress);
+
+    console.log("StorageToken proxy deployed to:", tokenAddress);
+    console.log("Implementation address:", implementationAddress);
     console.log("Initial owner:", initialOwner);
     console.log("Initial admin:", initialAdmin);
     console.log("Initial minted tokens:", ethers.formatEther(initialMintedTokens), "tokens");
 
-    // Save the address for other deployments
-    console.log(`Please set TOKEN_ADDRESS=${tokenAddress} for subsequent deployments`);
+    // Verify contracts
+    if (process.env.ETHERSCAN_API_KEY) {
+        console.log("Waiting for 6 block confirmations before verification...");
+        await storageToken.deploymentTransaction()?.wait(6);
+
+        // Verify implementation
+        await hre.run("verify:verify", {
+            address: implementationAddress,
+            contract: "contracts/StorageToken.sol:StorageToken"
+        });
+    }
+
+    // Save deployment info
+    console.log("\nDeployment addresses for subsequent deployments:");
+    console.log(`export TOKEN_ADDRESS=${tokenAddress}`);
+    console.log(`export TOKEN_IMPLEMENTATION=${implementationAddress}`);
 }
 
-main().catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-});
+main()
+    .then(() => process.exit(0))
+    .catch((error) => {
+        console.error(error);
+        process.exit(1);
+    });
 
 // Command to run:
-// set INITIAL_OWNER=0x... && set INITIAL_ADMIN=0x... && yarn hardhat run scripts/deployToken.ts --network sepolia --show-stack-traces
-// yarn hardhat verify --network sepolia CONTRACT_ADDRESS
+// INITIAL_OWNER=0x... INITIAL_ADMIN=0x... npx hardhat run scripts/deployToken.ts --network sepolia
+// npx hardhat verify --config verify.config.ts <contract_address> 
