@@ -11,15 +11,12 @@
     "deploy:deployMultichain": "yarn hardhat run scripts/deployToken.ts --network sepolia --show-stack-traces",
     "deploy:deployMultichainBytecode": "yarn hardhat run scripts/deployMultichainBytecode.ts --network sepolia",
     "deploy:localhost": "yarn hardhat run scripts/localhost.ts",
-    "test:token": "set REPORT_GAS=true && yarn hardhat test test/Storagetoken.test.ts",
-    "test:staking": "set REPORT_GAS=true && yarn hardhat test test/stakingEngine.test.ts",
-    "test:distribution": "set REPORT_GAS=true && yarn hardhat test test/TokenDistributionEngine.test.ts",
+    "test:governance": "set REPORT_GAS=true && yarn hardhat test test/governance/GovernanceModule.test.ts",
+    "test:token": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/StorageToken.test.ts",
+    "test:distribution": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/TokenDistributionEngine.test.ts",
     "test": "yarn hardhat test"
   },
   "devDependencies": {
-    "@buildwithsygma/sygma-sdk-core": "^2.7",
-    "@chainsafe/hardhat-plugin-multichain-deploy": "^1.0.4",
-    "@chainsafe/hardhat-ts-artifact-plugin": "^1.0.0",
     "@nomicfoundation/hardhat-chai-matchers": "^2.0.4",
     "@nomicfoundation/hardhat-ethers": "^3.0.8",
     "@nomicfoundation/hardhat-ignition-ethers": "0.15.0",
@@ -39,7 +36,7 @@
     "chai": "^4.2.0",
     "eslint": "^8",
     "ethereum-waffle": "^4.0.10",
-    "ethers": "^6.13.4",
+    "ethers": "^6.13.5",
     "hardhat": "^2.22.18",
     "hardhat-gas-reporter": "^2.2.2",
     "solidity-coverage": "^0.8.7",
@@ -52,17 +49,9 @@
   "dependencies": {
     "@chainlink/contracts": "^1.3.0",
     "@nomicfoundation/hardhat-ignition": "^0.15.9",
-    "@openzeppelin/contracts": "^5.0.2",
-    "@openzeppelin/contracts-upgradeable": "^5.0.2",
+    "@openzeppelin/contracts": "^5.2.0",
+    "@openzeppelin/contracts-upgradeable": "^5.2.0",
     "@openzeppelin/upgrades-core": "^1.41.0",
-    "@polkadot/api": "^15.0.2",
-    "@polkadot/keyring": "^13.2.3",
-    "@polkadot/types": "^15.0.2",
-    "@polkadot/types-codec": "^15.0.2",
-    "@polkadot/types-create": "^15.0.2",
-    "@polkadot/types-known": "^15.0.2",
-    "@polkadot/types-support": "^15.0.2",
-    "@polkadot/util": "^13.2.3",
     "tslib": "^2.8.1"
   }
 }

@@ -1,18 +1,15 @@
 import { HardhatUserConfig, vars } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
-import "@chainsafe/hardhat-ts-artifact-plugin";
 import "@nomicfoundation/hardhat-web3-v4";
-import "@chainsafe/hardhat-plugin-multichain-deploy";
-import { Environment } from "@buildwithsygma/sygma-sdk-core";
 import '@openzeppelin/hardhat-upgrades';
 
 const config: HardhatUserConfig = {
     solidity: {
-        version: "0.8.24",  // Updated from 0.8.19
+        version: "0.8.24",
         settings: {
             optimizer: {
                 enabled: true,
-                runs: 100
+                runs: 500
             },
             viaIR: true
         }
@@ -46,14 +43,6 @@ const config: HardhatUserConfig = {
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 974399131
         }
-    },
-    multichain: {
-        environment: Environment.TESTNET
-    },
-    etherscan: {
-      apiKey: {
-        sepolia: 'R9XBFPYRFBARE9C79SDJAVGNJ3HEQ7XJRZ'
-      }
     }
 };
 
