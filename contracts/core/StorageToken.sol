@@ -24,10 +24,6 @@ contract StorageToken is
     uint256 private constant TOTAL_SUPPLY = 2_000_000_000 * TOKEN_UNIT;
     uint256 private constant WHITELIST_LOCK_DURATION = 1 days;
 
-    /// @notice Bridge-related storage
-    uint8 private constant NONCE_USED = 1;
-    uint8 private constant SUPPORTED_CHAIN = 2;
-
     mapping(uint256 => mapping(uint256 => uint8)) private _usedNonces;
     mapping(address => bool) public blacklisted;
 
@@ -155,21 +151,6 @@ contract StorageToken is
         return true;
     }
 
-    /// @notice Override of ERC20 transfer
-    function transfer(address to, uint256 amount) 
-        public 
-        virtual 
-        override
-        whenNotPaused 
-        nonReentrant
-        returns (bool) 
-    {
-        if (to == address(0)) revert InvalidAddress();
-        if (amount <= 0) revert AmountMustBePositive();
-        _updateActivityTimestamp();
-        return super.transfer(to, amount);
-    }
-
     /// @notice Bridge mint function for cross-chain transfers
     /// @param amount is the amount ot burn or mint
     /// @param op mint is 1 and burn is 2
@@ -179,8 +160,7 @@ contract StorageToken is
         nonReentrant 
         onlyRole(ProposalTypes.BRIDGE_OPERATOR_ROLE)
     {
-        if ((_usedNonces[chain][nonce] & SUPPORTED_CHAIN) == 0) revert UsedNonce(nonce);
-        if ((_usedNonces[chain][nonce] & NONCE_USED) != 0) revert UsedNonce(nonce);
+        if (_usedNonces[chain][nonce] == 0) revert UsedNonce(nonce);
         if (amount == 0) revert AmountMustBePositive();
         
         uint256 currentSupply = totalSupply();
@@ -191,7 +171,7 @@ contract StorageToken is
 
         if (op == uint8(1))  {
             _mint(address(this), amount);
-            _usedNonces[chain][nonce] |= NONCE_USED;
+            delete _usedNonces[chain][nonce];
         } else if (op == uint8(2)) 
             _burn(address(this), amount);
         else 
@@ -209,7 +189,8 @@ contract StorageToken is
         uint96 amount,
         address
     ) internal virtual override returns (bytes32) {
-        if (proposalType == uint8(ProposalTypes.ProposalType.AddWhitelist) || proposalType == uint8(ProposalTypes.ProposalType.RemoveWhitelist)) {
+        if (proposalType == uint8(ProposalTypes.ProposalType.AddWhitelist) || 
+            proposalType == uint8(ProposalTypes.ProposalType.RemoveWhitelist)) {
             ProposalTypes.TimeConfig storage targetTimeConfig = timeConfigs[target];
             if (proposalType == uint8(ProposalTypes.ProposalType.AddWhitelist)) {
                 if (targetTimeConfig.whitelistLockTime != 0) revert AlreadyWhitelisted(target);
@@ -295,7 +276,7 @@ contract StorageToken is
     }
 
     /// @notice Set supported chains for cross-chain operations
-    function setSupportedChain(uint256 chainId, uint256 nonce, bool supported) 
+    function setSupportedChain(uint256 chainId, uint256 nonce) 
         external 
         whenNotPaused 
         nonReentrant 
@@ -303,8 +284,8 @@ contract StorageToken is
     {
         if (chainId <= 0) revert InvalidChain(chainId);
         _updateActivityTimestamp();
-        _usedNonces[chainId][nonce] |= SUPPORTED_CHAIN;
-        emit SupportedChainChanged(chainId, supported, msg.sender);
+        _usedNonces[chainId][nonce] = 1;
+        emit SupportedChainChanged(chainId, msg.sender);
     }
 
     function _authorizeUpgrade(address newImplementation) 
