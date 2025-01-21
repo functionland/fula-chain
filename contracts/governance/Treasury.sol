@@ -5,13 +5,19 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
+/// @title Treasury
+/// @notice Treasury contract for fee management
+/// @dev Used in StorageToken contract
 contract Treasury is AccessControl, ReentrancyGuard {
     address public immutable storageToken;
 
-    event W(address indexed t, address indexed r, uint256 a); //Withdrawn(token, to, amount)
+    event W(address indexed t, address indexed r, uint256 a); // Withdrawn(token, to, amount)
 
     error F(uint8 s); // Failed(status);
 
+    /// @notice initializes the Treasury
+    /// @param  _storageToken is the address of main token contract
+    /// @param _admin is the initial admin for treasury
     constructor(
         address _storageToken,
         address _admin
@@ -24,6 +30,9 @@ contract Treasury is AccessControl, ReentrancyGuard {
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
     }
 
+    /// @notice this method withdraws the gathered fees to the main contract, which then can be burnt or recirculated
+    /// @param t is the token contract address
+    /// @param a is the amount to be transferred to token contract
     function withdrawFees(
         address t,  // token
         uint256 a   // amount

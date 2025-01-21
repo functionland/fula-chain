@@ -10,6 +10,8 @@ import "../governance/interfaces/IStorageToken.sol";
 /// @title StorageToken
 /// @notice ERC20 token with governance capabilities
 /// @dev Inherits governance functionality from GovernanceModule
+/// @dev Uses treasury/fee collection functionality from Treasury
+/// @dev This is the main token contract
 contract StorageToken is 
     GovernanceModule,
     ERC20Upgradeable,
@@ -76,7 +78,8 @@ contract StorageToken is
         }
     }
 
-    // _checkWhitelisted checks to ensure only white-listed recipients and only after time lock period are allowed
+    /// @notice _checkWhitelisted checks to ensure only white-listed recipients and only after time lock period are allowed to receive tokens from contract
+    /// @param to the address that is the receiver of tokens from contract
     function _checkWhitelisted(address to) internal view {
         // Use TimeConfig struct for whitelist lock time
         ProposalTypes.TimeConfig storage timeConfig = timeConfigs[to];
@@ -103,6 +106,8 @@ contract StorageToken is
         }
     }
 
+    /// @notice sets the fee in percentage, that is taken from transactions and stored in treasury for burning, development, growth
+    /// @param _platformFeeBps is the percentage fee
     function _setPlatformFee(uint256 _platformFeeBps) 
         internal 
         whenNotPaused
@@ -112,7 +117,9 @@ contract StorageToken is
         emit PlatformFeeUpdated(_platformFeeBps);
     }
 
-    // Add these functions to manage the blacklist
+    /// @notice Manages the blacklist to block wallets from transferring tokens both receive and send
+    /// @param account is hte wallet to blacklist
+    /// @param status 1 adds to blacklist and 0 removes
     function _blacklistOp(address account, uint8 status) 
         internal
         whenNotPaused 
@@ -123,7 +130,7 @@ contract StorageToken is
         emit BlackListOp(account, msg.sender, status);
     }
 
-    // Transfer from caller to an address if contract is not paused
+    /// @notice Transfer from caller to an address if contract is not paused
     function transfer(address to, uint256 amount) 
         public 
         virtual 
@@ -163,8 +170,10 @@ contract StorageToken is
         return true;
     }
 
-    /// @notice Bridge mint function for cross-chain transfers
+    /// @notice Bridge mint function for cross-chain transfers for minting tokens or burning tokens to be minted on another chain
     /// @param amount is the amount ot burn or mint
+    /// @param chain is the id of the chain to burn or mint tokens on
+    /// @param nonce is the pre-defined one-time code for this operation on this chain
     /// @param op mint is 1 and burn is 2
     function bridgeOp(uint256 amount, uint256 chain, uint256 nonce, uint8 op) 
         external 
@@ -194,6 +203,10 @@ contract StorageToken is
         emit BridgeOperationDetails(msg.sender, op, amount, chain, block.timestamp);
     }
 
+    /// @notice override method to handle the proposals related to Token only, such as Adding and Removing from whitelist, Blacklist management, treasury management
+    /// @param proposalType is defined in ProposalTypes.sol
+    /// @param target is the wallet address for the operation
+    /// @param amount is for treasury operation: the fee
     function _createCustomProposal(
         uint8 proposalType,
         uint40,
@@ -252,6 +265,7 @@ contract StorageToken is
         revert InvalidProposalType(proposalType);
     }
 
+    /// @notice removes the expired proposals and related storage variables
     function _handleCustomProposalExpiry(bytes32 proposalId) internal virtual override {
         ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
         
@@ -261,6 +275,7 @@ contract StorageToken is
         }
     }
 
+    /// @notice executers the proposals that are related to this contract
     function _executeCustomProposal(bytes32 proposalId) internal virtual override {
         ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
         
@@ -288,7 +303,7 @@ contract StorageToken is
         }
     }
 
-    /// @notice Set supported chains for cross-chain operations
+    /// @notice Set supported chains for cross-chain operations. Nonce is a one-time code for mint or burn operation on the chain
     function setBridgeOpNonce(uint256 chainId, uint256 nonce) 
         external 
         whenNotPaused 
@@ -301,6 +316,7 @@ contract StorageToken is
         emit SupportedChainChanged(chainId, msg.sender);
     }
 
+    /// @notice upgrade the contract that uses the Governance module and proposal system
     function _authorizeUpgrade(address newImplementation) 
         internal 
         nonReentrant

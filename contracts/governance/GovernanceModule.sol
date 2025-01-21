@@ -10,6 +10,10 @@ import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol"
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./libraries/ProposalTypes.sol";
 
+/// @title GovernanceModule
+/// @notice Multi-sig and common features used across all contracts
+/// @dev Used to manage proposals for common features and delegates custom proposals to corresponding contracts
+/// @dev Handles proposal for Managing Roles, Upgrades, Ownerships
 abstract contract GovernanceModule is 
     Initializable, 
     OwnableUpgradeable,
@@ -115,7 +119,7 @@ abstract contract GovernanceModule is
         timeConfigs[initialAdmin].roleChangeTimeLock = uint64(lockTime);
     }
 
-    // Proposal helper function
+    /// @notice Proposal helper function to create a unique id
     function _createProposalId(uint8 proposalType, bytes32 data) internal view returns (bytes32) {
         return keccak256(abi.encodePacked(
             proposalType,
@@ -178,6 +182,7 @@ abstract contract GovernanceModule is
         return _pendingOwnerRequest;
     }
 
+    /// @notice sets common properties ofa proposal
     function _initializeProposal(
         ProposalTypes.UnifiedProposal storage proposal,
         address target
@@ -189,6 +194,7 @@ abstract contract GovernanceModule is
         proposal.hasApproved[msg.sender] = true;
     }
 
+    /// @notice checks if an account has already approved a specific proposal
     function hasProposalApproval(bytes32 proposalId, address account) public view returns (bool) {
         return proposals[proposalId].hasApproved[account];
     }
@@ -281,6 +287,7 @@ abstract contract GovernanceModule is
         return proposalId;
     }
 
+    /// @notice handles proposal creation for assigning or removing a role from an account
     function _createRoleChangeProposal(
         address target, 
         bytes32 role,
@@ -311,6 +318,7 @@ abstract contract GovernanceModule is
         return proposalId;
     }
 
+    /// @notice creates a proposal for upgrading hte contract
     function _createUpgradeProposal(address newImplementation) internal returns (bytes32) {
         bytes32 existingProposal = upgradeProposals[newImplementation];
         if(existingProposal != 0) {
@@ -339,6 +347,7 @@ abstract contract GovernanceModule is
         return proposalId;
     }
 
+    /// @notice checks and removes expired proposals
     function _checkExpiredProposal(bytes32 proposalId) internal {
         ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
         if (block.timestamp >= proposal.config.expiryTime) {
@@ -425,6 +434,7 @@ abstract contract GovernanceModule is
     // Virtual function for child contracts to handle their specific proposal flag cleanup
     function _handleCustomProposalExpiry(bytes32 proposalId) internal virtual {}
 
+    /// @notice executes a proposal depending on the type of proposal
     function executeProposal(bytes32 proposalId) 
         public
         whenNotPaused
@@ -563,7 +573,7 @@ abstract contract GovernanceModule is
         emit EA(op, block.timestamp, msg.sender);
     }
 
-    /// @notice Set quorum for a role
+    /// @notice Set quorum for a role which is the number of required votes from that role for a change
     function setRoleQuorum(bytes32 role, uint16 quorum) 
         external 
         whenNotPaused
@@ -597,6 +607,7 @@ abstract contract GovernanceModule is
         }
     }
 
+    /// @notice checks if conditions for upgrading hte contract is met
     function _checkUpgrade(address newImplementation) 
         internal 
         virtual

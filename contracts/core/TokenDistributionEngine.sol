@@ -381,7 +381,7 @@ contract TokenDistributionEngine is GovernanceModule {
         return totalClaimable - claimed;
     }
 
-    /// @notice Claim vested tokens
+    /// @notice Claim vested tokens. Automatically calculates based on vesting schedule and transfers if anything is due
     function claimTokens(uint256 capId, uint256 chainId) 
         external 
         nonReentrant 
