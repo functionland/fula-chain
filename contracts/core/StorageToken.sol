@@ -2,7 +2,6 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
 import "../governance/Treasury.sol";
 import "../governance/GovernanceModule.sol";
@@ -14,7 +13,6 @@ import "../governance/interfaces/IStorageToken.sol";
 contract StorageToken is 
     GovernanceModule,
     ERC20Upgradeable,
-    ERC20PermitUpgradeable,
     ERC20BurnableUpgradeable,
     IStorageToken
 {
@@ -50,7 +48,6 @@ contract StorageToken is
         
         // Initialize ERC20 and Permit
         __ERC20_init("Placeholder Token", "PLACEHOLDER");
-        __ERC20Permit_init("Placeholder Token");
         
         // Initialize governance module (handles UUPSUpgradeable, Ownable, ReentrancyGuard, 
         // Pausable, AccessControlEnumerable, role grants, and timelocks)

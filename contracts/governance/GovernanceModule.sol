@@ -6,7 +6,7 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./libraries/ProposalTypes.sol";
 
@@ -15,7 +15,7 @@ abstract contract GovernanceModule is
     OwnableUpgradeable,
     UUPSUpgradeable, 
     PausableUpgradeable, 
-    AccessControlEnumerableUpgradeable, 
+    AccessControlUpgradeable, 
     ReentrancyGuardUpgradeable
 {
     // Events
@@ -63,6 +63,7 @@ abstract contract GovernanceModule is
     uint8 constant INITIATED = 1;
     uint8 private constant PENDING_OWNERSHIP = 2;
     uint8 constant TGE_INITIATED = 4;
+    uint256 adminCount = 2;
 
     /// @notice Core storage mappings
     mapping(bytes32 => ProposalTypes.UnifiedProposal) public proposals;
@@ -103,7 +104,7 @@ abstract contract GovernanceModule is
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
         __Pausable_init();
-        __AccessControlEnumerable_init();
+        __AccessControl_init();
 
         _grantRole(ProposalTypes.ADMIN_ROLE, initialOwner);
         _grantRole(ProposalTypes.ADMIN_ROLE, initialAdmin);
@@ -285,9 +286,7 @@ abstract contract GovernanceModule is
         } else if (proposalType == uint8(ProposalTypes.ProposalType.RemoveRole)){
             if (!hasRole(role, target)) revert RoleAssignment(target, role, 2);
             if (target == msg.sender) revert CannotRemoveSelf();
-            if (role == ProposalTypes.ADMIN_ROLE && getRoleMemberCount(ProposalTypes.ADMIN_ROLE) <= 2) {
-                revert MinimumRoleNoRequired();
-            }
+            if (role == ProposalTypes.ADMIN_ROLE && adminCount <= 2) revert MinimumRoleNoRequired();
         }
 
         bytes32 proposalId = _createProposalId(
@@ -508,6 +507,9 @@ abstract contract GovernanceModule is
             if (proposal.proposalType == uint8(ProposalTypes.ProposalType.AddRole)) {
                 
                 _grantRole(role, account);
+                if (role == ProposalTypes.ADMIN_ROLE) {
+                    ++adminCount;
+                }
                 
                 // Set timelock for new role
                 ProposalTypes.TimeConfig storage timeConfig = timeConfigs[account];
@@ -515,13 +517,10 @@ abstract contract GovernanceModule is
                 _updateActivityTimestamp();
                 emit RU(account, msg.sender, role, true);
             } else if(proposal.proposalType == uint8(ProposalTypes.ProposalType.RemoveRole)) {
-                // Prevent removing the last admin
                 if (role == ProposalTypes.ADMIN_ROLE) {
-                    uint256 adminCount = getRoleMemberCount(ProposalTypes.ADMIN_ROLE);
-                    // Additional validation for admin role
-                    if (adminCount <= 2) revert MinimumRoleNoRequired();
+                    if (adminCount <=2) revert MinimumRoleNoRequired();
+                    --adminCount;
                 }
-                
                 _revokeRole(role, account);
                 delete timeConfigs[account];
                 emit RU(account, msg.sender, role, false);
