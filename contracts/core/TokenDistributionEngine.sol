@@ -12,7 +12,6 @@ import "../governance/GovernanceModule.sol";
 contract TokenDistributionEngine is GovernanceModule {
     using SafeERC20 for IERC20;
 
-    uint256 private proposalCount;
     PackedVars private packedVars;
 
     // @notice Wallet details in the cap

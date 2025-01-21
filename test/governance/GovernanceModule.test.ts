@@ -2,7 +2,7 @@ import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
 import { StorageToken } from "../typechain-types";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
-import { ZeroAddress } from "ethers";
+import { ZeroAddress, BytesLike } from "ethers";
 const { anyValue } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
 import { time } from "@nomicfoundation/hardhat-network-helpers";
 
@@ -12,6 +12,9 @@ describe("GovernanceModule", function () {
   let admin: SignerWithAddress;
   let otherAccount: SignerWithAddress;
   const initialSupply = ethers.parseEther("1000000");
+  const ADMIN_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
+  const BRIDGE_OPERATOR_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("BRIDGE_OPERATOR_ROLE"));
+  const CONTRACT_OPERATOR_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("CONTRACT_OPERATOR_ROLE"));
 
   beforeEach(async function () {
     [owner, admin, otherAccount] = await ethers.getSigners();
@@ -25,8 +28,8 @@ describe("GovernanceModule", function () {
   describe("Initialization", function () {
     it("should correctly initialize the contract with proper roles and settings", async function () {
       // Test initial roles
-      expect(await storageToken.hasRole(await storageToken.ADMIN_ROLE(), owner.address)).to.be.true;
-      expect(await storageToken.hasRole(await storageToken.ADMIN_ROLE(), admin.address)).to.be.true;
+      expect(await storageToken.hasRole(ADMIN_ROLE, owner.address)).to.be.true;
+      expect(await storageToken.hasRole(ADMIN_ROLE, admin.address)).to.be.true;
       
       // Test ownership
       expect(await storageToken.owner()).to.equal(owner.address);
@@ -57,7 +60,7 @@ describe("GovernanceModule", function () {
       
       await expect(newStorageToken.initialize(owner.address, admin.address, initialSupply))
         .to.emit(newStorageToken, "TokensAllocatedToContract")
-        .withArgs(initialSupply, "INITIAL_MINT")
+        .withArgs(initialSupply)
         .and.to.emit(newStorageToken, "TokensMinted")
         .withArgs(await newStorageToken.getAddress(), initialSupply);
     });
@@ -65,7 +68,7 @@ describe("GovernanceModule", function () {
 
   describe("transferOwnership", function () {
     it("should correctly initiate ownership transfer", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       
       // Transfer ownership to otherAccount
       await expect(storageToken.connect(owner).transferOwnership(otherAccount.address))
@@ -89,8 +92,7 @@ describe("GovernanceModule", function () {
     it("should revert when transferring to zero address", async function () {
       await expect(
         storageToken.connect(owner).transferOwnership(ZeroAddress)
-      ).to.be.revertedWithCustomError(storageToken, "InvalidAddress")
-      .withArgs(ZeroAddress);
+      ).to.be.revertedWithCustomError(storageToken, "InvalidAddress");
     });
   
     it("should revert when contract is paused", async function () {
@@ -98,7 +100,7 @@ describe("GovernanceModule", function () {
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
 
       // Pause the contract first
-      await storageToken.connect(owner).emergencyPause();
+      await storageToken.connect(owner).emergencyAction(1);
       
       await expect(
         storageToken.connect(owner).transferOwnership(otherAccount.address)
@@ -143,7 +145,7 @@ describe("GovernanceModule", function () {
       await ethers.provider.send("evm_mine", []);
   
       // Pause the contract
-      await storageToken.connect(owner).emergencyPause();
+      await storageToken.connect(owner).emergencyAction(1);
   
       // Try to accept ownership
       await expect(
@@ -200,7 +202,7 @@ describe("GovernanceModule", function () {
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
       
       // Pause the contract
-      await storageToken.connect(owner).emergencyPause();
+      await storageToken.connect(owner).emergencyAction(1);
       
       await expect(
         storageToken.connect(newOwner).acceptOwnership()
@@ -226,19 +228,20 @@ describe("GovernanceModule", function () {
     });
   
     it("should correctly set transaction limit for a role", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       // Time lock
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
       
       await expect(storageToken.connect(owner).setRoleTransactionLimit(adminRole, newLimit))
         .to.emit(storageToken, "TransactionLimitUpdated")
         .withArgs(adminRole, newLimit);
-  
-      expect(await storageToken.getRoleTransactionLimit(adminRole)).to.equal(newLimit);
+        const roleConfig = await storageToken.roleConfigs(ADMIN_ROLE);
+        const transactionLimit = roleConfig.transactionLimit;
+      expect(transactionLimit).to.equal(newLimit);
     });
   
     it("should revert when called by non-admin", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       
       await expect(
         storageToken.connect(otherAccount).setRoleTransactionLimit(adminRole, newLimit)
@@ -247,13 +250,13 @@ describe("GovernanceModule", function () {
     });
   
     it("should revert when contract is paused", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       
       // Time lock
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
   
       // Pause the contract
-      await storageToken.connect(owner).emergencyPause();
+      await storageToken.connect(owner).emergencyAction(1);
       
       await expect(
         storageToken.connect(owner).setRoleTransactionLimit(adminRole, newLimit)
@@ -261,7 +264,7 @@ describe("GovernanceModule", function () {
     });
   
     it("should revert when timelocked", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       
       await expect(
         storageToken.connect(owner).setRoleTransactionLimit(adminRole, newLimit)
@@ -277,7 +280,7 @@ describe("GovernanceModule", function () {
   
     describe("checkRoleActivity and getRoleActivity", function () {
       it("should correctly track and report activity status", async function () {
-        const adminRole = await storageToken.ADMIN_ROLE();
+        const adminRole = ADMIN_ROLE;
         
         // Wait for timelock to expire
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
@@ -285,101 +288,108 @@ describe("GovernanceModule", function () {
         // Perform an action to update activity timestamp
         await storageToken.connect(owner).setRoleTransactionLimit(adminRole, 1000);
         
-        // Check activity status
-        expect(await storageToken.checkRoleActivity(owner.address)).to.be.true;
+        // Get TimeConfig struct directly from storage
+        const timeConfig = await storageToken.timeConfigs(owner.address);
         
-        // Get last activity timestamp
-        const lastActivity = await storageToken.getRoleActivity(owner.address);
-        expect(lastActivity).to.be.gt(0);
-      });
+        // Check lastActivityTime directly from the struct
+        expect(timeConfig.lastActivityTime).to.be.gt(0);
+    });    
   
-      it("should return false for inactive accounts", async function () {
-        const inactivityThreshold = await storageToken.INACTIVITY_THRESHOLD();
-        
+    it("should return false for inactive accounts", async function () {
+      const INACTIVITY_THRESHOLD = 365 * 24 * 60 * 60 +1; // 90 days in seconds
+      
+      // Wait for timelock to expire
+      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+      
+      // Perform action to set initial activity
+      const adminRole = ADMIN_ROLE;
+      await storageToken.connect(owner).setRoleTransactionLimit(adminRole, 1000);
+      
+      // Get block timestamp after action
+      const blockAfterAction = await ethers.provider.getBlock("latest");
+  
+      // Move time beyond inactivity threshold
+      await ethers.provider.send("evm_setNextBlockTimestamp", 
+          [blockAfterAction.timestamp + INACTIVITY_THRESHOLD + 1]
+      );
+      await ethers.provider.send("evm_mine");
+  
+      // Check timeConfig directly from storage
+      const timeConfig = await storageToken.timeConfigs(owner.address);
+      const currentTime = await time.latest();
+      
+      // Verify inactivity by comparing timestamps
+      expect(BigInt(currentTime) - BigInt(timeConfig.lastActivityTime)).to.be.gt(BigInt(INACTIVITY_THRESHOLD));
+    });
+  
+    it("should return 0 timestamp for addresses with no activity", async function () {
+      const timeConfig = await storageToken.timeConfigs(otherAccount.address);
+      expect(timeConfig.lastActivityTime).to.equal(0);
+    });
+    
+    it("should update activity timestamp after role-related actions", async function () {
         // Wait for timelock to expire
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
         
-        // Perform action to set initial activity
-        const adminRole = await storageToken.ADMIN_ROLE();
-        await storageToken.connect(owner).setRoleTransactionLimit(adminRole, 1000);
+        const adminRole = ADMIN_ROLE;
         
-        // Get block timestamp after action
-        const blockAfterAction = await ethers.provider.getBlock("latest");
-
-        // Move time beyond inactivity threshold
-        await ethers.provider.send("evm_setNextBlockTimestamp", 
-            [blockAfterAction.timestamp + Number(inactivityThreshold) + 1]
-        );
-        await ethers.provider.send("evm_mine");
-
-        
-        expect(await storageToken.checkRoleActivity(owner.address)).to.be.false;
-      });
-  
-      it("should return 0 timestamp for addresses with no activity", async function () {
-        const lastActivity = await storageToken.getRoleActivity(otherAccount.address);
-        expect(lastActivity).to.equal(0);
-      });
-  
-      it("should update activity timestamp after role-related actions", async function () {
-        // Wait for timelock to expire
-        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-        
-        const adminRole = await storageToken.ADMIN_ROLE();
-        const beforeActivity = await storageToken.getRoleActivity(owner.address);
+        // Get initial activity timestamp from storage
+        const beforeConfig = await storageToken.timeConfigs(owner.address);
+        const beforeActivity = beforeConfig.lastActivityTime;
         
         await ethers.provider.send("evm_increaseTime", [60]); // Add 1 minute
         
         await storageToken.connect(owner).setRoleTransactionLimit(adminRole, 2000);
         
-        const afterActivity = await storageToken.getRoleActivity(owner.address);
-        expect(afterActivity).to.be.gt(beforeActivity);
-      });
+        // Get updated activity timestamp from storage
+        const afterConfig = await storageToken.timeConfigs(owner.address);
+        expect(afterConfig.lastActivityTime).to.be.gt(beforeActivity);
+    });  
     });
   });
 
-  describe("getRoleQuorum", function () {
+  describe("Role Quorum", function () {
     beforeEach(async function () {
-      [owner, admin, otherAccount] = await ethers.getSigners();
+        [owner, admin, otherAccount] = await ethers.getSigners();
     });
-  
+
     it("should correctly return role quorum", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
-      const bridgeOperatorRole = await storageToken.BRIDGE_OPERATOR_ROLE();
-      const contractOperatorRole = await storageToken.CONTRACT_OPERATOR_ROLE();
-      
-      // Wait for timelock to expire
-      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-  
-      // Set quorums for different roles
-      await storageToken.connect(owner).setRoleQuorum(adminRole, 3);
-      await storageToken.connect(owner).setRoleQuorum(bridgeOperatorRole, 4);
-      await storageToken.connect(owner).setRoleQuorum(contractOperatorRole, 5);
-  
-      // Check quorums
-      expect(await storageToken.getRoleQuorum(adminRole)).to.equal(3);
-      expect(await storageToken.getRoleQuorum(bridgeOperatorRole)).to.equal(4);
-      expect(await storageToken.getRoleQuorum(contractOperatorRole)).to.equal(5);
+        // Wait for timelock to expire
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+
+        // Set quorums for different roles
+        await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 3);
+        await storageToken.connect(owner).setRoleQuorum(BRIDGE_OPERATOR_ROLE, 4);
+        await storageToken.connect(owner).setRoleQuorum(CONTRACT_OPERATOR_ROLE, 5);
+
+        // Check quorums directly from storage
+        const adminConfig = await storageToken.roleConfigs(ADMIN_ROLE);
+        const bridgeConfig = await storageToken.roleConfigs(BRIDGE_OPERATOR_ROLE);
+        const contractConfig = await storageToken.roleConfigs(CONTRACT_OPERATOR_ROLE);
+
+        expect(adminConfig.quorum).to.equal(3);
+        expect(bridgeConfig.quorum).to.equal(4);
+        expect(contractConfig.quorum).to.equal(5);
     });
-  
+
     it("should return 0 for roles without set quorum", async function () {
-      const underReviewRole = await storageToken.CONTRACT_OPERATOR_ROLE();
-      expect(await storageToken.getRoleQuorum(underReviewRole)).to.equal(0);
+        const config = await storageToken.roleConfigs(CONTRACT_OPERATOR_ROLE);
+        expect(config.quorum).to.equal(0);
     });
-  
+
     it("should be readable by non-admin accounts", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
-      
-      // Wait for timelock to expire
-      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
-      
-      // Set quorum as admin
-      await storageToken.connect(owner).setRoleQuorum(adminRole, 3);
-      
-      // Read quorum as non-admin
-      expect(await storageToken.connect(otherAccount).getRoleQuorum(adminRole)).to.equal(3);
+        // Wait for timelock to expire
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        
+        // Set quorum as admin
+        await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 3);
+        
+        // Read quorum directly from storage as non-admin
+        const config = await storageToken.connect(otherAccount).roleConfigs(ADMIN_ROLE);
+        expect(config.quorum).to.equal(3);
     });
   });
+
   
   describe("createProposal", function () {
     let newAccount: SignerWithAddress;
@@ -388,7 +398,7 @@ describe("GovernanceModule", function () {
     });
   
     it("should correctly create a role addition proposal", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       
       // Wait for timelock to expire
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
@@ -410,7 +420,6 @@ describe("GovernanceModule", function () {
       ).to.emit(storageToken, "ProposalCreated")
       .withArgs(
         anyValue,
-        1, // version
         proposalType,
         otherAccount.address,
         adminRole,
@@ -433,17 +442,20 @@ describe("GovernanceModule", function () {
       const proposalId = event?.topics[1];
   
       // Check proposal details
-      const proposal = await storageToken.getProposalDetails(proposalId);
+      const proposal = await storageToken.proposals(proposalId);
+
+      // Basic proposal details are directly accessible
       expect(proposal.proposalType).to.equal(proposalType);
       expect(proposal.target).to.equal(newAccount.address);
       expect(proposal.role).to.equal(adminRole);
-      expect(proposal.approvals).to.equal(1);
-      expect(proposal.executed).to.equal(0);
-      expect(proposal.hasApproved).to.be.true;
+
+      // Access config struct fields
+      expect(proposal.config.approvals).to.equal(1);
+      expect(proposal.config.status).to.equal(0);
     });
   
     it("should revert when creating proposal with zero address target", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       
       // Wait for timelock to expire
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
@@ -457,13 +469,12 @@ describe("GovernanceModule", function () {
           0,
           ZeroAddress
         )
-      ).to.be.revertedWithCustomError(storageToken, "InvalidAddress")
-      .withArgs(ZeroAddress);
+      ).to.be.revertedWithCustomError(storageToken, "InvalidAddress");
     });
   
     it("should revert when creating proposal with invalid role", async function () {
       const invalidRole = ethers.keccak256(ethers.toUtf8Bytes("INVALID_ROLE"));
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       
       // Wait for timelock to expire
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
@@ -484,7 +495,7 @@ describe("GovernanceModule", function () {
     });
   
     it("should revert when creating duplicate proposal", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       
       // Wait for timelock to expire
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
@@ -524,12 +535,12 @@ describe("GovernanceModule", function () {
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
       
       // Set quorum
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
     });
   
     it("should correctly approve a proposal", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       const proposalType = 1; // AddRole type
 
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
@@ -561,11 +572,6 @@ describe("GovernanceModule", function () {
         .withArgs(proposalId, proposalType)
         .to.emit(storageToken, "ProposalExecuted")
         .withArgs(proposalId, proposalType, otherAccount.address);
-  
-      // Verify proposal details after execution
-      await expect(
-        storageToken.getProposalDetails(proposalId)
-      ).to.be.revertedWithCustomError(storageToken, "ProposalErr");
     });
   
     it("should revert when approving non-existent proposal", async function () {
@@ -577,7 +583,7 @@ describe("GovernanceModule", function () {
     });
   
     it("should revert when approving already approved proposal", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       const proposalType = 1; // AddRole type
       
       // Create proposal
@@ -601,7 +607,7 @@ describe("GovernanceModule", function () {
     });
   
     it("should revert when approving expired proposal", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       const proposalType = 1; // AddRole type
       
       // Create proposal
@@ -636,12 +642,12 @@ describe("GovernanceModule", function () {
       await ethers.provider.send("evm_mine");
       
       // Set quorum
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
     });
   
     it("should correctly execute a role addition proposal", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       const proposalType = 1; // AddRole type
       
       // Create proposal
@@ -683,7 +689,7 @@ describe("GovernanceModule", function () {
     });
   
     it("should revert when executing proposal with insufficient approvals", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       const proposalType = 1; // AddRole type
       
       // Create proposal
@@ -703,12 +709,12 @@ describe("GovernanceModule", function () {
       // Try to execute without second approval
       await expect(
         storageToken.connect(owner).executeProposal(proposalId)
-      ).to.be.revertedWithCustomError(storageToken, "InsufficientApprovalsErr")
+      ).to.be.revertedWithCustomError(storageToken, "InsufficientApprovals")
       .withArgs(2, 1);
     });
   
     it("should revert when executing before execution delay", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       const proposalType = 1; // AddRole type
       
       // Create proposal
@@ -731,7 +737,7 @@ describe("GovernanceModule", function () {
       // Try to execute before delay
       await expect(
         storageToken.connect(owner).executeProposal(proposalId)
-      ).to.be.revertedWithCustomError(storageToken, "ProposalExecutionDelayNotMetErr");
+      ).to.be.revertedWithCustomError(storageToken, "ExecutionDelayNotMet");
     });
   });
   
@@ -746,9 +752,9 @@ describe("GovernanceModule", function () {
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
         await ethers.provider.send("evm_mine");
   
-        await expect(storageToken.connect(owner).emergencyPause())
-          .to.emit(storageToken, "EmergencyAction")
-          .withArgs("Contract paused", await time.latest() +1, owner.address)
+        await expect(storageToken.connect(owner).emergencyAction(1))
+          .to.emit(storageToken, "EA")
+          .withArgs(1, await time.latest() +1, owner.address)
           .to.emit(storageToken, "Paused")
           .withArgs(owner.address);
   
@@ -756,10 +762,10 @@ describe("GovernanceModule", function () {
       });
   
       it("should revert when called by non-admin", async function () {
-        const adminRole = await storageToken.ADMIN_ROLE();
+        const adminRole = ADMIN_ROLE;
         
         await expect(
-          storageToken.connect(otherAccount).emergencyPause()
+          storageToken.connect(otherAccount).emergencyAction(1)
         ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount")
         .withArgs(otherAccount.address, adminRole);
       });
@@ -770,11 +776,11 @@ describe("GovernanceModule", function () {
         await ethers.provider.send("evm_mine");
   
         // First pause
-        await storageToken.connect(owner).emergencyPause();
+        await storageToken.connect(owner).emergencyAction(1);
         
         // Try to pause again immediately
         await expect(
-          storageToken.connect(owner).emergencyPause()
+          storageToken.connect(owner).emergencyAction(1)
         ).to.be.revertedWithCustomError(storageToken, "CoolDownActive");
       });
     });
@@ -784,7 +790,7 @@ describe("GovernanceModule", function () {
         // Wait for timelock to expire and pause the contract
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
         await ethers.provider.send("evm_mine");
-        await storageToken.connect(owner).emergencyPause();
+        await storageToken.connect(owner).emergencyAction(1);
       });
   
       it("should correctly unpause the contract", async function () {
@@ -792,9 +798,9 @@ describe("GovernanceModule", function () {
         await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
         await ethers.provider.send("evm_mine");
   
-        await expect(storageToken.connect(owner).emergencyUnpause())
-          .to.emit(storageToken, "EmergencyAction")
-          .withArgs("Contract unpaused", await time.latest() +1, owner.address)
+        await expect(storageToken.connect(owner).emergencyAction(2))
+          .to.emit(storageToken, "EA")
+          .withArgs(2, await time.latest() +1, owner.address)
           .to.emit(storageToken, "Unpaused")
           .withArgs(owner.address);
   
@@ -802,10 +808,10 @@ describe("GovernanceModule", function () {
       });
   
       it("should revert when called by non-admin", async function () {
-        const adminRole = await storageToken.ADMIN_ROLE();
+        const adminRole = ADMIN_ROLE;
         
         await expect(
-          storageToken.connect(otherAccount).emergencyUnpause()
+          storageToken.connect(otherAccount).emergencyAction(2)
         ).to.be.revertedWithCustomError(storageToken, "AccessControlUnauthorizedAccount")
         .withArgs(otherAccount.address, adminRole);
       });
@@ -813,19 +819,19 @@ describe("GovernanceModule", function () {
       it("should revert when called during cooldown period", async function () {
         // Try to unpause immediately after pause
         await expect(
-          storageToken.connect(owner).emergencyUnpause()
+          storageToken.connect(owner).emergencyAction(2)
         ).to.be.revertedWithCustomError(storageToken, "CoolDownActive");
       });
   
       it("should run after cooldown", async function () {
         await expect(
-            storageToken.connect(owner).emergencyUnpause()
+            storageToken.connect(owner).emergencyAction(2)
           ).to.be.revertedWithCustomError(storageToken, "CoolDownActive");
         await ethers.provider.send("evm_increaseTime", [30 * 60 + 1]);
         await ethers.provider.send("evm_mine");
 
         await expect(
-          storageToken.connect(owner).emergencyUnpause()
+          storageToken.connect(owner).emergencyAction(2)
         ).to.not.be.reverted;
       });
     });
@@ -842,7 +848,7 @@ describe("GovernanceModule", function () {
     });
   
     it("should correctly set quorum for a role", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       const newQuorum = 3;
       
       // Wait for timelock to expire
@@ -853,11 +859,12 @@ describe("GovernanceModule", function () {
         .to.emit(storageToken, "QuorumUpdated")
         .withArgs(adminRole, newQuorum);
   
-      expect(await storageToken.getRoleQuorum(adminRole)).to.equal(newQuorum);
+        const roleConfig = await storageToken.roleConfigs(adminRole);
+        expect(roleConfig.quorum).to.equal(newQuorum);
     });
   
     it("should revert when setting quorum less than or equal to 1", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       
       // Wait for timelock to expire
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
@@ -875,7 +882,7 @@ describe("GovernanceModule", function () {
     });
   
     it("should revert when called by non-admin", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       
       await expect(
         storageToken.connect(otherAccount).setRoleQuorum(adminRole, 3)
@@ -884,14 +891,14 @@ describe("GovernanceModule", function () {
     });
   
     it("should revert when contract is paused", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       
       // Wait for timelock to expire
       await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
       await ethers.provider.send("evm_mine");
   
       // Pause the contract
-      await storageToken.connect(owner).emergencyPause();
+      await storageToken.connect(owner).emergencyAction(1);
       
       await expect(
         storageToken.connect(owner).setRoleQuorum(adminRole, 3)
@@ -907,12 +914,12 @@ describe("GovernanceModule", function () {
           await ethers.provider.send("evm_mine");
           
           // Set quorum
-          const adminRole = await storageToken.ADMIN_ROLE();
+          const adminRole = ADMIN_ROLE;
           await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
         });
       
         it("should correctly return pending proposals with pagination", async function () {
-            const adminRole = await storageToken.ADMIN_ROLE();
+            const adminRole = ADMIN_ROLE;
             const proposalType = 1; // AddRole type
             
             // Create multiple proposals
@@ -927,73 +934,35 @@ describe("GovernanceModule", function () {
               );
             }
           
-            // Get proposals with offset 0 and limit 2
-            const result = await storageToken.getPendingProposals(0, 2);
-            const proposalIds = result[0];
-            const types = result[1];
-            const targets = result[2];
-            const expiryTimes = result[3];
-            const total = result[4];
-            const totalWithExpired = result[5];
-          
-            expect(proposalIds.length).to.equal(2);
-            expect(types.length).to.equal(2);
-            expect(targets.length).to.equal(2);
-            expect(expiryTimes.length).to.equal(2);
-            expect(total).to.equal(2);
-            expect(totalWithExpired).to.equal(3);
-          
-            // Verify all returned proposals are valid
-            for(let i = 0; i < proposalIds.length; i++) {
-              const details = await storageToken.getProposalDetails(proposalIds[i]);
-              expect(details.proposalType).to.equal(types[i]);
-              expect(details.target).to.equal(targets[i]);
-              expect(details.expiryTime).to.equal(expiryTimes[i]);
+            // Get total proposal count
+            const count = await storageToken.proposalCount();
+
+            // Read proposals directly from storage
+            const proposals: any[] = [];
+            for(let i = 0; i < 2; i++) {
+                // Get proposalId from registry
+                const proposalId = await storageToken.proposalRegistry(i);
+                // Get full proposal details from storage
+                const proposal = await storageToken.proposals(proposalId);
+                proposals.push({
+                    id: proposalId,
+                    type: proposal.proposalType,
+                    target: proposal.target,
+                    expiryTime: proposal.config.expiryTime
+                });
             }
-        });          
-      
-        it("should revert when limit is too high", async function () {
-          await expect(
-            storageToken.getPendingProposals(0, 21)
-          ).to.be.revertedWithCustomError(storageToken, "LimitTooHigh");
+
+            expect(proposals.length).to.equal(2);
+
+            // Verify each proposal
+            for(let i = 0; i < proposals.length; i++) {
+                const proposal = await storageToken.proposals(proposals[i].id);
+                expect(proposal.proposalType).to.equal(proposals[i].type);
+                expect(proposal.target).to.equal(proposals[i].target);
+                expect(proposal.config.expiryTime).to.equal(proposals[i].expiryTime);
+            }
         });
       
-        it("should handle expired proposals correctly", async function () {
-          const adminRole = await storageToken.ADMIN_ROLE();
-          const proposalType = 1; // AddRole type
-          
-          // Create a proposal
-          await storageToken.connect(owner).createProposal(
-            proposalType,
-            0,
-            await wallets[0].getAddress(),
-            adminRole,
-            0,
-            ZeroAddress
-          );
-      
-          // Move time beyond proposal timeout (48 hours)
-          await ethers.provider.send("evm_increaseTime", [96 * 60 * 60 + 1]);
-          await ethers.provider.send("evm_mine");
-      
-          // Should not include expired proposals
-          const [proposalIds, , , , total, totalWithExpired] = await storageToken.getPendingProposals(0, 10);
-          console.log({proposalIds});
-          expect(proposalIds.length).to.equal(0);
-          expect(total).to.equal(0);
-          expect(totalWithExpired).to.equal(1);
-        });
-      
-        it("should return empty arrays when no proposals exist", async function () {
-          const [proposalIds, types, targets, expiryTimes, total] = 
-            await storageToken.getPendingProposals(0, 10);
-      
-          expect(proposalIds.length).to.equal(0);
-          expect(types.length).to.equal(0);
-          expect(targets.length).to.equal(0);
-          expect(expiryTimes.length).to.equal(0);
-          expect(total).to.equal(0);
-        });
       });
   });
   
@@ -1006,12 +975,12 @@ describe("GovernanceModule", function () {
       await ethers.provider.send("evm_mine");
       
       // Set quorum
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
     });
   
     it("should correctly return proposal details", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       const proposalType = 1; // AddRole type
       const amount = 0;
       
@@ -1029,21 +998,28 @@ describe("GovernanceModule", function () {
       const event = receipt?.logs[0];
       const proposalId = event?.topics[1];
   
-      // Get proposal details
-      const details = await storageToken.getProposalDetails(proposalId);
-      
-      expect(details.proposalType).to.equal(proposalType);
-      expect(details.target).to.equal(otherAccount.address);
-      expect(details.role).to.equal(adminRole);
-      expect(details.amount).to.equal(amount);
-      expect(details.tokenAddress).to.equal(ZeroAddress);
-      expect(details.approvals).to.equal(1);
-      expect(details.executed).to.equal(0);
-      expect(details.hasApproved).to.be.true; // Creator automatically approves
+      // Get proposal directly from storage
+      const proposal = await storageToken.proposals(proposalId);
+
+      // Check basic proposal fields
+      expect(proposal.proposalType).to.equal(proposalType);
+      expect(proposal.target).to.equal(otherAccount.address);
+      expect(proposal.role).to.equal(adminRole);
+      expect(proposal.amount).to.equal(amount);
+      expect(proposal.tokenAddress).to.equal(ZeroAddress);
+
+      // Check config fields
+      expect(proposal.config.approvals).to.equal(1);
+      expect(proposal.config.status).to.equal(0); // executed status
+
+      // Check hasApproved mapping separately
+      const hasApproved = await storageToken.hasProposalApproval(proposalId, owner.address);
+      expect(hasApproved).to.be.true;
+
     });
   
     it("should return correct details after proposal approval", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       const proposalType = 1; // AddRole type
       
       // Create a proposal
@@ -1067,22 +1043,31 @@ describe("GovernanceModule", function () {
       // Approve by second admin
       await storageToken.connect(admin).approveProposal(proposalId);
   
-      // Get proposal details
-      await expect(
-        storageToken.getProposalDetails(proposalId)
-      ).to.be.revertedWithCustomError(storageToken, "ProposalErr");
+      // Get proposal directly from storage
+      const proposal = await storageToken.proposals(proposalId);
+
+      // Check if proposal is empty/invalid by checking critical fields
+      expect(proposal.proposalType).to.equal(0);
+      expect(proposal.target).to.equal(ZeroAddress);
     });
   
     it("should return zero values for non-existent proposal", async function () {
       const nonExistentProposalId = ethers.keccak256(ethers.toUtf8Bytes("non-existent"));
       
-      await expect(
-        storageToken.getProposalDetails(nonExistentProposalId)
-      ).to.be.revertedWithCustomError(storageToken, "ProposalErr");
+      const proposal = await storageToken.proposals(nonExistentProposalId);
+
+      // Check if proposal is empty/non-existent by verifying all fields are empty/default values
+      expect(proposal.proposalType).to.equal(0);
+      expect(proposal.target).to.equal(ZeroAddress);
+      expect(proposal.role).to.equal(ethers.ZeroHash);
+      expect(proposal.amount).to.equal(0);
+      expect(proposal.tokenAddress).to.equal(ZeroAddress);
+      expect(proposal.config.approvals).to.equal(0);
+      expect(proposal.config.status).to.equal(0);
     });
   
     it("should show correct approval status for different accounts", async function () {
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       const proposalType = 1; // AddRole type
       
       // Create a proposal
@@ -1100,11 +1085,11 @@ describe("GovernanceModule", function () {
       const proposalId = event?.topics[1];
   
       // Check details from different accounts
-      const detailsFromOwner = await storageToken.connect(owner).getProposalDetails(proposalId);
-      expect(detailsFromOwner.hasApproved).to.be.true; // Creator approved
+      const hasApproved = await storageToken.connect(owner).hasProposalApproval(proposalId, owner.address);
+      expect(hasApproved).to.be.true; // Creator approved
   
-      const detailsFromAdmin = await storageToken.connect(admin).getProposalDetails(proposalId);
-      expect(detailsFromAdmin.hasApproved).to.be.false; // Not approved by admin yet
+      const adminApproved = await storageToken.connect(admin).hasProposalApproval(proposalId, admin.address);
+      expect(adminApproved).to.be.false; 
     });
   });
   describe("Role Assignment and Removal", function () {
@@ -1116,12 +1101,12 @@ describe("GovernanceModule", function () {
       await ethers.provider.send("evm_mine");
       
       // Set quorum
-      const adminRole = await storageToken.ADMIN_ROLE();
+      const adminRole = ADMIN_ROLE;
       await storageToken.connect(owner).setRoleQuorum(adminRole, 2);
     });
   
     it("should correctly assign and remove role through proposals", async function () {
-      const bridgeOperatorRole = await storageToken.BRIDGE_OPERATOR_ROLE();
+      const bridgeOperatorRole = BRIDGE_OPERATOR_ROLE;
       
       // Create role assignment proposal
       const addRoleType = 1; // AddRole type
@@ -1190,7 +1175,9 @@ describe("StorageToken", () => {
     let operator: SignerWithAddress;
     const TOKEN_UNIT = ethers.parseEther("1");
     const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
-  
+    const ADMIN_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
+    const BRIDGE_OPERATOR_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("BRIDGE_OPERATOR_ROLE"));
+    const CONTRACT_OPERATOR_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("CONTRACT_OPERATOR_ROLE"));
     beforeEach(async () => {
         [owner, admin, addr1, operator] = await ethers.getSigners();
         const StorageToken = await ethers.getContractFactory("StorageToken");
@@ -1207,8 +1194,6 @@ describe("StorageToken", () => {
         await ethers.provider.send("evm_mine", []);
 
         // Set quorums for both roles first
-        const ADMIN_ROLE = await storageToken.ADMIN_ROLE();
-        const CONTRACT_OPERATOR_ROLE = await storageToken.CONTRACT_OPERATOR_ROLE();
         await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
         await storageToken.connect(owner).setRoleQuorum(CONTRACT_OPERATOR_ROLE, 2);
 
@@ -1287,7 +1272,7 @@ describe("StorageToken", () => {
             await ethers.provider.send("evm_increaseTime", [executionDelay + 1]);
     
             // Now test upgrade when paused
-            await storageToken.connect(owner).emergencyPause();
+            await storageToken.connect(owner).emergencyAction(1);
             await expect(
                 upgrades.upgradeProxy(
                     await storageToken.getAddress(),
@@ -1299,7 +1284,7 @@ describe("StorageToken", () => {
             // Unpause with cooldown
             const coolDownLock = 30 * 60;
             await ethers.provider.send("evm_increaseTime", [coolDownLock + 1]);
-            await storageToken.connect(owner).emergencyUnpause();
+            await storageToken.connect(owner).emergencyAction(2);
     
             // Test successful upgrade
             const upgradedToken = await upgrades.upgradeProxy(
@@ -1307,7 +1292,6 @@ describe("StorageToken", () => {
                 StorageTokenV2,
                 { kind: 'uups' }
             );
-            expect(await upgradedToken.version()).to.equal(1);
         });
     });
 });

@@ -30,7 +30,6 @@ contract StorageToken is
     uint256 private constant MAX_BPS = 500; // 5%
     uint256 private platformFeeBps;
 
-    uint256 private proposalCount;
     PackedVars private packedVars;
 
     /// @notice Initialize the token contract

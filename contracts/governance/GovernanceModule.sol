@@ -20,7 +20,7 @@ abstract contract GovernanceModule is
 {
     // Events
     event RU(address target, address caller, bytes32 role, bool status); //RoleUpdates
-    event EA(uint8 action, uint256 timestamp, address caller); // EmergencyAction
+    event EA(uint8 action, uint256 timestamp, address caller); // EmergencyAction 1 pause, 2 unpause
     event ProposalCreated(bytes32 indexed proposalId, uint8 indexed proposalType, address indexed target, bytes32 role, uint256 amount, address tokenAddress, address proposer);
     event ProposalApproved(bytes32 indexed proposalId, uint8 indexed proposalType, address indexed approver);
     event ProposalReadyForExecution(bytes32 indexed proposalId, uint8 indexed proposalType);
@@ -63,7 +63,7 @@ abstract contract GovernanceModule is
     uint8 constant INITIATED = 1;
     uint8 private constant PENDING_OWNERSHIP = 2;
     uint8 constant TGE_INITIATED = 4;
-    uint256 adminCount = 2;
+    uint256 public adminCount;
 
     /// @notice Core storage mappings
     mapping(bytes32 => ProposalTypes.UnifiedProposal) public proposals;
@@ -73,8 +73,8 @@ abstract contract GovernanceModule is
     mapping(address => bytes32) public upgradeProposals;
 
     /// @notice Proposal tracking
-    uint256 private proposalCount;
-    mapping(uint256 => bytes32) private proposalRegistry;
+    uint256 public proposalCount;
+    mapping(uint256 => bytes32) public proposalRegistry;
 
     /// @notice Packed storage variables
     struct PackedVars {
@@ -108,6 +108,7 @@ abstract contract GovernanceModule is
 
         _grantRole(ProposalTypes.ADMIN_ROLE, initialOwner);
         _grantRole(ProposalTypes.ADMIN_ROLE, initialAdmin);
+        adminCount = 2;
 
         uint256 lockTime = block.timestamp + ProposalTypes.ROLE_CHANGE_DELAY;
         timeConfigs[initialOwner].roleChangeTimeLock = uint64(lockTime);
@@ -186,6 +187,10 @@ abstract contract GovernanceModule is
         proposal.config.executionTime = uint64(block.timestamp + ProposalTypes.MIN_PROPOSAL_EXECUTION_DELAY);
         proposal.config.approvals = 1;
         proposal.hasApproved[msg.sender] = true;
+    }
+
+    function hasProposalApproval(bytes32 proposalId, address account) public view returns (bool) {
+        return proposals[proposalId].hasApproved[account];
     }
 
     /// @notice Create a new proposal
