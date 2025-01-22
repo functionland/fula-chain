@@ -51,6 +51,7 @@
     "@openzeppelin/contracts": "^5.2.0",
     "@openzeppelin/contracts-upgradeable": "^5.2.0",
     "@openzeppelin/upgrades-core": "^1.41.0",
+    "hardhat-contract-sizer": "^2.10.0",
     "tslib": "^2.8.1"
   }
 }

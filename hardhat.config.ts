@@ -3,6 +3,7 @@ import "@nomicfoundation/hardhat-toolbox";
 import "@nomicfoundation/hardhat-web3-v4";
 import '@openzeppelin/hardhat-upgrades';
 import "@nomicfoundation/hardhat-verify";
+import "hardhat-contract-sizer";
 
 const config: HardhatUserConfig = {
     solidity: {
@@ -73,6 +74,12 @@ const config: HardhatUserConfig = {
         enabled: process.env.REPORT_GAS !== undefined,
         currency: "USD",
         excludeContracts: ["contracts/mocks/"]
+    },
+    contractSizer: {
+        alphaSort: true,
+        runOnCompile: true,
+        disambiguatePaths: false,
+        strict: true
     }
 };
 
