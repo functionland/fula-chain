@@ -34,19 +34,37 @@ const config: HardhatUserConfig = {
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 80002
         },
-        iotex: {
+        "iotex-testnet": {
             url: "https://babel-api.testnet.iotex.io",
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 4690
         },
-        skale: {
+        "skale-testnet": {
             url: "https://testnet.skalenodes.com/v1/giant-half-dual-testnet",
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 974399131
         }
     },
     etherscan: {
-        apiKey: vars.has("ETHERSCAN_API_KEY") ? vars.get("ETHERSCAN_API_KEY") : ""
+        apiKey: vars.has("ETHERSCAN_API_KEY") ? vars.get("ETHERSCAN_API_KEY") : "",
+        customChains: [
+            {
+              network: "iotex-mainnet",
+              chainId: 4689,
+              urls: {
+                apiURL: "https://iotexscout.io/api",
+                browserURL: "https://iotexscan.io"
+              }
+            },
+            {
+              network: "iotext-testnet",
+              chainId: 4690,
+              urls: {
+                apiURL: "https://testnet.iotexscout.io/api",
+                browserURL: "https://testnet.iotexscan.io"
+              }
+            }
+        ]
     },
     mocha: {
         timeout: 40000

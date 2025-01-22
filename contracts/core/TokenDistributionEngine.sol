@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
-
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -9,7 +9,7 @@ import "../governance/GovernanceModule.sol";
 /// @title TokenDistributionEngine
 /// @notice Handles token distribution with vesting and cliff periods
 /// @dev Inherits governance functionality from GovernanceModule
-contract TokenDistributionEngine is GovernanceModule {
+contract TokenDistributionEngine is ERC20Upgradeable, GovernanceModule {
     using SafeERC20 for IERC20;
 
     PackedVars private packedVars;
