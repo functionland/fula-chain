@@ -44,6 +44,15 @@ const config: HardhatUserConfig = {
             url: "https://testnet.skalenodes.com/v1/giant-half-dual-testnet",
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 974399131
+        },
+        "sfi-testnet": {
+            url: "https://rpc-testnet.singularityfinance.ai",
+            accounts: vars.has("PK") ? [vars.get("PK")] : [],
+            chainId: 751
+        },
+        localhost: {
+            url: "http://127.0.0.1:3000",
+            chainId: 31337
         }
     },
     etherscan: {

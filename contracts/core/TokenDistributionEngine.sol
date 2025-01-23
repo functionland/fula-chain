@@ -645,6 +645,11 @@ contract TokenDistributionEngine is ERC20Upgradeable, GovernanceModule {
         }
     }
 
+    function getWalletsInCap(uint256 capId) public view returns (address[] memory) {
+        VestingCap storage cap = vestingCaps[capId];
+        return cap.wallets;
+    }
+
     function _authorizeUpgrade(address newImplementation) 
         internal 
         nonReentrant
