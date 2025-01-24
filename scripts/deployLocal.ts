@@ -62,6 +62,37 @@ async function showContractDetails(storageToken, distributionEngine) {
     }
 }
 
+async function verifyDeployment(storageToken, distributionEngine) {
+    // Verify StorageToken deployment
+    const tokenAddress = await storageToken.getAddress();
+    console.log("\n=== Verifying StorageToken Deployment ===");
+    try {
+        const totalSupply = await storageToken.maxSupply();
+        const contractBalance = await storageToken.balanceOf(tokenAddress);
+        console.log(`Token Address: ${tokenAddress}`);
+        console.log(`Max Supply: ${ethers.formatEther(totalSupply)} tokens`);
+        console.log(`Contract Balance: ${ethers.formatEther(contractBalance)} tokens`);
+    } catch (error) {
+        console.error("StorageToken verification failed:", error);
+        throw new Error("StorageToken deployment verification failed");
+    }
+
+    // Verify TokenDistributionEngine deployment
+    const distributionAddress = await distributionEngine.getAddress();
+    console.log("\n=== Verifying TokenDistributionEngine Deployment ===");
+    try {
+        const storageTokenAddress = await distributionEngine.storageToken();
+        if (storageTokenAddress.toLowerCase() !== tokenAddress.toLowerCase()) {
+            throw new Error("StorageToken address mismatch in Distribution contract");
+        }
+        console.log(`Distribution Address: ${distributionAddress}`);
+        console.log(`Linked StorageToken: ${storageTokenAddress}`);
+    } catch (error) {
+        console.error("TokenDistributionEngine verification failed:", error);
+        throw new Error("TokenDistributionEngine deployment verification failed");
+    }
+}
+
 async function main() {
     // Initial setup
     const [deployer] = await ethers.getSigners();
@@ -212,11 +243,11 @@ console.log("2 vesting caps added");
 const capIdsLength = await getCapIdLEngth(distributionEngine);
 console.log("number of caps: "+capIdsLength);
 
-// Add wallets to caps
+// Add wallets to caps -these are hardhat default wallets
 const cap1Wallets = [
-    "0x923E6C83A4b2DdE7F3a061F5497A0D554d67Ce3F",
-    "0x71c30985750793A1b8cE4AE55b54b2b4cB3f25E0",
-    "0xbE6157bC090536ee15763356Ac11be00b15951E3"
+    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
 ];
 
 for (const wallet of cap1Wallets) {
@@ -254,7 +285,7 @@ for (const wallet of cap1Wallets) {
 const cap2ProposalTx = await distributionWithAdmin.createProposal(
     7, // AddDistributionWallets is type 7
     2, // capId
-    "0x1be910377306492D4763CE4ef35EFa6B18085538",
+    "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
     ethers.encodeBytes32String("Beneficiary"),
     ethers.parseEther("50000000"),
     ethers.ZeroAddress
@@ -288,6 +319,10 @@ console.log("Setup completed successfully!");
 // Add this at the end of your deployment script
 await showContractDetails(storageToken, distributionEngine);
 
+await verifyDeployment(storageToken, distributionEngine);
+    
+    console.log("Deployment successful and verified!");
+
 }
 
 
@@ -299,5 +334,5 @@ main()
     });
 
 
-// npx hardhat node --port 3000
+// npx hardhat node
 // npx hardhat run scripts/deployLocal.ts --network localhost
