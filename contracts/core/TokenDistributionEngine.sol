@@ -597,7 +597,11 @@ contract TokenDistributionEngine is ERC20Upgradeable, GovernanceModule {
             if (walletInfo.amount == 0) revert WalletNotInCap(wallet, capId);
             
             // Update cap allocation
-            cap.allocatedToWallets -= walletInfo.amount;
+            if (cap.allocatedToWallets >= walletInfo.amount) {
+                cap.allocatedToWallets -= walletInfo.amount;
+            } else {
+                cap.allocatedToWallets = 0;
+            }
             
             // Remove from cap wallets array
             address[] storage wallets = cap.wallets;

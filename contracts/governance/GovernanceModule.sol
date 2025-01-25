@@ -364,7 +364,7 @@ abstract contract GovernanceModule is
             // Delete entire record
             delete pendingProposals[proposal.target];
             delete proposals[proposalId];
-            proposalCount -= 1;
+            if (proposalCount > 0) proposalCount -= 1;
             _removeFromRegistry(proposalId);
             
             emit ProposalExpired(proposalId, proposal.proposalType, proposal.target);
@@ -483,7 +483,7 @@ abstract contract GovernanceModule is
             // Mark proposal as executed
             proposal.config.status = 1;
             delete proposals[proposalId];
-            proposalCount -= 1;
+            if (proposalCount > 0) proposalCount -= 1;
             _removeFromRegistry(proposalId);
         } else if (proposal.proposalType == uint8(ProposalTypes.ProposalType.Upgrade)) {
             // Nothing
@@ -506,7 +506,7 @@ abstract contract GovernanceModule is
             // Mark proposal as executed
             proposal.config.status = 1;
             delete proposals[proposalId];
-            proposalCount -= 1;
+            if (proposalCount > 0) proposalCount -= 1;
             _removeFromRegistry(proposalId);
         }
     }
@@ -655,7 +655,7 @@ abstract contract GovernanceModule is
         // Delete pending proposals if all flags are cleared
         delete pendingProposals[target];
         delete proposals[currentId];
-        proposalCount -= 1;
+        if (proposalCount > 0) proposalCount -= 1;
         _removeFromRegistry(currentId);
         _updateActivityTimestamp();
         emit ProposalExecuted(currentId, currentProposal.proposalType, target);
