@@ -13,6 +13,7 @@
     "test:governance": "set REPORT_GAS=true && yarn hardhat test test/governance/GovernanceModule.test.ts",
     "test:token": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/StorageToken.test.ts",
     "test:distribution": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/TokenDistributionEngine.test.ts",
+    "test:airdrop": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/AirDropContract.test.ts",
     "test": "yarn hardhat test"
   },
   "devDependencies": {
