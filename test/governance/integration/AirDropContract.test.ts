@@ -623,4 +623,37 @@ describe("AirdropCalculation", function () {
         expect(bal).to.be.closeTo(ethers.parseEther("200"), ethers.parseEther("0.000000000000000002"));
     });
 
+    it("should prevent adding duplicate wallet to cap", async function () {
+        // First add wallet through proposal
+        const addWalletType = 7; // AddDistributionWallets
+        const addWalletTx = await airdropContract.connect(owner).createProposal(
+            addWalletType,
+            1, // capId
+            otherAccount.address,
+            ethers.encodeBytes32String("Second User"),
+            ethers.parseEther("50"), // 50 tokens allocation
+            ZeroAddress
+        );
+
+        const addWalletReceipt = await addWalletTx.wait();
+        const addWalletProposalId = addWalletReceipt?.logs[0].topics[1];
+
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await airdropContract.connect(admin).approveProposal(addWalletProposalId);
+
+        // Try to add same wallet again
+        await expect(
+            airdropContract.connect(owner).createProposal(
+                addWalletType,
+                1, // same capId
+                otherAccount.address, // same wallet
+                ethers.encodeBytes32String("Duplicate User"),
+                ethers.parseEther("30"),
+                ZeroAddress
+            )
+        ).to.be.revertedWithCustomError(airdropContract, "WalletExistsInCap")
+        .withArgs(otherAccount.address, 1);
+    });
+
+
 });
