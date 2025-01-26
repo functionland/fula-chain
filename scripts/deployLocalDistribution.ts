@@ -335,4 +335,4 @@ main()
 
 
 // npx hardhat node
-// npx hardhat run scripts/deployLocal.ts --network localhost
+// npx hardhat run scripts/deployLocalDistribution.ts --network localhost

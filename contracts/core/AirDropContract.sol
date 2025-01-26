@@ -26,13 +26,13 @@ contract AirdropContract is ERC20Upgradeable, GovernanceModule {
     /// @notice Cap parameters struct
     struct VestingCap {
         uint256 totalAllocation;
+        bytes32 name; //name for this cap
         uint256 cliff; // in days
         uint256 vestingTerm; // in months
         uint256 vestingPlan; // in months
         uint256 initialRelease; // percentage (e.g., 10% = 10)
         uint256 startDate; // TGE start date
         uint256 allocatedToWallets; //Amount allocated to wallets in this cap
-        bytes32 name; //name for this cap
         address[] wallets; //wallets in this cap
     }
 
