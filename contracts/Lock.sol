@@ -19,4 +19,8 @@ contract Lock {
         unlockTime = _unlockTime;
         owner = payable(msg.sender);
     }
+
+    receive() external payable {
+        revert("ETH not accepted");
+    }
 }

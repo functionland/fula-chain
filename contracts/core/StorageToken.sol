@@ -98,7 +98,7 @@ contract StorageToken is
         if (blacklisted[from]) revert BlacklistedAddress(from);
         if (blacklisted[to]) revert BlacklistedAddress(to);
         if (platformFeeBps > 0) {
-            uint256 fee = (amount * platformFeeBps) / MAX_BPS;
+            uint256 fee = (amount * platformFeeBps) / 10000;
             super._update(from, address(treasury), fee);
             super._update(from, to, amount - fee);
         } else {

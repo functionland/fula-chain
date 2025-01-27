@@ -267,22 +267,6 @@ contract TokenDistributionEngine is ERC20Upgradeable, GovernanceModule {
         emit VestingCapAction(capId, capName, 2);
     }
 
-    /// @notice Removes a wallet from the vesting cap and any pending proposal
-    /// @param capId the unique id
-    /// @param wallet the wallet address to be removed from cap
-    function _removeWallet(uint256 capId, address wallet) internal whenNotPaused  onlyRole(ProposalTypes.ADMIN_ROLE) {
-        VestingCap storage cap = vestingCaps[capId];
-        address[] storage wallets = cap.wallets;
-        for (uint i = 0; i < wallets.length; i++) {
-            if(wallet == wallets[i]) {
-                wallets[i] = wallets[capIds.length - 1];
-                wallets.pop();
-                break;
-            }
-        }
-        delete vestingWallets[wallet][capId];
-    }
-
     function _checkAllocatedTokensToContract(uint256 amount) internal view returns (bool) {
         uint256 totalSupply = storageToken.totalSupply();
         uint256 totalAllocated = 0;

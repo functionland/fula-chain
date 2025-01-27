@@ -62,6 +62,7 @@ abstract contract GovernanceModule is
     error LowBalance(uint256 walletBalance, uint256 requiredBalance);
 
     uint32 private constant PROPOSAL_TIMEOUT = 48 hours;
+    uint32 private constant GAS_BUFFER = 20_000; // Gas buffer for proposal registry cleanup and loops
 
     // Flag Constants
     uint8 constant INITIATED = 1;
@@ -348,16 +349,13 @@ abstract contract GovernanceModule is
     }
 
     /// @notice checks and removes expired proposals
-    function _checkExpiredProposal(bytes32 proposalId) internal {
+    function _checkExpiredProposal(bytes32 proposalId) internal returns (bool) {
         ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
         if (block.timestamp >= proposal.config.expiryTime) {
             // Handle common proposal types
-            if (proposal.proposalType == uint8(ProposalTypes.ProposalType.AddRole) || proposal.proposalType == uint8(ProposalTypes.ProposalType.RemoveRole)) {
-                // Nothing needed for role changes
-            } else if (proposal.proposalType == uint8(ProposalTypes.ProposalType.Upgrade)) {
+            if (proposal.proposalType == uint8(ProposalTypes.ProposalType.Upgrade)) {
                 delete upgradeProposals[proposal.target];
             } else {
-                // Let child contracts handle their specific flags
                 _handleCustomProposalExpiry(proposalId);
             }
 
@@ -368,21 +366,19 @@ abstract contract GovernanceModule is
             _removeFromRegistry(proposalId);
             
             emit ProposalExpired(proposalId, proposal.proposalType, proposal.target);
-            revert ProposalErr(2);
+            return true; // Indicate that the proposal has expired
         }
+        return false; // Indicate that the proposal has not expired
     }
 
     function _removeFromRegistry(bytes32 proposalId) internal {
-        uint256 count = proposalCount;
         uint256 i;
-        
-        for (; i < count;) {
+        while(i < proposalCount && gasleft() > GAS_BUFFER) {
             if (proposalRegistry[i] == proposalId) {
-                if (i != --count) {
-                    proposalRegistry[i] = proposalRegistry[count];
+                if (i != --proposalCount) {
+                    proposalRegistry[i] = proposalRegistry[proposalCount];
                 }
-                delete proposalRegistry[count];
-                proposalCount = count;
+                delete proposalRegistry[proposalCount];
                 break;
             }
             unchecked { ++i; }
@@ -414,7 +410,9 @@ abstract contract GovernanceModule is
         _validateTimelock(msg.sender);
         _validateQuorum(ProposalTypes.ADMIN_ROLE);
         
-        _checkExpiredProposal(proposalId);
+        if (_checkExpiredProposal(proposalId)) {
+            revert ProposalErr(2); // Revert if expired
+        }
         
         proposal.hasApproved[msg.sender] = true;
         proposal.config.approvals++;
@@ -470,7 +468,9 @@ abstract contract GovernanceModule is
         onlyRole(ProposalTypes.ADMIN_ROLE)
     {
         ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
-         _checkExpiredProposal(proposalId);
+        if (_checkExpiredProposal(proposalId)) {
+            revert ProposalErr(2); // Revert if expired
+        }
 
         // All checks passed, execute the proposal
         if (proposal.proposalType == uint8(ProposalTypes.ProposalType.AddRole) ||
@@ -497,6 +497,12 @@ abstract contract GovernanceModule is
             
             bool success = token.transfer(proposal.target, proposal.amount);
             if (!success) revert Failed(2);
+            // Add cleanup
+            delete pendingProposals[proposal.target];
+            delete proposals[proposalId];
+            if (proposalCount > 0) proposalCount -= 1;
+            _removeFromRegistry(proposalId);
+            emit ProposalExecuted(proposalId, proposal.proposalType, proposal.target);
         } else {
             _executeCustomProposal(proposalId);
             emit ProposalExecuted(proposalId, proposal.proposalType, proposal.target);
@@ -628,7 +634,9 @@ abstract contract GovernanceModule is
         
         // Cache proposal storage
         ProposalTypes.UnifiedProposal storage currentProposal = proposals[currentId];
-        _checkExpiredProposal(currentId);
+        if (_checkExpiredProposal(currentId)) {
+            revert ProposalErr(2); // Revert if expired
+        }
         
         // Check if proposal is valid
         if (currentProposal.proposalType != uint8(ProposalTypes.ProposalType.Upgrade) || 
@@ -650,7 +658,7 @@ abstract contract GovernanceModule is
         
         // Update state
         delete upgradeProposals[newImplementation];
-        currentProposal.config.status == 1;  // Set executed flag
+        currentProposal.config.status = 1;  // Set executed flag
         
         // Delete pending proposals if all flags are cleared
         delete pendingProposals[target];

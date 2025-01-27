@@ -10,10 +10,11 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 /// @dev Used in StorageToken contract
 contract Treasury is AccessControl, ReentrancyGuard {
     address public immutable storageToken;
+    uint256 private _adminCount; // Tracking admins manually to avoid using EnumerableAccessControl for contract size optimization
 
     event W(address indexed t, address indexed r, uint256 a); // Withdrawn(token, to, amount)
 
-    error F(uint8 s); // Failed(status);
+    error F(uint8 s); // Failed(status); 0 - zero address, 1 - zero amount, 2 - insufficient balance, 3 - transfer failed, 4 - last admin
 
     /// @notice initializes the Treasury
     /// @param  _storageToken is the address of main token contract
@@ -28,6 +29,28 @@ contract Treasury is AccessControl, ReentrancyGuard {
         storageToken = _storageToken;
         
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        _adminCount = 1; // Initialize admin count
+    }
+
+    // Override grantRole to track admin count
+    function grantRole(bytes32 role, address account) public override {
+        if (role == DEFAULT_ADMIN_ROLE && !hasRole(role, account)) {
+            _adminCount += 1;
+        }
+        super.grantRole(role, account);
+    }
+
+    // Override revokeRole to prevent last admin revocation
+    function revokeRole(bytes32 role, address account) public override {
+        if (role == DEFAULT_ADMIN_ROLE) {
+            if (hasRole(role, account)) {
+                if (_adminCount <= 1) {
+                    revert F(4); // Prevent last admin revocation
+                }
+                _adminCount -= 1;
+            }
+        }
+        super.revokeRole(role, account);
     }
 
     /// @notice this method withdraws the gathered fees to the main contract, which then can be burnt or recirculated
