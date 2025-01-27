@@ -76,6 +76,7 @@ abstract contract GovernanceModule is
     mapping(address => ProposalTypes.TimeConfig) public timeConfigs;
     mapping(bytes32 => ProposalTypes.RoleConfig) public roleConfigs;
     mapping(address => bytes32) public upgradeProposals;
+    mapping(bytes32 => uint256) public proposalIndex;
 
     /// @notice Proposal tracking
     uint256 public proposalCount;
@@ -179,7 +180,7 @@ abstract contract GovernanceModule is
     }
 
     /// @notice Get pending owner address
-    function pendingOwner() public view virtual returns (address) {
+    function pendingOwner() external view virtual returns (address) {
         return _pendingOwnerRequest;
     }
 
@@ -196,7 +197,7 @@ abstract contract GovernanceModule is
     }
 
     /// @notice checks if an account has already approved a specific proposal
-    function hasProposalApproval(bytes32 proposalId, address account) public view returns (bool) {
+    function hasProposalApproval(bytes32 proposalId, address account) external view returns (bool) {
         return proposals[proposalId].hasApproved[account];
     }
 
@@ -272,6 +273,7 @@ abstract contract GovernanceModule is
 
         // Register proposal
         proposalRegistry[proposalCount] = proposalId;
+        proposalIndex[proposalId] = proposalCount;
         proposalCount += 1;
         pendingProposals[target].proposalType = uint8(proposalType);
 
@@ -362,7 +364,6 @@ abstract contract GovernanceModule is
             // Delete entire record
             delete pendingProposals[proposal.target];
             delete proposals[proposalId];
-            if (proposalCount > 0) proposalCount -= 1;
             _removeFromRegistry(proposalId);
             
             emit ProposalExpired(proposalId, proposal.proposalType, proposal.target);
@@ -371,18 +372,46 @@ abstract contract GovernanceModule is
         return false; // Indicate that the proposal has not expired
     }
 
-    function _removeFromRegistry(bytes32 proposalId) internal {
-        uint256 i;
-        while(i < proposalCount && gasleft() > GAS_BUFFER) {
-            if (proposalRegistry[i] == proposalId) {
-                if (i != --proposalCount) {
-                    proposalRegistry[i] = proposalRegistry[proposalCount];
-                }
-                delete proposalRegistry[proposalCount];
-                break;
+    /// @notice Cleans up expired proposals in batches to avoid gas limits
+    /// @param maxProposalsToCheck Maximum number of proposals to check in this batch
+    function cleanupExpiredProposals(uint256 maxProposalsToCheck) 
+        external 
+        whenNotPaused 
+        nonReentrant 
+        onlyRole(ProposalTypes.ADMIN_ROLE) 
+    {
+        uint256 checked = 0;
+        uint256 index = proposalCount;
+        
+        // Process from the end of the registry to minimize storage changes
+        while (checked < maxProposalsToCheck && index > 0) {
+            unchecked { index--; } // Gas optimization: unchecked as index > 0
+            checked++;
+            
+            bytes32 proposalId = proposalRegistry[index];
+            if (proposals[proposalId].target == address(0)) {
+                continue; // Skip already cleaned proposals
             }
-            unchecked { ++i; }
+            
+            // Check expiration and automatically clean if needed
+            _checkExpiredProposal(proposalId);
         }
+        _updateActivityTimestamp();
+    }
+
+    function _removeFromRegistry(bytes32 proposalId) internal {
+        uint256 index = proposalIndex[proposalId];
+        if (index >= proposalCount) return;
+
+        // Swap with the last element
+        bytes32 lastProposalId = proposalRegistry[proposalCount - 1];
+        proposalRegistry[index] = lastProposalId;
+        proposalIndex[lastProposalId] = index;
+
+        // Delete the last element
+        delete proposalRegistry[proposalCount - 1];
+        delete proposalIndex[proposalId];
+        proposalCount -= 1;
     }
 
     // Virtual function for contract-specific proposals
@@ -483,7 +512,6 @@ abstract contract GovernanceModule is
             // Mark proposal as executed
             proposal.config.status = 1;
             delete proposals[proposalId];
-            if (proposalCount > 0) proposalCount -= 1;
             _removeFromRegistry(proposalId);
         } else if (proposal.proposalType == uint8(ProposalTypes.ProposalType.Upgrade)) {
             // Nothing
@@ -500,7 +528,6 @@ abstract contract GovernanceModule is
             // Add cleanup
             delete pendingProposals[proposal.target];
             delete proposals[proposalId];
-            if (proposalCount > 0) proposalCount -= 1;
             _removeFromRegistry(proposalId);
             emit ProposalExecuted(proposalId, proposal.proposalType, proposal.target);
         } else {
@@ -512,7 +539,6 @@ abstract contract GovernanceModule is
             // Mark proposal as executed
             proposal.config.status = 1;
             delete proposals[proposalId];
-            if (proposalCount > 0) proposalCount -= 1;
             _removeFromRegistry(proposalId);
         }
     }
@@ -663,7 +689,6 @@ abstract contract GovernanceModule is
         // Delete pending proposals if all flags are cleared
         delete pendingProposals[target];
         delete proposals[currentId];
-        if (proposalCount > 0) proposalCount -= 1;
         _removeFromRegistry(currentId);
         _updateActivityTimestamp();
         emit ProposalExecuted(currentId, currentProposal.proposalType, target);
