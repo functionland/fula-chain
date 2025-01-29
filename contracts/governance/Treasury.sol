@@ -53,6 +53,18 @@ contract Treasury is AccessControl, ReentrancyGuard {
         super.revokeRole(role, account);
     }
 
+    function renounceRole(bytes32 role, address account) public override {
+        if (role == DEFAULT_ADMIN_ROLE) {
+            if (hasRole(role, account)) {
+                if (_adminCount <= 1) {
+                    revert F(4);
+                }
+                _adminCount -= 1;
+            }
+        }
+        super.renounceRole(role, account);
+    }
+
     /// @notice this method withdraws the gathered fees to the main contract, which then can be burnt or recirculated
     /// @param t is the token contract address
     /// @param a is the amount to be transferred to token contract
