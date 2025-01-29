@@ -62,8 +62,6 @@ abstract contract GovernanceModule is
     error LowBalance(uint256 walletBalance, uint256 requiredBalance);
 
     uint32 private constant PROPOSAL_TIMEOUT = 48 hours;
-    uint32 private constant GAS_BUFFER = 20_000; // Gas buffer for proposal registry cleanup and loops
-
     // Flag Constants
     uint8 constant INITIATED = 1;
     uint8 private constant PENDING_OWNERSHIP = 2;
