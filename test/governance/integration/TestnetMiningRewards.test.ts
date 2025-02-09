@@ -1,11 +1,12 @@
 import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
-import { TestnetMiningRewards, StorageToken } from "../typechain-types";
+import { TestnetMiningRewards, StorageToken, SubstrateAddressMapper } from "../typechain-types";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 import { ZeroAddress, BytesLike, Wallet, SigningKey, getBytes, toQuantity } from "ethers";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
 import { encodeAddress } from '@polkadot/util-crypto';
 
+// Use the same value as in ProposalTypes.sol
 const ADMIN_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
 const BRIDGE_OPERATOR_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("BRIDGE_OPERATOR_ROLE"));
 
@@ -32,6 +33,7 @@ function getMatchingAddresses() {
 describe("TestnetMiningRewards", function () {
     let rewardsContract: TestnetMiningRewards;
     let storageToken: StorageToken;
+    let addressMapper: SubstrateAddressMapper;
     let owner: SignerWithAddress;
     let admin: SignerWithAddress;
     let user: Wallet;
@@ -71,19 +73,56 @@ describe("TestnetMiningRewards", function () {
         ) as StorageToken;
         await storageToken.waitForDeployment();
 
-        // Deploy TestnetMiningRewards
-        const TestnetMiningRewards = await ethers.getContractFactory("TestnetMiningRewards");
+        // Deploy Libraries
+        const VestingCalculator = await ethers.getContractFactory("VestingCalculator");
+        const vestingCalculator = await VestingCalculator.deploy();
+        await vestingCalculator.waitForDeployment();
+
+        const VestingManager = await ethers.getContractFactory("VestingManager");
+        const vestingManager = await VestingManager.deploy();
+        await vestingManager.waitForDeployment();
+
+        // Deploy SubstrateAddressMapper
+        const SubstrateAddressMapper = await ethers.getContractFactory("SubstrateAddressMapper");
+        addressMapper = await upgrades.deployProxy(
+            SubstrateAddressMapper,
+            [owner.address],
+            { 
+                kind: 'uups',
+                initializer: 'initialize'
+            }
+        );
+        await addressMapper.waitForDeployment();
+
+        // Deploy TestnetMiningRewards with libraries
+        const TestnetMiningRewards = await ethers.getContractFactory("TestnetMiningRewards", {
+            libraries: {
+                VestingCalculator: await vestingCalculator.getAddress(),
+                VestingManager: await vestingManager.getAddress()
+            }
+        });
+        
         rewardsContract = await upgrades.deployProxy(
             TestnetMiningRewards,
-            [await storageToken.getAddress(), owner.address, admin.address],
-            { kind: 'uups', initializer: 'initialize' }
+            [await storageToken.getAddress(), await addressMapper.getAddress(), owner.address, admin.address],
+            { 
+                kind: 'uups', 
+                initializer: 'initialize',
+                unsafeAllow: ['external-library-linking']
+            }
         ) as TestnetMiningRewards;
         await rewardsContract.waitForDeployment();
 
-        // Set up roles and permissions (same as original)
+        // Wait for role change timelock to expire (ROLE_CHANGE_DELAY is 1 day)
+        await time.increase(24 * 60 * 60 + 1);
+
+        // Set up roles and permissions
         await storageToken.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
         await rewardsContract.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
 
+        // Wait for execution delay
+        await time.increase(24 * 60 * 60 + 1);
+        
         await time.increase(24 * 60 * 60 + 1);
         await storageToken.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, TOTAL_SUPPLY);
         

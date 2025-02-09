@@ -46,22 +46,29 @@ contract TestnetMiningRewards is
     /// @notice Initialize the contract
     /// @param _storageToken Address of the token to distribute
     /// @param _addressMapper Address of the SubstrateAddressMapper contract
-    /// @param _admin Address of the admin
+    /// @param initialOwner Address of the owner
+    /// @param initialAdmin Address of the admin
     function initialize(
         address _storageToken,
         address _addressMapper,
-        address _admin
+        address initialOwner,
+        address initialAdmin
     ) public initializer {
-        require(_storageToken != address(0) && _addressMapper != address(0) && _admin != address(0), "Invalid address");
+        require(
+            _storageToken != address(0) && 
+            _addressMapper != address(0) && 
+            initialOwner != address(0) && 
+            initialAdmin != address(0), 
+            "Invalid address"
+        );
 
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
         __Pausable_init();
-        __GovernanceModule_init(_admin, _admin);
+        __GovernanceModule_init(initialOwner, initialAdmin);
 
         storageToken = ERC20Upgradeable(_storageToken);
         addressMapper = SubstrateAddressMapper(_addressMapper);
-        nextCapId = 1;
     }
 
     /// @notice Initiate Token Generation Event to start Vesting and Distribution of pre-allocated tokens
@@ -420,10 +427,21 @@ contract TestnetMiningRewards is
         lastActivityTimestamp = block.timestamp;
     }
 
-    function _authorizeUpgrade(address) internal override onlyRole(ProposalTypes.ADMIN_ROLE) {}
-
     function getWalletsInCap(uint256 capId) public view returns (address[] memory) {
         VestingTypes.VestingCap storage cap = vestingCaps[capId];
         return cap.wallets;
     }
+
+    function _authorizeUpgrade(address newImplementation) 
+        internal 
+        nonReentrant
+        whenNotPaused
+        onlyRole(ProposalTypes.ADMIN_ROLE) 
+        override 
+    {
+        // Delegate the authorization to the governance module
+        if (! _checkUpgrade(newImplementation)) revert("UpgradeNotAuthorized");
+
+    }
+
 }

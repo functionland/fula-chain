@@ -4,8 +4,15 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "../governance/libraries/ProposalTypes.sol";
 
-contract SubstrateAddressMapper is AccessControlUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable {
+contract SubstrateAddressMapper is 
+    AccessControlUpgradeable, 
+    ReentrancyGuardUpgradeable, 
+    PausableUpgradeable,
+    UUPSUpgradeable 
+{
     mapping(address => bytes) public ethereumToSubstrate;
 
     event AddressesAdded(uint256 count);
@@ -17,8 +24,10 @@ contract SubstrateAddressMapper is AccessControlUpgradeable, ReentrancyGuardUpgr
         __AccessControl_init();
         __ReentrancyGuard_init();
         __Pausable_init();
+        __UUPSUpgradeable_init();
         
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(ProposalTypes.ADMIN_ROLE, admin);
     }
 
     function addAddress(
@@ -51,6 +60,22 @@ contract SubstrateAddressMapper is AccessControlUpgradeable, ReentrancyGuardUpgr
         require(ethereumToSubstrate[ethereumAddr].length != 0, "Address not mapped");
         delete ethereumToSubstrate[ethereumAddr];
         emit AddressRemoved(ethereumAddr);
+    }
+
+    function _authorizeUpgrade(address newImplementation) 
+        internal 
+        nonReentrant
+        whenNotPaused
+        onlyRole(ProposalTypes.ADMIN_ROLE) 
+        override 
+    {
+        // Delegate the authorization to the governance module
+        if (!_checkUpgrade(newImplementation)) revert("UpgradeNotAuthorized");
+    }
+
+    function _checkUpgrade(address newImplementation) internal pure returns (bool) {
+        // Add any additional upgrade checks here
+        return newImplementation != address(0);
     }
 
     function verifySubstrateAddress(address wallet, bytes calldata substrateAddr) public view returns (bool) {
