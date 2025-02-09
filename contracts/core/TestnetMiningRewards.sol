@@ -6,20 +6,15 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../governance/GovernanceModule.sol";
 import "../libraries/VestingTypes.sol";
 import "../libraries/VestingCalculator.sol";
-import "../libraries/VestingManager.sol";
-import "./SubstrateAddressMapper.sol";
 
 contract TestnetMiningRewards is 
     GovernanceModule {
     using SafeERC20 for ERC20Upgradeable;
     using VestingCalculator for VestingTypes.VestingCap;
-    using VestingManager for mapping(uint256 => VestingTypes.VestingCap);
-    using VestingManager for mapping(address => mapping(uint256 => VestingTypes.VestingWalletInfo));
 
     PackedVars private packedVars;
     
     ERC20Upgradeable public storageToken;
-    SubstrateAddressMapper public addressMapper;
     uint256 public tgeTimestamp;
     uint256 public totalAllocation;
     uint256 public lastActivityTimestamp;
@@ -29,6 +24,7 @@ contract TestnetMiningRewards is
     mapping(uint256 => VestingTypes.VestingCap) public vestingCaps;
     mapping(address => mapping(uint256 => VestingTypes.VestingWalletInfo)) public vestingWallets;
     mapping(address => VestingTypes.SubstrateRewards) public substrateRewardInfo;
+    mapping(address => bytes) public ethereumToSubstrate;
 
     /// @notice Events
     event TokenDistributionInitialized(address indexed token);
@@ -36,27 +32,31 @@ contract TestnetMiningRewards is
     event TokensClaimed(address indexed beneficiary, uint256 amount);
     event ClaimProcessed(address indexed beneficiary, uint256 indexed capId, uint256 amount);
     event SubstrateRewardsUpdated(address indexed wallet, uint256 amount);
+    event AddressesAdded(uint256 count);
+    event AddressRemoved(address indexed ethereumAddr);
     event VestingCapAction(uint256 id, bytes32 name, uint8 action);
+    event DistributionWalletAdded(address indexed beneficiary, uint256 amount, uint256 startTime, uint256 cliffPeriod, uint256 vestingPeriod);
+    event DistributionWalletRemoved(address indexed wallet, uint256 indexed capId);
 
     /// @notice Custom errors with error codes
     error InvalidOperation(uint8 code); // Codes: 1=TGE not initiated, 2=Nothing due, 3=Low balance
     error InvalidState(uint8 code);     // Codes: 1=Already initialized, 2=Cap not found, 3=Wallet not found
     error InvalidParameter(uint8 code); // Codes: 1=Invalid amount, 2=Invalid ratio, 3=Invalid cap, 4=Invalid initial release, 5=Invalid vesting plan
+    error InvalidAddressLength();
+    error NothingToClaim();
+    error WalletMismatch();
 
     /// @notice Initialize the contract
     /// @param _storageToken Address of the token to distribute
-    /// @param _addressMapper Address of the SubstrateAddressMapper contract
     /// @param initialOwner Address of the owner
     /// @param initialAdmin Address of the admin
     function initialize(
         address _storageToken,
-        address _addressMapper,
         address initialOwner,
         address initialAdmin
     ) public initializer {
         require(
             _storageToken != address(0) && 
-            _addressMapper != address(0) && 
             initialOwner != address(0) && 
             initialAdmin != address(0), 
             "Invalid address"
@@ -68,7 +68,6 @@ contract TestnetMiningRewards is
         __GovernanceModule_init(initialOwner, initialAdmin);
 
         storageToken = ERC20Upgradeable(_storageToken);
-        addressMapper = SubstrateAddressMapper(_addressMapper);
     }
 
     /// @notice Initiate Token Generation Event to start Vesting and Distribution of pre-allocated tokens
@@ -200,35 +199,41 @@ contract TestnetMiningRewards is
     /// @param capId capId which the beneficiary is claiming tokens from
    function calculateDueTokens(
         address wallet,
-        string memory substrateWallet,
+        string calldata substrateWallet,
         uint256 capId
     ) public view returns (uint256) {
-        VestingTypes.VestingCap storage cap = vestingCaps[capId];
-        if(cap.startDate == 0) revert InvalidState(2);
+        VestingTypes.VestingCap memory cap = vestingCaps[capId];
+        if (cap.startDate == 0) revert InvalidParameter(3);
 
-        if (!addressMapper.verifySubstrateAddress(wallet, bytes(substrateWallet))) {
-            revert InvalidOperation(2);
-        }
+        VestingTypes.VestingWalletInfo memory walletInfo = vestingWallets[wallet][capId];
+        if (walletInfo.amount == 0) revert NothingToClaim();
 
-        VestingTypes.VestingWalletInfo storage walletInfo = vestingWallets[wallet][capId];
-        if(walletInfo.amount == 0) revert InvalidState(3);
+        VestingTypes.SubstrateRewards memory rewards = substrateRewardInfo[wallet];
+        if (!isSubstrateWalletMapped(wallet, substrateWallet)) revert InvalidParameter(2);
 
-        VestingTypes.SubstrateRewards storage rewards = substrateRewardInfo[wallet];
         return VestingCalculator.calculateDueTokens(cap, rewards, walletInfo, block.timestamp);
     }
 
+    function _claimTokens(
+        address wallet,
+        uint256 capId,
+        uint256 dueTokens
+    ) internal {
+        VestingTypes.VestingWalletInfo storage walletInfo = vestingWallets[wallet][capId];
+        walletInfo.claimed += dueTokens;
+        walletInfo.lastClaimMonth = (block.timestamp - vestingCaps[capId].startDate) / 30 days;
+
+        storageToken.safeTransfer(wallet, dueTokens);
+    }
+
     /// @notice Claim vested tokens. Automatically calculates based on vesting schedule and transfers if anything is due
-    function claimTokens(string memory substrateWallet, uint256 capId) external nonReentrant whenNotPaused {
+    function claimTokens(string calldata substrateWallet, uint256 capId) external nonReentrant whenNotPaused {
         if(tgeTimestamp == 0) revert InvalidOperation(1);
 
         uint256 dueTokens = calculateDueTokens(msg.sender, substrateWallet, capId);
         if(dueTokens == 0) revert InvalidOperation(2);
 
-        VestingManager.claimTokens(
-            vestingCaps,
-            vestingWallets,
-            substrateRewardInfo,
-            storageToken,
+        _claimTokens(
             msg.sender,
             capId,
             dueTokens
@@ -238,35 +243,14 @@ contract TestnetMiningRewards is
         emit ClaimProcessed(msg.sender, capId, dueTokens);
         lastActivityTimestamp = block.timestamp;
     }
-
-    function batchAddAddresses(
-        address[] calldata ethereumAddrs, 
-        bytes[] calldata substrateAddrs
-    ) external nonReentrant whenNotPaused onlyRole(ProposalTypes.ADMIN_ROLE) {
-        require(ethereumAddrs.length == substrateAddrs.length, "Arrays length mismatch");
-        require(ethereumAddrs.length <= 1000, "Batch too large");
-        
-        for(uint256 i = 0; i < ethereumAddrs.length; i++) {
-            require(ethereumAddrs[i] != address(0), "Invalid ethereum address");
-            require(substrateAddrs[i].length <= 50, "Invalid substrate address length");
-            addressMapper.addAddress(ethereumAddrs[i], substrateAddrs[i]);
-        }
-    }
-
-    // Remove single mapping
-    function removeAddress(address ethereumAddr) external nonReentrant whenNotPaused onlyRole(ProposalTypes.ADMIN_ROLE) {
-        bytes memory substrateAddr = addressMapper.ethereumToSubstrate(ethereumAddr);
-        require(substrateAddr.length != 0, "Address not mapped");
-        addressMapper.removeAddress(ethereumAddr);
-    }
     
     // Batch remove function
     function batchRemoveAddresses(address[] calldata ethereumAddrs) external nonReentrant whenNotPaused onlyRole(ProposalTypes.ADMIN_ROLE) {
         require(ethereumAddrs.length <= 1000, "Batch too large");
         
         for(uint256 i = 0; i < ethereumAddrs.length; i++) {
-            if(addressMapper.ethereumToSubstrate(ethereumAddrs[i]).length != 0) {
-                addressMapper.removeAddress(ethereumAddrs[i]);
+            if(ethereumToSubstrate[ethereumAddrs[i]].length != 0) {
+                removeAddress(ethereumAddrs[i]);
             }
         }
     }
@@ -303,18 +287,18 @@ contract TestnetMiningRewards is
         // For adding wallet to cap
         if (proposalType == uint8(ProposalTypes.ProposalType.AddDistributionWallets)) {
             // amount parameter is used as capId
-            uint40 capId = id;
+            uint40 vestingCapId = id;
             
             // Validate cap exists and has space
-            VestingTypes.VestingCap storage cap = vestingCaps[capId];
+            VestingTypes.VestingCap storage cap = vestingCaps[vestingCapId];
             if (cap.totalAllocation == 0) revert InvalidParameter(3);
             if (cap.allocatedToWallets + amount > cap.totalAllocation) {
                 revert InvalidParameter(1);
             }
 
             // Check if wallet already exists in cap
-            if (vestingWallets[target][capId].amount > 0) {
-                revert InvalidState(3);
+            if (vestingWallets[target][vestingCapId].amount > 0) {
+                revert NothingToClaim();
             }
 
             // Check for existing proposals
@@ -324,7 +308,7 @@ contract TestnetMiningRewards is
 
             bytes32 proposalId = _createProposalId(
                 proposalType,
-                keccak256(abi.encodePacked(target, capId, role))
+                keccak256(abi.encodePacked(target, vestingCapId, role))
             );
 
             ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
@@ -335,22 +319,18 @@ contract TestnetMiningRewards is
 
             // Store proposal data
             proposal.proposalType = proposalType;
-            proposal.role = role; // Used to store wallet name
-            proposal.amount = amount; // Amount to allocate
-            proposal.id = capId; // Store capId
-            
-            // Mark pending proposal
-            pendingProposals[target].proposalType = proposalType;
+            proposal.id = vestingCapId;
+            proposal.role = role;
+            proposal.amount = amount;
+
+            // Track pending proposal
+            pendingProposals[target].proposalType = proposal.proposalType;
 
             return proposalId;
-        }
-        // For removing wallet from cap
-        else if (proposalType == uint8(ProposalTypes.ProposalType.RemoveDistributionWallet)) {
-            uint40 capId = id;
-            
-            // Validate wallet exists in cap
-            if (vestingWallets[target][capId].amount == 0) {
-                revert InvalidState(4);
+        } else if (proposalType == uint8(ProposalTypes.ProposalType.RemoveDistributionWallet)) {
+            // Check if wallet exists in cap
+            if (vestingWallets[target][id].amount == 0) {
+                revert NothingToClaim();
             }
 
             // Check for existing proposals
@@ -360,7 +340,7 @@ contract TestnetMiningRewards is
 
             bytes32 proposalId = _createProposalId(
                 proposalType,
-                keccak256(abi.encodePacked(target, capId))
+                keccak256(abi.encodePacked(target, id))
             );
 
             ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
@@ -371,14 +351,14 @@ contract TestnetMiningRewards is
 
             // Store proposal data
             proposal.proposalType = proposalType;
-            proposal.id = capId; // Store capId
-            
-            // Mark pending proposal
-            pendingProposals[target].proposalType = proposalType;
+            proposal.id = id;
+
+            // Track pending proposal
+            pendingProposals[target].proposalType = proposal.proposalType;
 
             return proposalId;
         }
-        
+
         revert InvalidProposalType(proposalType);
     }
 
@@ -400,14 +380,12 @@ contract TestnetMiningRewards is
         
         if (proposal.proposalType == uint8(ProposalTypes.ProposalType.AddDistributionWallets)) {
             address wallet = proposal.target;
-            uint256 capId = uint256(proposal.id);
+            uint256 vestingCapId = uint256(proposal.id);
             bytes32 name = proposal.role;
             uint256 amount = proposal.amount;
             
-            VestingManager.addWalletToCap(
-                vestingCaps,
-                vestingWallets,
-                capId,
+            _addWalletToCap(
+                vestingCapId,
                 wallet,
                 name,
                 amount
@@ -416,11 +394,11 @@ contract TestnetMiningRewards is
             address wallet = proposal.target;
             uint256 capId = uint256(proposal.id);
             
-            VestingCalculator.removeWalletFromCap(
+            (VestingTypes.VestingCap memory updatedCap, ) = VestingCalculator.removeWalletFromCap(
                 vestingCaps[capId],
-                vestingWallets[wallet][capId],
                 wallet
             );
+            vestingCaps[capId] = updatedCap;
             delete vestingWallets[wallet][capId];
         }
         
@@ -430,6 +408,143 @@ contract TestnetMiningRewards is
     function getWalletsInCap(uint256 capId) public view returns (address[] memory) {
         VestingTypes.VestingCap storage cap = vestingCaps[capId];
         return cap.wallets;
+    }
+
+    function addAddress(
+        address ethereumAddr,
+        bytes calldata substrateAddr
+    ) external nonReentrant whenNotPaused onlyRole(ProposalTypes.ADMIN_ROLE) {
+        require(ethereumAddr != address(0), "Invalid ethereum address");
+        require(substrateAddr.length <= 50, "Invalid substrate address length");
+        ethereumToSubstrate[ethereumAddr] = substrateAddr;
+        emit AddressesAdded(1);
+    }
+
+    function batchAddAddresses(
+        address[] calldata ethereumAddrs, 
+        bytes[] calldata substrateAddrs
+    ) external nonReentrant whenNotPaused onlyRole(ProposalTypes.ADMIN_ROLE) {
+        require(ethereumAddrs.length == substrateAddrs.length, "Arrays length mismatch");
+        require(ethereumAddrs.length <= 1000, "Batch too large");
+        
+        for(uint256 i = 0; i < ethereumAddrs.length; i++) {
+            require(ethereumAddrs[i] != address(0), "Invalid ethereum address");
+            require(substrateAddrs[i].length <= 50, "Invalid substrate address length");
+            ethereumToSubstrate[ethereumAddrs[i]] = substrateAddrs[i];
+        }
+
+        emit AddressesAdded(ethereumAddrs.length);
+    }
+
+    function removeAddress(address ethereumAddr) internal nonReentrant whenNotPaused onlyRole(ProposalTypes.ADMIN_ROLE) {
+        require(ethereumToSubstrate[ethereumAddr].length != 0, "Address not mapped");
+        delete ethereumToSubstrate[ethereumAddr];
+        emit AddressRemoved(ethereumAddr);
+    }
+
+    function verifySubstrateAddress(address wallet, bytes calldata substrateAddr) internal view returns (bool) {
+        bytes memory mappedAddr = ethereumToSubstrate[wallet];
+        return mappedAddr.length > 0 && keccak256(mappedAddr) == keccak256(substrateAddr);
+    }
+
+    function isSubstrateWalletMapped(address wallet, string calldata substrateWallet) internal view returns (bool) {
+        bytes memory mappedAddr = ethereumToSubstrate[wallet];
+        return mappedAddr.length > 0 && keccak256(mappedAddr) == keccak256(bytes(substrateWallet));
+    }
+
+    function createCap(
+        uint256 capId,
+        bytes32 name,
+        uint256 startDate,
+        uint256 cliff,
+        uint256 vestingTerm,
+        uint256 maxRewardsPerMonth,
+        uint256 ratio
+    ) external {
+        require(startDate > 0, "Invalid date");
+        require(cliff > 0 && vestingTerm > 0, "Invalid period");
+        require(maxRewardsPerMonth > 0, "Invalid rewards");
+        require(ratio > 0, "Invalid ratio");
+
+        vestingCaps[capId] = VestingTypes.VestingCap({
+            totalAllocation: 0, // Initial total allocation
+            name: name,
+            cliff: cliff,
+            vestingTerm: vestingTerm,
+            vestingPlan: 0, // Default vesting plan
+            initialRelease: 0, // Default initial release
+            startDate: startDate,
+            allocatedToWallets: 0,
+            wallets: new address[](0),
+            maxRewardsPerMonth: maxRewardsPerMonth,
+            ratio: ratio
+        });
+
+        emit VestingCapAction(capId, name, 1); // 1 = Created
+    }
+
+    function _addWalletToCap(
+        uint256 capId,
+        address wallet,
+        bytes32 name,
+        uint256 amount
+    ) internal {
+        require(wallet != address(0), "Invalid wallet");
+        require(amount > 0, "Invalid amount");
+
+        VestingTypes.VestingCap storage cap = vestingCaps[capId];
+        require(cap.startDate > 0, "Cap not found");
+
+        vestingWallets[wallet][capId] = VestingTypes.VestingWalletInfo({
+            capId: capId,
+            name: name,
+            amount: amount,
+            claimed: 0,
+            monthlyClaimedRewards: 0,
+            lastClaimMonth: 0
+        });
+
+        cap.wallets.push(wallet);
+        cap.allocatedToWallets += amount;
+
+        emit DistributionWalletAdded(
+            wallet,
+            amount,
+            cap.startDate,
+            cap.cliff,
+            cap.vestingTerm
+        );
+    }
+
+    function processRewards(
+        address wallet,
+        uint256 amount
+    ) external {
+        require(amount > 0, "Invalid amount");
+        
+        VestingTypes.SubstrateRewards storage rewards = substrateRewardInfo[wallet];
+        rewards.amount = amount;
+        rewards.lastUpdate = block.timestamp;
+    }
+
+    function removeWalletFromCap(
+        uint256 capId,
+        address wallet
+    ) internal {
+        VestingTypes.VestingCap storage cap = vestingCaps[capId];
+        VestingTypes.VestingWalletInfo storage walletInfo = vestingWallets[wallet][capId];
+        
+        if (cap.allocatedToWallets >= walletInfo.amount) {
+            cap.allocatedToWallets -= walletInfo.amount;
+        }
+
+        (VestingTypes.VestingCap memory updatedCap, ) = VestingCalculator.removeWalletFromCap(
+            vestingCaps[capId],
+            wallet
+        );
+        
+        vestingCaps[capId] = updatedCap;
+        delete vestingWallets[wallet][capId];
     }
 
     function _authorizeUpgrade(address newImplementation) 

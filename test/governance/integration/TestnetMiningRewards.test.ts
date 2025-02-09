@@ -1,6 +1,6 @@
 import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
-import { TestnetMiningRewards, StorageToken, SubstrateAddressMapper } from "../typechain-types";
+import { TestnetMiningRewards, StorageToken } from "../typechain-types";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 import { ZeroAddress, BytesLike, Wallet, SigningKey, getBytes, toQuantity } from "ethers";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
@@ -33,7 +33,6 @@ function getMatchingAddresses() {
 describe("TestnetMiningRewards", function () {
     let rewardsContract: TestnetMiningRewards;
     let storageToken: StorageToken;
-    let addressMapper: SubstrateAddressMapper;
     let owner: SignerWithAddress;
     let admin: SignerWithAddress;
     let user: Wallet;
@@ -73,44 +72,17 @@ describe("TestnetMiningRewards", function () {
         ) as StorageToken;
         await storageToken.waitForDeployment();
 
-        // Deploy Libraries
-        const VestingCalculator = await ethers.getContractFactory("VestingCalculator");
-        const vestingCalculator = await VestingCalculator.deploy();
-        await vestingCalculator.waitForDeployment();
-
-        const VestingManager = await ethers.getContractFactory("VestingManager");
-        const vestingManager = await VestingManager.deploy();
-        await vestingManager.waitForDeployment();
-
-        // Deploy SubstrateAddressMapper
-        const SubstrateAddressMapper = await ethers.getContractFactory("SubstrateAddressMapper");
-        addressMapper = await upgrades.deployProxy(
-            SubstrateAddressMapper,
-            [owner.address],
-            { 
-                kind: 'uups',
-                initializer: 'initialize'
-            }
-        );
-        await addressMapper.waitForDeployment();
-
-        // Deploy TestnetMiningRewards with libraries
-        const TestnetMiningRewards = await ethers.getContractFactory("TestnetMiningRewards", {
-            libraries: {
-                VestingCalculator: await vestingCalculator.getAddress(),
-                VestingManager: await vestingManager.getAddress()
-            }
-        });
-        
+        // Deploy TestnetMiningRewards
+        const TestnetMiningRewards = await ethers.getContractFactory("TestnetMiningRewards");
         rewardsContract = await upgrades.deployProxy(
-            TestnetMiningRewards,
-            [await storageToken.getAddress(), await addressMapper.getAddress(), owner.address, admin.address],
-            { 
-                kind: 'uups', 
-                initializer: 'initialize',
-                unsafeAllow: ['external-library-linking']
-            }
-        ) as TestnetMiningRewards;
+            TestnetMiningRewards, 
+            [
+                await storageToken.getAddress(),
+                owner.address,
+                admin.address
+            ],
+            { kind: 'uups', initializer: 'initialize' }
+        );
         await rewardsContract.waitForDeployment();
 
         // Wait for role change timelock to expire (ROLE_CHANGE_DELAY is 1 day)
@@ -183,6 +155,24 @@ describe("TestnetMiningRewards", function () {
     });
 
     it("should calculate rewards based on substrate balance and ratio", async function () {
+        // First add the wallet to the vesting cap
+        const addWalletProposal = await rewardsContract.connect(owner).createProposal(
+            7, // AddDistributionWallets type
+            1, // capId
+            user.address,
+            ethers.ZeroHash,
+            REWARDS_AMOUNT,
+            ethers.ZeroAddress
+        );
+        
+        const receipt = await addWalletProposal.wait();
+        const proposalId = receipt?.logs[0].topics[1];
+
+        await time.increase(24 * 60 * 60 + 1);
+        await rewardsContract.connect(admin).approveProposal(proposalId);
+        
+        await time.increase(24 * 60 * 60 + 1);
+
         // Set substrate rewards through admin function
         await rewardsContract.connect(owner).updateSubstrateRewards(
             user.address,
