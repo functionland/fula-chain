@@ -306,6 +306,149 @@ describe("TestnetMiningRewards", function () {
     
     });
 
+    describe("Multiple Users with Different Vesting Caps", function () {
+        let user2: Wallet;
+        let SUBSTRATE_WALLET_2: string;
+
+        beforeEach(async function () {
+            // Create second user with matching addresses
+            const { ethPrivateKey, substrateWallet } = getMatchingAddresses();
+            SUBSTRATE_WALLET_2 = substrateWallet;
+            user2 = new Wallet(ethPrivateKey, ethers.provider);
+            await ethers.provider.send('hardhat_setBalance', [
+                user2.address,
+                toQuantity(ethers.parseEther('100'))
+            ]);
+
+            // Create two vesting caps with different parameters
+            // Cap 1: No cliff, 6 month vesting, 10:1 ratio
+            await rewardsContract.connect(owner).addVestingCap(
+                2, // new cap ID
+                ethers.encodeBytes32String("Cap1"),
+                REWARDS_AMOUNT,
+                0, // no cliff
+                6, // 6 months vesting
+                1,
+                INITIAL_RELEASE,
+                MAX_MONTHLY_REWARDS,
+                10 // 10:1 ratio
+            );
+
+            // Cap 2: 12 month cliff, 6 month vesting, 6:1 ratio
+            await rewardsContract.connect(owner).addVestingCap(
+                3, // new cap ID
+                ethers.encodeBytes32String("Cap2"),
+                REWARDS_AMOUNT,
+                365, // 12 months cliff
+                6, // 6 months vesting
+                1,
+                INITIAL_RELEASE,
+                MAX_MONTHLY_REWARDS,
+                6 // 6:1 ratio
+            );
+
+            // Add users to their respective caps
+            // User 1 -> Cap 2
+            const addUser1Proposal = await rewardsContract.connect(owner).createProposal(
+                7, // AddDistributionWallets type
+                2, // capId
+                user.address,
+                ethers.ZeroHash,
+                REWARDS_AMOUNT,
+                ethers.ZeroAddress
+            );
+            let receipt = await addUser1Proposal.wait();
+            let proposalId = receipt?.logs[0].topics[1];
+            await time.increase(24 * 60 * 60 + 1);
+            await rewardsContract.connect(admin).approveProposal(proposalId);
+            await time.increase(24 * 60 * 60 + 1);
+
+            // User 2 -> Cap 3
+            const addUser2Proposal = await rewardsContract.connect(owner).createProposal(
+                7, // AddDistributionWallets type
+                3, // capId
+                user2.address,
+                ethers.ZeroHash,
+                REWARDS_AMOUNT,
+                ethers.ZeroAddress
+            );
+            receipt = await addUser2Proposal.wait();
+            proposalId = receipt?.logs[0].topics[1];
+            await time.increase(24 * 60 * 60 + 1);
+            await rewardsContract.connect(admin).approveProposal(proposalId);
+            await time.increase(24 * 60 * 60 + 1);
+
+            // Set up wallet mappings
+            await rewardsContract.connect(owner).batchAddAddresses(
+                [user.address, user2.address],
+                [ethers.toUtf8Bytes(SUBSTRATE_WALLET), ethers.toUtf8Bytes(SUBSTRATE_WALLET_2)]
+            );
+
+            // Set substrate rewards for both users
+            await rewardsContract.connect(owner).updateSubstrateRewards(
+                user.address,
+                SUBSTRATE_REWARDS
+            );
+            await rewardsContract.connect(owner).updateSubstrateRewards(
+                user2.address,
+                SUBSTRATE_REWARDS
+            );
+        });
+
+        it("should correctly calculate and distribute rewards based on different ratios and cliffs", async function () {
+            await time.increase(30 * 24 * 60 * 60 + 1);
+            // User 1 should be able to claim immediately (no cliff)
+            const expectedUser1Rewards = SUBSTRATE_REWARDS / BigInt(10); // 10:1 ratio
+            const dueTokens1 = await rewardsContract.calculateDueTokens(
+                user.address,
+                SUBSTRATE_WALLET,
+                2
+            );
+            expect(dueTokens1).to.equal(expectedUser1Rewards);
+
+            // User 2 should not be able to claim yet (12 month cliff)
+            const amount = await rewardsContract.calculateDueTokens(user2.address, SUBSTRATE_WALLET_2, 3);
+            expect(amount).to.equal(0n);
+
+            // Move forward 13 months
+            await time.increase(395 * 24 * 60 * 60); // Past cliff for both users
+
+            // User 2 should now be able to claim
+            const expectedUser2Rewards = SUBSTRATE_REWARDS / BigInt(6); // 6:1 ratio
+            const dueTokens2 = await rewardsContract.calculateDueTokens(
+                user2.address,
+                SUBSTRATE_WALLET_2,
+                3
+            );
+            expect(dueTokens2).to.equal(expectedUser2Rewards);
+
+            // Both users claim
+            await rewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 2);
+            await rewardsContract.connect(user2).claimTokens(SUBSTRATE_WALLET_2, 3);
+
+            // Verify claimed amounts
+            const walletInfo1 = await rewardsContract.vestingWallets(user.address, 2);
+            const walletInfo2 = await rewardsContract.vestingWallets(user2.address, 3);
+
+            expect(walletInfo1.claimed).to.equal(expectedUser1Rewards);
+            expect(walletInfo2.claimed).to.equal(expectedUser2Rewards);
+
+            // Move forward another month
+            await time.increase(30 * 24 * 60 * 60);
+
+            // Both users should be able to claim again
+            await rewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 2);
+            await rewardsContract.connect(user2).claimTokens(SUBSTRATE_WALLET_2, 3);
+
+            // Verify new claimed amounts
+            const walletInfo1After = await rewardsContract.vestingWallets(user.address, 2);
+            const walletInfo2After = await rewardsContract.vestingWallets(user2.address, 3);
+
+            expect(walletInfo1After.claimed).to.equal(expectedUser1Rewards * BigInt(2));
+            expect(walletInfo2After.claimed).to.equal(expectedUser2Rewards * BigInt(2));
+        });
+    });
+
     describe("Vesting Cap Creation and Validation", function () {
         it("should revert when creating cap with zero allocation", async function () {
             await expect(

@@ -127,7 +127,7 @@ contract TestnetMiningRewards is
         if(vestingPlan >= vestingTerm) revert InvalidParameter(5);
         if (ratio == 0) revert InvalidParameter(2);
         
-        uint256 defaultStartDate = block.timestamp + (30 * 365 days);
+        uint256 startDate = tgeTimestamp != 0 ? tgeTimestamp : block.timestamp + (30 * 365 days);
 
         vestingCaps[capId] = VestingTypes.VestingCap({
             totalAllocation: allocationAmount,
@@ -136,7 +136,7 @@ contract TestnetMiningRewards is
             vestingTerm: vestingTerm * 30 days,
             vestingPlan: vestingPlan * 30 days,
             initialRelease: initialRelease,
-            startDate: defaultStartDate,
+            startDate: startDate,
             allocatedToWallets: 0,
             wallets: new address[](0),
             maxRewardsPerMonth: maxRewardsPerMonth,
