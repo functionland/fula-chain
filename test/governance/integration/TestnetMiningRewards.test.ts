@@ -305,4 +305,91 @@ describe("TestnetMiningRewards", function () {
         });
     
     });
+
+    describe("Vesting Cap Creation and Validation", function () {
+        it("should revert when creating cap with zero allocation", async function () {
+            await expect(
+                rewardsContract.connect(owner).addVestingCap(
+                    2, // new cap ID
+                    ethers.encodeBytes32String("Test Cap"),
+                    0, // zero allocation
+                    CLIFF_PERIOD,
+                    VESTING_PERIOD,
+                    1,
+                    INITIAL_RELEASE,
+                    MAX_MONTHLY_REWARDS,
+                    REWARDS_RATIO
+                )
+            ).to.be.revertedWithCustomError(rewardsContract, "InvalidParameter");
+        });
+
+        it("should revert when creating cap with invalid ratio", async function () {
+            await expect(
+                rewardsContract.connect(owner).addVestingCap(
+                    2, // new cap ID
+                    ethers.encodeBytes32String("Test Cap"),
+                    REWARDS_AMOUNT,
+                    CLIFF_PERIOD,
+                    VESTING_PERIOD,
+                    1,
+                    INITIAL_RELEASE,
+                    MAX_MONTHLY_REWARDS,
+                    0 // invalid ratio
+                )
+            ).to.be.revertedWithCustomError(rewardsContract, "InvalidParameter");
+        });
+
+        it("should create cap with valid parameters", async function () {
+            const capId = 2; // new cap ID
+            await rewardsContract.connect(owner).addVestingCap(
+                capId,
+                ethers.encodeBytes32String("Test Cap"),
+                REWARDS_AMOUNT,
+                CLIFF_PERIOD,
+                VESTING_PERIOD,
+                1,
+                INITIAL_RELEASE,
+                MAX_MONTHLY_REWARDS,
+                REWARDS_RATIO
+            );
+
+            const cap = await rewardsContract.vestingCaps(capId);
+            expect(cap.totalAllocation).to.equal(REWARDS_AMOUNT);
+            expect(cap.ratio).to.equal(REWARDS_RATIO);
+            expect(cap.cliff).to.equal(CLIFF_PERIOD * 24 * 60 * 60);
+            expect(cap.vestingTerm).to.equal(VESTING_PERIOD * 30 * 24 * 60 * 60);
+            expect(cap.maxRewardsPerMonth).to.equal(MAX_MONTHLY_REWARDS);
+        });
+
+        it("should not allow creating cap with existing ID", async function () {
+            // First create a cap
+            const capId = 2;
+            await rewardsContract.connect(owner).addVestingCap(
+                capId,
+                ethers.encodeBytes32String("Test Cap"),
+                REWARDS_AMOUNT,
+                CLIFF_PERIOD,
+                VESTING_PERIOD,
+                1,
+                INITIAL_RELEASE,
+                MAX_MONTHLY_REWARDS,
+                REWARDS_RATIO
+            );
+
+            // Try to create another cap with same ID
+            await expect(
+                rewardsContract.connect(owner).addVestingCap(
+                    capId, // same ID
+                    ethers.encodeBytes32String("Test Cap 2"),
+                    REWARDS_AMOUNT,
+                    CLIFF_PERIOD,
+                    VESTING_PERIOD,
+                    1,
+                    INITIAL_RELEASE,
+                    MAX_MONTHLY_REWARDS,
+                    REWARDS_RATIO
+                )
+            ).to.be.revertedWithCustomError(rewardsContract, "InvalidParameter");
+        });
+    });
 });
