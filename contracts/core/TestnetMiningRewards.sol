@@ -40,7 +40,7 @@ contract TestnetMiningRewards is
 
     /// @notice Custom errors with error codes
     error InvalidOperation(uint8 code); // Codes: 1=TGE not initiated, 2=Nothing due, 3=Low balance
-    error InvalidState(uint8 code);     // Codes: 1=Already initialized, 2=Cap not found, 3=Wallet not found
+    error InvalidState(uint8 code);     // Codes: 1=Already initialized, 2=Cap not found, 3=Wallet not found, 4=Wallet Exists
     error InvalidParameter(uint8 code); // Codes: 1=Invalid amount, 2=Invalid ratio, 3=Invalid cap, 4=Invalid initial release, 5=Invalid vesting plan
     error InvalidAddressLength();
     error NothingToClaim();
@@ -68,6 +68,7 @@ contract TestnetMiningRewards is
         __GovernanceModule_init(initialOwner, initialAdmin);
 
         storageToken = ERC20Upgradeable(_storageToken);
+        vestingCapsCount = 0;
     }
 
     /// @notice Initiate Token Generation Event to start Vesting and Distribution of pre-allocated tokens
@@ -77,46 +78,23 @@ contract TestnetMiningRewards is
         whenNotPaused
         onlyRole(ProposalTypes.ADMIN_ROLE) 
     {
-        PackedVars storage vars = packedVars;
-        if ((vars.flags & TGE_INITIATED) != 0) revert InvalidState(1);
+        if(tgeTimestamp != 0) revert InvalidState(1);
         
-        // Calculate total required tokens across all caps
-        uint256 totalRequiredTokens = 0;
+        // Set TGE timestamp
+        tgeTimestamp = block.timestamp;
         
-        // First pass: validate caps and calculate total required tokens
-        for (uint256 i = 0; i < vestingCapsCount; i++) {
-            uint256 capId = i;
-            VestingTypes.VestingCap storage cap = vestingCaps[capId];
+        // Update start date for all vesting caps
+        for (uint256 i = 1; i <= nextCapId; i++) {
+            VestingTypes.VestingCap storage cap = vestingCaps[i];
             
             if (cap.totalAllocation > 0) {
                 // Ensure start date is properly set to tge date
-                cap.startDate = block.timestamp;
-                
-                // Add to total required tokens
-                totalRequiredTokens += cap.totalAllocation;
-                
-                // Verify cap allocation matches wallet allocations
-                if (cap.totalAllocation < cap.allocatedToWallets) {
-                    revert InvalidParameter(1);
-                }
+                cap.startDate = tgeTimestamp;
             }
         }
-
-        // Verify contract has sufficient tokens
-        uint256 contractBalance = storageToken.balanceOf(address(this));
-        if (contractBalance < totalRequiredTokens) {
-            revert InvalidOperation(3);
-        }
-
-        // Set TGE initiated flag
-        vars.flags |= TGE_INITIATED;
         
-        // Update activity timestamp
-        _updateActivityTimestamp();
-        
-        tgeTimestamp = block.timestamp;
-        totalAllocation = totalRequiredTokens;
-        emit TGEInitiated(totalRequiredTokens, block.timestamp);
+        emit TGEInitiated(totalAllocation, tgeTimestamp);
+        lastActivityTimestamp = block.timestamp;
     }
 
     /// @notice Create a new vesting cap
@@ -209,7 +187,7 @@ contract TestnetMiningRewards is
         if (walletInfo.amount == 0) revert NothingToClaim();
 
         VestingTypes.SubstrateRewards memory rewards = substrateRewardInfo[wallet];
-        if (!isSubstrateWalletMapped(wallet, substrateWallet)) revert InvalidParameter(2);
+        if (!isSubstrateWalletMapped(wallet, substrateWallet)) revert WalletMismatch();
 
         return VestingCalculator.calculateDueTokens(cap, rewards, walletInfo, block.timestamp);
     }
@@ -220,10 +198,29 @@ contract TestnetMiningRewards is
         uint256 dueTokens
     ) internal {
         VestingTypes.VestingWalletInfo storage walletInfo = vestingWallets[wallet][capId];
-        walletInfo.claimed += dueTokens;
-        walletInfo.lastClaimMonth = (block.timestamp - vestingCaps[capId].startDate) / 30 days;
+        VestingTypes.VestingCap storage cap = vestingCaps[capId];
+        
+        uint256 currentMonth = (block.timestamp - cap.startDate) / 30 days;
+        
+        // Reset monthly claimed rewards if we're in a new month
+        if (currentMonth > walletInfo.lastClaimMonth) {
+            walletInfo.monthlyClaimedRewards = 0;
+        }
+        
+        // Calculate remaining rewards that can be claimed this month
+        uint256 remainingMonthlyAllowance = cap.maxRewardsPerMonth - walletInfo.monthlyClaimedRewards;
+        
+        // Limit the due tokens to the remaining monthly allowance
+        uint256 tokensToTransfer = dueTokens;
+        if (tokensToTransfer > remainingMonthlyAllowance) {
+            tokensToTransfer = remainingMonthlyAllowance;
+        }
+        
+        walletInfo.claimed += tokensToTransfer;
+        walletInfo.monthlyClaimedRewards += tokensToTransfer;
+        walletInfo.lastClaimMonth = currentMonth;
 
-        storageToken.safeTransfer(wallet, dueTokens);
+        storageToken.safeTransfer(wallet, tokensToTransfer);
     }
 
     /// @notice Claim vested tokens. Automatically calculates based on vesting schedule and transfers if anything is due
@@ -298,7 +295,7 @@ contract TestnetMiningRewards is
 
             // Check if wallet already exists in cap
             if (vestingWallets[target][vestingCapId].amount > 0) {
-                revert NothingToClaim();
+                revert InvalidState(4);
             }
 
             // Check for existing proposals
@@ -330,7 +327,7 @@ contract TestnetMiningRewards is
         } else if (proposalType == uint8(ProposalTypes.ProposalType.RemoveDistributionWallet)) {
             // Check if wallet exists in cap
             if (vestingWallets[target][id].amount == 0) {
-                revert NothingToClaim();
+                revert InvalidState(3);
             }
 
             // Check for existing proposals

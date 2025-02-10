@@ -11,17 +11,12 @@ library VestingCalculator {
         uint256 currentTime
     ) internal pure returns (uint256) {
         if(rewards.amount == 0) return 0;
-        if(currentTime < cap.startDate + cap.cliff * 1 days) return 0;
+        if(currentTime < cap.startDate + cap.cliff) return 0;
 
         uint256 monthsSinceStart = (currentTime - cap.startDate) / 30 days;
         if(monthsSinceStart == walletInfo.lastClaimMonth) return 0;
 
-        uint256 dueAmount = rewards.amount / cap.ratio;
-        if(dueAmount > cap.maxRewardsPerMonth) {
-            dueAmount = cap.maxRewardsPerMonth;
-        }
-
-        return dueAmount;
+        return rewards.amount / cap.ratio;
     }
 
     function removeWalletFromCap(

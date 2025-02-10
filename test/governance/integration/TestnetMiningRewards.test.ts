@@ -154,7 +154,7 @@ describe("TestnetMiningRewards", function () {
         ).to.be.revertedWithCustomError(rewardsContract, "NothingToClaim");
     });
 
-    it("should calculate rewards based on substrate balance and ratio", async function () {
+    it("should respect monthly rewards limit", async function () {
         // First add the wallet to the vesting cap
         const addWalletProposal = await rewardsContract.connect(owner).createProposal(
             7, // AddDistributionWallets type
@@ -164,34 +164,20 @@ describe("TestnetMiningRewards", function () {
             REWARDS_AMOUNT,
             ethers.ZeroAddress
         );
-        
+
         const receipt = await addWalletProposal.wait();
         const proposalId = receipt?.logs[0].topics[1];
 
+        // Wait for execution delay
         await time.increase(24 * 60 * 60 + 1);
         await rewardsContract.connect(admin).approveProposal(proposalId);
-        
         await time.increase(24 * 60 * 60 + 1);
 
-        // Set substrate rewards through admin function
-        await rewardsContract.connect(owner).updateSubstrateRewards(
-            user.address,
-            SUBSTRATE_REWARDS
+        // Set up wallet mapping if not already done
+        await rewardsContract.connect(owner).batchAddAddresses(
+            [user.address],
+            [ethers.toUtf8Bytes(SUBSTRATE_WALLET)]
         );
-        
-        await time.increase(45 * 24 * 60 * 60); // Past cliff + 1 month
-
-        const expectedRewards = SUBSTRATE_REWARDS / BigInt(REWARDS_RATIO);
-        const dueTokens = await rewardsContract.calculateDueTokens(
-            user.address,
-            SUBSTRATE_WALLET,
-            1
-        );
-
-        expect(dueTokens).to.equal(expectedRewards);
-    });
-
-    it("should respect monthly rewards limit", async function () {
         // Set high substrate rewards
         const highRewards = ethers.parseEther("20000");
         await rewardsContract.connect(owner).updateSubstrateRewards(
@@ -200,111 +186,123 @@ describe("TestnetMiningRewards", function () {
         );
         
         await time.increase(45 * 24 * 60 * 60);
+        const dueTokens = await rewardsContract.calculateDueTokens(
+            user.address,
+            SUBSTRATE_WALLET,
+            1
+        );
 
         // Try to claim
-        await rewardsContract.connect(user).claimTokens(1, 1, SUBSTRATE_WALLET);
+        await rewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 1);
         
         const walletInfo = await rewardsContract.vestingWallets(user.address, 1);
         expect(walletInfo.monthlyClaimedRewards).to.equal(MAX_MONTHLY_REWARDS);
     });
 
-    it("should revert if substrate wallet doesn't match mapped wallet", async function () {
-        await rewardsContract.connect(owner).updateSubstrateRewards(
-            user.address,
-            SUBSTRATE_REWARDS
-        );
-        
-        await time.increase(45 * 24 * 60 * 60);
+    describe("TestnetMiningRewards2", function () {
+        beforeEach(async function () {
+            // First add the wallet to the vesting cap
+            const addWalletProposal = await rewardsContract.connect(owner).createProposal(
+                7, // AddDistributionWallets type
+                1, // capId
+                user.address,
+                ethers.ZeroHash,
+                REWARDS_AMOUNT,
+                ethers.ZeroAddress
+            );
 
-        const wrongSubstrateWallet = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty";
-        await expect(
-            rewardsContract.calculateDueTokens(user.address, wrongSubstrateWallet, 1)
-        ).to.be.revertedWithCustomError(rewardsContract, "WalletMismatch");
-    });
+            const receipt = await addWalletProposal.wait();
+            const proposalId = receipt?.logs[0].topics[1];
 
-    it("should reset monthly claimed rewards in new month", async function () {
-        await rewardsContract.connect(owner).updateSubstrateRewards(
-            user.address,
-            SUBSTRATE_REWARDS
-        );
-        
-        await time.increase(45 * 24 * 60 * 60);
-        await rewardsContract.connect(user).claimTokens(1, 1, SUBSTRATE_WALLET);
-        
-        // Move to next month
-        await time.increase(31 * 24 * 60 * 60);
-        await rewardsContract.connect(user).claimTokens(1, 1, SUBSTRATE_WALLET);
-        
-        const walletInfo = await rewardsContract.vestingWallets(user.address, 1);
-        expect(walletInfo.monthlyClaimedRewards).to.be.lt(MAX_MONTHLY_REWARDS.mul(2));
-    });
+            // Wait for execution delay
+            await time.increase(24 * 60 * 60 + 1);
+            await rewardsContract.connect(admin).approveProposal(proposalId);
+            await time.increase(24 * 60 * 60 + 1);
 
-    it("should successfully remove a wallet from distribution cap", async function () {
-        // First add some substrate rewards
-        await rewardsContract.connect(owner).updateSubstrateRewards(
-            user.address,
-            SUBSTRATE_REWARDS
-        );
+            // Set up wallet mapping if not already done
+            await rewardsContract.connect(owner).batchAddAddresses(
+                [user.address],
+                [ethers.toUtf8Bytes(SUBSTRATE_WALLET)]
+            );
 
-        // Create proposal to remove the wallet
-        const removeWalletType = 8; // RemoveDistributionWallet type
-        const tx = await rewardsContract.connect(owner).createProposal(
-            removeWalletType,
-            1, // capId
-            user.address, // target (wallet to remove)
-            ethers.ZeroHash,
-            0,
-            ZeroAddress
-        );
+            await rewardsContract.connect(owner).updateSubstrateRewards(
+                user.address,
+                SUBSTRATE_REWARDS
+            );
 
-        const receipt = await tx.wait();
-        const proposalId = receipt?.logs[0].topics[1];
+            await time.increase(45 * 24 * 60 * 60);
+        });
 
-        // Wait for execution delay
-        await time.increase(24 * 60 * 60 + 1);
-        
-        // Admin approves the proposal
-        await rewardsContract.connect(admin).approveProposal(proposalId);
-        
-        // Wait for execution delay
-        await time.increase(24 * 60 * 60 + 1);
-        
-        // Execute the proposal
-        await rewardsContract.connect(owner).executeProposal(proposalId);
+        it("should calculate rewards based on substrate balance and ratio", async function () {
+            const expectedRewards = SUBSTRATE_REWARDS / BigInt(REWARDS_RATIO);
+            const dueTokens = await rewardsContract.calculateDueTokens(
+                user.address,
+                SUBSTRATE_WALLET,
+                1
+            );
+    
+            expect(dueTokens).to.equal(expectedRewards);
+        });
 
-        // Verify the wallet was removed by checking it can't claim rewards
-        await expect(
-            rewardsContract.calculateDueTokens(user.address, SUBSTRATE_WALLET, 1)
-        ).to.be.revertedWithCustomError(rewardsContract, "NothingToClaim");
-    });
+        it("should revert if substrate wallet doesn't match mapped wallet", async function () {
+            const wrongSubstrateWallet = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty";
+            await expect(
+                rewardsContract.calculateDueTokens(user.address, wrongSubstrateWallet, 1)
+            ).to.be.revertedWithCustomError(rewardsContract, "WalletMismatch");
+        });
 
-    it("should revert when trying to remove non-existent wallet from cap", async function () {
-        // Create proposal to remove a wallet that's not in the cap
-        const removeWalletType = 8; // RemoveDistributionWallet type
-        const tx = await rewardsContract.connect(owner).createProposal(
-            removeWalletType,
-            1, // capId
-            otherUser.address, // target (wallet that's not in the cap)
-            ethers.ZeroHash,
-            0,
-            ZeroAddress
-        );
+        it("should reset monthly claimed rewards in new month", async function () {
+            await rewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 1);
+            
+            // Move to next month
+            await time.increase(31 * 24 * 60 * 60);
+            await rewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 1);
+            
+            const walletInfo = await rewardsContract.vestingWallets(user.address, 1);
+            expect(walletInfo.monthlyClaimedRewards).to.be.lt(MAX_MONTHLY_REWARDS * BigInt(2));
+        });
 
-        const receipt = await tx.wait();
-        const proposalId = receipt?.logs[0].topics[1];
+        it("should successfully remove a wallet from distribution cap", async function () {
+            // Create proposal to remove the wallet
+            const removeWalletType = 8; // RemoveDistributionWallet type
+            const tx = await rewardsContract.connect(owner).createProposal(
+                removeWalletType,
+                1, // capId
+                user.address, // target (wallet to remove)
+                ethers.ZeroHash,
+                0,
+                ZeroAddress
+            );
 
-        // Wait for execution delay
-        await time.increase(24 * 60 * 60 + 1);
-        
-        // Admin approves the proposal
-        await rewardsContract.connect(admin).approveProposal(proposalId);
-        
-        // Wait for execution delay
-        await time.increase(24 * 60 * 60 + 1);
-        
-        // Execute the proposal should revert
-        await expect(
-            rewardsContract.connect(owner).executeProposal(proposalId)
-        ).to.be.reverted;
+            const receipt = await tx.wait();
+            const proposalId = receipt?.logs[0].topics[1];
+
+            // Wait for execution delay
+            await time.increase(24 * 60 * 60 + 1);
+            
+            // Admin approves the proposal
+            await rewardsContract.connect(admin).approveProposal(proposalId);
+
+            // Verify the wallet was removed by checking it can't claim rewards
+            await expect(
+                rewardsContract.calculateDueTokens(user.address, SUBSTRATE_WALLET, 1)
+            ).to.be.revertedWithCustomError(rewardsContract, "NothingToClaim");
+        });
+
+        it("should revert when trying to remove non-existent wallet from cap", async function () {
+            // Create proposal to remove a wallet that's not in the cap
+            const removeWalletType = 8; // RemoveDistributionWallet type
+            await expect(
+                rewardsContract.connect(owner).createProposal(
+                    removeWalletType,
+                    1, // capId
+                    otherUser.address, // target (wallet that's not in the cap)
+                    ethers.ZeroHash,
+                    0,
+                    ZeroAddress
+                )
+            ).to.be.revertedWithCustomError(rewardsContract, "InvalidState");
+        });
+    
     });
 });
