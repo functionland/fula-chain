@@ -25,6 +25,7 @@ contract TestnetMiningRewards is
     mapping(address => mapping(uint256 => VestingTypes.VestingWalletInfo)) public vestingWallets;
     mapping(address => VestingTypes.SubstrateRewards) public substrateRewardInfo;
     mapping(address => bytes) public ethereumToSubstrate;
+    uint256[] public capIds;
 
     /// @notice Events
     event TokenDistributionInitialized(address indexed token);
@@ -144,6 +145,7 @@ contract TestnetMiningRewards is
 
         });
 
+        capIds.push(capId);
         nextCapId = capId + 1;
         vestingCapsCount++;
         _updateActivityTimestamp();
@@ -162,6 +164,15 @@ contract TestnetMiningRewards is
         bytes32 capName = cap.name;
         if(cap.totalAllocation <= 0) revert InvalidParameter(3);
         if(cap.allocatedToWallets > 0 || cap.wallets.length > 0) revert InvalidState(2);
+
+        // Remove capId from the capIds array
+        for (uint256 i = 0; i < capIds.length; i++) {
+            if (capIds[i] == capId) {
+                capIds[i] = capIds[capIds.length - 1];
+                capIds.pop();
+                break;
+            }
+        }
 
         // Clean up all role assignments and permissions for this cap
         delete vestingCaps[capId];

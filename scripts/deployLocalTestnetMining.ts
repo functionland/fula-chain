@@ -174,6 +174,39 @@ async function main() {
     // Set TGE
     await rewardsContract.connect(ownerWallet).initiateTGE();
 
+    // Add wallet mapping
+    const testWallet = "0x8626f6940E2eb28930eFb4CeF49B2d1F2C9C1199";
+    const substrateAddr = "5GWck2Qtq9MzsUhLpx2ksLrd3zZ3tBRAGDRanArR2AfYfAxH";
+    await rewardsContract.connect(ownerWallet).batchAddAddresses(
+        [testWallet],
+        [ethers.toUtf8Bytes(substrateAddr)]
+    );
+
+    // Create proposal to add wallet to cap
+    const walletAllocation = ethers.parseEther("100000"); // 100k tokens
+    const addWalletProposal = await rewardsContract.connect(ownerWallet).createProposal(
+        7, // AddDistributionWallets type
+        1, // capId
+        testWallet,
+        ethers.ZeroHash,
+        walletAllocation,
+        ethers.ZeroAddress
+    );
+
+    const walletProposalReceipt = await addWalletProposal.wait();
+    const walletProposalId = walletProposalReceipt?.logs[0].topics[1];
+
+    // Wait for execution delay and approve
+    await time.increase(24 * 60 * 60 + 1);
+    await rewardsContract.connect(adminWallet).approveProposal(walletProposalId);
+    await time.increase(24 * 60 * 60 + 1);
+
+    // Set initial substrate rewards for the wallet
+    await rewardsContract.connect(ownerWallet).updateSubstrateRewards(
+        testWallet,
+        ethers.parseEther("1000") // 1000 tokens as initial substrate rewards
+    );
+
     // Verify deployment
     await verifyDeployment(storageToken, rewardsContract);
 
