@@ -195,7 +195,7 @@ contract TestnetMiningRewards is
         if (cap.startDate == 0) revert InvalidParameter(3);
 
         VestingTypes.VestingWalletInfo memory walletInfo = vestingWallets[wallet][capId];
-        if (walletInfo.amount == 0) revert NothingToClaim();
+        if (walletInfo.amount == 0) revert NothingToClaim(); // The actual amount for testnet is not stored in walletInfo.amount and this is just a double check
 
         VestingTypes.SubstrateRewards memory rewards = substrateRewardInfo[wallet];
         if (!isSubstrateWalletMapped(wallet, substrateWallet)) revert WalletMismatch();
@@ -279,7 +279,20 @@ contract TestnetMiningRewards is
         emit SubstrateRewardsUpdated(wallet, amount);
     }
 
-    /// @notice Handles proposal creation for adding a wallet to a vesting cap
+    /// @notice Get the substrate rewards information for a given address
+    /// @param wallet The ethereum wallet address to query
+    /// @return lastUpdate The timestamp of the last update
+    /// @return amount The current substrate rewards amount
+    function getSubstrateRewards(address wallet) 
+        external 
+        view 
+        returns (uint256 lastUpdate, uint256 amount) 
+    {
+        VestingTypes.SubstrateRewards memory rewards = substrateRewardInfo[wallet];
+        return (rewards.lastUpdate, rewards.amount);
+    }
+
+    /// @notice Create a custom proposal/// @notice Handles proposal creation for adding a wallet to a vesting cap
     /// @param proposalType from the ProposalTypes.sol
     /// @param target the wallet that intends to receive the tokens
     /// @param role This stores the name of the recipient
@@ -305,7 +318,7 @@ contract TestnetMiningRewards is
             }
 
             // Check if wallet already exists in cap
-            if (vestingWallets[target][vestingCapId].amount > 0) {
+            if (vestingWallets[target][vestingCapId].capId > 0) {
                 revert InvalidState(4);
             }
 
@@ -337,7 +350,7 @@ contract TestnetMiningRewards is
             return proposalId;
         } else if (proposalType == uint8(ProposalTypes.ProposalType.RemoveDistributionWallet)) {
             // Check if wallet exists in cap
-            if (vestingWallets[target][id].amount == 0) {
+            if (vestingWallets[target][id].capId == 0) {
                 revert InvalidState(3);
             }
 
