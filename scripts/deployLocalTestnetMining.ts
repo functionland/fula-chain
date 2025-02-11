@@ -207,6 +207,8 @@ async function main() {
         ethers.parseEther("1000") // 1000 tokens as initial substrate rewards
     );
 
+    await time.increase(45* 24 * 60 * 60 + 1);
+
     // Verify deployment
     await verifyDeployment(storageToken, rewardsContract);
 
