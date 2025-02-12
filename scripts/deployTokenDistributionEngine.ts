@@ -57,7 +57,7 @@ async function main() {
 
     // Save deployment info
     console.log("\nDeployment addresses for subsequent deployments:");
-    console.log(`export DISTRIBUTION_ENGINE_ADDRESS=${engineAddress}`);
+    console.log(`export DISTRIBUTION_ENGINE_ADDRESS(proxy)=${engineAddress}`);
     console.log(`export DISTRIBUTION_ENGINE_IMPLEMENTATION=${implementationAddress}`);
 }
 

@@ -60,7 +60,7 @@ async function main() {
 
     // Save deployment info
     console.log("\nDeployment addresses for subsequent deployments:");
-    console.log(`export TOKEN_ADDRESS=${tokenAddress}`);
+    console.log(`export TOKEN_ADDRESS(proxy)=${tokenAddress}`);
     console.log(`export TOKEN_IMPLEMENTATION=${implementationAddress}`);
 }
 
