@@ -46,6 +46,9 @@ contract TestnetMiningRewards is
     error InvalidAddressLength();
     error NothingToClaim();
     error WalletMismatch();
+    error LowContractBalance(uint256 available, uint256 required);
+    error TransferFailed();
+    event TokensReturnedToStorage(uint256 amount);
 
     /// @notice Initialize the contract
     /// @param _storageToken Address of the token to distribute
@@ -566,6 +569,30 @@ contract TestnetMiningRewards is
         
         vestingCaps[capId] = updatedCap;
         delete vestingWallets[wallet][capId];
+    }
+
+    /// @notice Transfers tokens back to the StorageToken contract
+    /// @param amount Amount of tokens to transfer back
+    function transferBackToStorage(uint256 amount) 
+        external 
+        nonReentrant 
+        whenNotPaused
+        onlyRole(ProposalTypes.ADMIN_ROLE) 
+    {
+        if (amount == 0) revert AmountMustBePositive();
+        
+        uint256 contractBalance = storageToken.balanceOf(address(this));
+        if (contractBalance < amount) {
+            revert LowContractBalance(contractBalance, amount);
+        }
+
+        // Use SafeERC20 for transfer
+        try storageToken.transfer(address(storageToken), amount) {
+            _updateActivityTimestamp();
+            emit TokensReturnedToStorage(amount);
+        } catch {
+            revert TransferFailed();
+        }
     }
 
     function _authorizeUpgrade(address newImplementation) 
