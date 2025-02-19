@@ -104,7 +104,8 @@ contract TestnetMiningRewards is
     /// @notice Create a new vesting cap
     /// @param capId a unique id
     /// @param name the name of this cap
-    /// @param allocationAmount for this cap
+    /// @param startDate for this cap
+    /// @param capTotalAllocation for this cap
     /// @param cliff in days
     /// @param vestingTerm linear vesting duration in months
     /// @param vestingPlan Intervals at which the user can claim in months. 1 means monthly and 3 means quarterly
@@ -112,7 +113,8 @@ contract TestnetMiningRewards is
     function addVestingCap(
         uint256 capId,
         bytes32 name,
-        uint256 allocationAmount,
+        uint256 startDate,
+        uint256 capTotalAllocation,
         uint256 cliff, // cliff in days
         uint256 vestingTerm, // linear vesting duration in months
         uint256 vestingPlan, // Intervals at which the user can claim in months. 1 means monthly and 3 means quarterly
@@ -126,15 +128,21 @@ contract TestnetMiningRewards is
         onlyRole(ProposalTypes.ADMIN_ROLE) 
     {
         if(vestingCaps[capId].totalAllocation != 0) revert InvalidParameter(3);
-        if(allocationAmount <= 0) revert InvalidParameter(1);
+        if(capTotalAllocation <= 0) revert InvalidParameter(1);
         if(initialRelease > 100) revert InvalidParameter(4);
         if(vestingPlan >= vestingTerm) revert InvalidParameter(5);
         if (ratio == 0) revert InvalidParameter(2);
         
-        uint256 startDate = tgeTimestamp != 0 ? tgeTimestamp : block.timestamp + (30 * 365 days);
+        uint256 defaultStartDate = block.timestamp + (30 * 365 days);
+
+        // Check if TGE is initiated
+        PackedVars storage vars = packedVars;
+        if ((vars.flags & TGE_INITIATED) != 0) {
+            startDate = defaultStartDate;
+        }
 
         vestingCaps[capId] = VestingTypes.VestingCap({
-            totalAllocation: allocationAmount,
+            totalAllocation: capTotalAllocation,
             name: name,
             cliff: cliff * 1 days,
             vestingTerm: vestingTerm * 30 days,
@@ -474,40 +482,6 @@ contract TestnetMiningRewards is
     function isSubstrateWalletMapped(address wallet, string calldata substrateWallet) internal view returns (bool) {
         bytes memory mappedAddr = ethereumToSubstrate[wallet];
         return mappedAddr.length > 0 && keccak256(mappedAddr) == keccak256(bytes(substrateWallet));
-    }
-
-    function createCap(
-        uint256 capId,
-        bytes32 name,
-        uint256 startDate,
-        uint256 capTotalAllocation,
-        uint256 cliff,
-        uint256 vestingTerm, // linear vesting duration in months
-        uint256 vestingPlan, // Intervals at which the user can claim in months. 1 means monthly and 3 means quarterly
-        uint256 initialRelease, // percentage that is released after cliff
-        uint256 maxRewardsPerMonth,
-        uint256 ratio
-    ) external {
-        require(startDate > 0, "Invalid date");
-        require(cliff > 0 && vestingTerm > 0, "Invalid period");
-        require(maxRewardsPerMonth > 0, "Invalid rewards");
-        require(ratio > 0, "Invalid ratio");
-
-        vestingCaps[capId] = VestingTypes.VestingCap({
-            totalAllocation: capTotalAllocation,
-            name: name,
-            cliff: cliff,
-            vestingTerm: vestingTerm,
-            vestingPlan: vestingPlan,
-            initialRelease: initialRelease,
-            startDate: startDate,
-            allocatedToWallets: 0,
-            wallets: new address[](0),
-            maxRewardsPerMonth: maxRewardsPerMonth,
-            ratio: ratio
-        });
-
-        emit VestingCapAction(capId, name, 1); // 1 = Created
     }
 
     function _addWalletToCap(

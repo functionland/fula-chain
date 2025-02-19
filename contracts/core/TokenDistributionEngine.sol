@@ -210,12 +210,6 @@ contract TokenDistributionEngine is ERC20Upgradeable, GovernanceModule {
         PackedVars storage vars = packedVars;
         if ((vars.flags & TGE_INITIATED) != 0) {
             startDate = defaultStartDate;
-            if (!_checkAllocatedTokensToContract(totalAllocation)) {
-                revert InsufficientContractBalance(
-                    totalAllocation,
-                    storageToken.balanceOf(address(this))
-                );
-            }
         }
 
         vestingCaps[capId] = VestingCap({
