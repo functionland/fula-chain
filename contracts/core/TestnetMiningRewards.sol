@@ -480,8 +480,11 @@ contract TestnetMiningRewards is
         uint256 capId,
         bytes32 name,
         uint256 startDate,
+        uint256 capTotalAllocation,
         uint256 cliff,
-        uint256 vestingTerm,
+        uint256 vestingTerm, // linear vesting duration in months
+        uint256 vestingPlan, // Intervals at which the user can claim in months. 1 means monthly and 3 means quarterly
+        uint256 initialRelease, // percentage that is released after cliff
         uint256 maxRewardsPerMonth,
         uint256 ratio
     ) external {
@@ -491,12 +494,12 @@ contract TestnetMiningRewards is
         require(ratio > 0, "Invalid ratio");
 
         vestingCaps[capId] = VestingTypes.VestingCap({
-            totalAllocation: 0, // Initial total allocation
+            totalAllocation: capTotalAllocation,
             name: name,
             cliff: cliff,
             vestingTerm: vestingTerm,
-            vestingPlan: 0, // Default vesting plan
-            initialRelease: 0, // Default initial release
+            vestingPlan: vestingPlan,
+            initialRelease: initialRelease,
             startDate: startDate,
             allocatedToWallets: 0,
             wallets: new address[](0),

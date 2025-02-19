@@ -190,6 +190,7 @@ contract AirdropContract is ERC20Upgradeable, GovernanceModule {
     function addVestingCap(
         uint256 capId,
         bytes32 name,
+        uint256 startDate,
         uint256 totalAllocation,
         uint256 cliff, // cliff in days
         uint256 vestingTerm, // linear vesting duration in months
@@ -208,21 +209,10 @@ contract AirdropContract is ERC20Upgradeable, GovernanceModule {
         
         uint256 defaultStartDate = block.timestamp + (30 * 365 days);
 
-        vestingCaps[capId] = VestingCap({
-            totalAllocation: totalAllocation,
-            name: name,
-            cliff: cliff * 1 days,
-            vestingTerm: vestingTerm * 30 days,
-            vestingPlan: vestingPlan * 30 days,
-            initialRelease: initialRelease,
-            startDate: defaultStartDate,
-            allocatedToWallets: 0,
-            wallets: new address[](0)
-        });
-
         // Check if TGE is initiated
         PackedVars storage vars = packedVars;
         if ((vars.flags & TGE_INITIATED) != 0) {
+            startDate = defaultStartDate;
             if (!_checkAllocatedTokensToContract(totalAllocation)) {
                 revert InsufficientContractBalance(
                     totalAllocation,
@@ -230,6 +220,18 @@ contract AirdropContract is ERC20Upgradeable, GovernanceModule {
                 );
             }
         }
+
+        vestingCaps[capId] = VestingCap({
+            totalAllocation: totalAllocation,
+            name: name,
+            cliff: cliff * 1 days,
+            vestingTerm: vestingTerm * 30 days,
+            vestingPlan: vestingPlan * 30 days,
+            initialRelease: initialRelease,
+            startDate: startDate,
+            allocatedToWallets: 0,
+            wallets: new address[](0)
+        });
 
         capIds.push(capId);
         _updateActivityTimestamp();
