@@ -48,7 +48,7 @@ contract StorageToken is
         if (initialMintedTokens > TOTAL_SUPPLY) revert ExceedsSupply(initialMintedTokens, TOTAL_SUPPLY);
         
         // Initialize ERC20 and Permit
-        __ERC20_init("Placeholder Token", "PLACEHOLDER");
+        __ERC20_init("Functionland Fula", "FULA");
         
         // Initialize governance module (handles UUPSUpgradeable, Ownable, ReentrancyGuard, 
         // Pausable, AccessControlEnumerable, role grants, and timelocks)
