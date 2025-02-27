@@ -34,8 +34,8 @@ describe("StorageToken", function () {
   describe("initialize", function () {
     it("should correctly initialize the contract", async function () {
       // Check token details
-      expect(await storageToken.name()).to.equal("Placeholder Token");
-      expect(await storageToken.symbol()).to.equal("PLACEHOLDER");
+      expect(await storageToken.name()).to.equal("Functionland Fula");
+      expect(await storageToken.symbol()).to.equal("FULA");
       
       // Check initial supply
       expect(await storageToken.balanceOf(await storageToken.getAddress())).to.equal(INITIAL_SUPPLY);

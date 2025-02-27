@@ -17,10 +17,6 @@ contract TokenBridge is GovernanceModule {
     // Chain ID
     uint256 public LOCAL_CHAIN_ID;
     
-    // Bridge operators
-    mapping(address => bool) public bridgeOperators;
-    uint256 public operatorCount;
-    
     // Nonce management to prevent replay attacks
     mapping(uint256 => mapping(uint256 => bool)) public usedNonces;
     
@@ -111,13 +107,12 @@ contract TokenBridge is GovernanceModule {
         largeTransferThreshold = _dailyLimit / 5; // 20% of daily limit
         largeTransferDelay = 30 minutes;
         
-        // Register initial operators
+        // Grant bridge operator role to initial operators
         for (uint256 i = 0; i < _initialOperators.length; i++) {
             address operator = _initialOperators[i];
             if (operator == address(0)) revert InvalidAddress();
-            bridgeOperators[operator] = true;
+            _grantRole(ProposalTypes.BRIDGE_OPERATOR_ROLE, operator);
         }
-        operatorCount = _initialOperators.length;
     }
     
     /**
@@ -199,9 +194,9 @@ contract TokenBridge is GovernanceModule {
         uint256 amount,
         uint256 sourceChain,
         uint256 nonce
-    ) external whenNotPaused nonReentrant {
-        // Check if caller is authorized
-        if (!bridgeOperators[msg.sender] && !hasRole(ProposalTypes.BRIDGE_OPERATOR_ROLE, msg.sender)) 
+    ) external whenNotPaused nonReentrant onlyRole(ProposalTypes.BRIDGE_OPERATOR_ROLE)  {
+        // Check if caller is authorized using only the role system
+        if (!hasRole(ProposalTypes.BRIDGE_OPERATOR_ROLE, msg.sender)) 
             revert BridgeOperatorRequired();
         
         // Validate parameters
@@ -250,12 +245,10 @@ contract TokenBridge is GovernanceModule {
             return;
         }
         
-        // If caller has BRIDGE_OPERATOR_ROLE, enforce transaction limit
-        if (hasRole(ProposalTypes.BRIDGE_OPERATOR_ROLE, msg.sender)) {
-            ProposalTypes.RoleConfig storage roleConfig = roleConfigs[ProposalTypes.BRIDGE_OPERATOR_ROLE];
-            if (amount > roleConfig.transactionLimit) 
-                revert LowAllowance(roleConfig.transactionLimit, amount);
-        }
+        // Enforce transaction limit for BRIDGE_OPERATOR_ROLE
+        ProposalTypes.RoleConfig storage roleConfig = roleConfigs[ProposalTypes.BRIDGE_OPERATOR_ROLE];
+        if (amount > roleConfig.transactionLimit) 
+            revert LowAllowance(roleConfig.transactionLimit, amount);
         
         // Transfer tokens to recipient
         bool success = token.transfer(recipient, amount);
@@ -433,27 +426,10 @@ contract TokenBridge is GovernanceModule {
     }
     
     /**
-     * @notice Add or remove a bridge operator
-     * @param operator Address of the operator
-     * @param status True to add, false to remove
+     * @notice Check if an address is a bridge operator
      */
-    function updateBridgeOperator(
-        address operator,
-        bool status
-    ) external whenNotPaused nonReentrant onlyRole(ProposalTypes.ADMIN_ROLE) {
-        if (operator == address(0)) revert InvalidAddress();
-        
-        // Update operator status and count
-        if (status && !bridgeOperators[operator]) {
-            bridgeOperators[operator] = true;
-            operatorCount++;
-        } else if (!status && bridgeOperators[operator]) {
-            bridgeOperators[operator] = false;
-            operatorCount--;
-        }
-        
-        emit BridgeOperatorUpdated(operator, status);
-        _updateActivityTimestamp();
+    function isBridgeOperator(address operator) external view returns (bool) {
+        return hasRole(ProposalTypes.BRIDGE_OPERATOR_ROLE, operator);
     }
     
     /**

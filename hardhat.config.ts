@@ -13,7 +13,8 @@ const config: HardhatUserConfig = {
                 enabled: true,
                 runs: 300
             },
-            viaIR: true
+            viaIR: true,
+            evmVersion: "shanghai"
         }
     },
     sourcify: {
