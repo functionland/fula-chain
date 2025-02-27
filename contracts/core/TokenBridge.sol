@@ -109,7 +109,7 @@ contract TokenBridge is GovernanceModule {
         dailyLimit = _dailyLimit;
         dailyResetTime = block.timestamp + 1 days;
         largeTransferThreshold = _dailyLimit / 5; // 20% of daily limit
-        largeTransferDelay = 12 hours;
+        largeTransferDelay = 30 minutes;
         
         // Register initial operators
         for (uint256 i = 0; i < _initialOperators.length; i++) {
@@ -479,11 +479,11 @@ contract TokenBridge is GovernanceModule {
     
     function _createCustomProposal(
         uint8 proposalType,
-        uint40 id,
-        address target,
-        bytes32 role,
-        uint96 amount,
-        address tokenAddress
+        uint40,
+        address,
+        bytes32,
+        uint96,
+        address
     ) internal override returns (bytes32) {
         // No custom proposal types yet
         revert InvalidProposalType(proposalType);
