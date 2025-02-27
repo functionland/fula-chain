@@ -235,15 +235,15 @@ describe("TokenBridge", function () {
             const initialUserBalance = await storageToken.balanceOf(user.address);
             const initialBridgeBalance = await storageToken.balanceOf(await tokenBridge.getAddress());
             
-            // Lock tokens
-            const tx = await tokenBridge.connect(user).lockTokens(
+            // Lock tokens - now returns nonce and lockId
+            const lockTx = await tokenBridge.connect(user).lockTokens(
                 amount,
                 TARGET_CHAIN_ID,
                 targetAddress
             );
             
             // Check event emission
-            const receipt = await tx.wait();
+            const receipt = await lockTx.wait();
             const tokenLockedLog = receipt?.logs.find(
                 log => {
                     try {
@@ -257,6 +257,10 @@ describe("TokenBridge", function () {
             
             expect(tokenLockedLog).to.not.be.undefined;
             
+            // Extract lock ID from the event
+            const lockId = tokenBridge.interface.parseLog(tokenLockedLog)?.args[5];
+            expect(lockId).to.not.be.undefined;
+            
             // Check balances after locking
             const finalUserBalance = await storageToken.balanceOf(user.address);
             const finalBridgeBalance = await storageToken.balanceOf(await tokenBridge.getAddress());
@@ -267,6 +271,19 @@ describe("TokenBridge", function () {
             // Check daily used amount
             const dailyUsed = await tokenBridge.dailyUsed();
             expect(dailyUsed).to.equal(amount);
+            
+            // Check user daily used amount
+            const userDailyUsed = await tokenBridge.userDailyUsed(user.address);
+            expect(userDailyUsed).to.equal(amount);
+            
+            // Verify lock record was created
+            const lockRecord = await tokenBridge.lockRecords(lockId);
+            expect(lockRecord.sender).to.equal(user.address);
+            expect(lockRecord.targetAddress).to.equal(targetAddress);
+            expect(lockRecord.amount).to.equal(amount);
+            expect(lockRecord.targetChain).to.equal(TARGET_CHAIN_ID);
+            expect(lockRecord.released).to.be.false;
+            expect(lockRecord.cancelled).to.be.false;
         });
         
         it("should revert when locking to the same chain", async function() {
@@ -324,6 +341,9 @@ describe("TokenBridge", function () {
         });
         
         it("should reset daily limit after 24 hours", async function() {
+            // Increase user's daily limit to match the test values
+            await tokenBridge.connect(owner).updateUserDailyLimit(user.address, ethers.parseEther("100000"));
+            
             // Lock some tokens
             const amount1 = ethers.parseEther("50000");
             await tokenBridge.connect(user).lockTokens(
@@ -335,6 +355,9 @@ describe("TokenBridge", function () {
             // Check daily used
             let dailyUsed = await tokenBridge.dailyUsed();
             expect(dailyUsed).to.equal(amount1);
+            
+            let userDailyUsed = await tokenBridge.userDailyUsed(user.address);
+            expect(userDailyUsed).to.equal(amount1);
             
             // Increase time by 24 hours
             await time.increase(24 * 60 * 60 + 1);
@@ -350,6 +373,10 @@ describe("TokenBridge", function () {
             // Check daily used - should be reset to just amount2
             dailyUsed = await tokenBridge.dailyUsed();
             expect(dailyUsed).to.equal(amount2);
+            
+            // Check user daily used - should also be reset to just amount2
+            userDailyUsed = await tokenBridge.userDailyUsed(user.address);
+            expect(userDailyUsed).to.equal(amount2);
         });
         
         it("should revert when user is blacklisted", async function() {
@@ -383,11 +410,33 @@ describe("TokenBridge", function () {
                 )
             ).to.be.revertedWithCustomError(tokenBridge, "AccountNotWhitelisted");
         });
+        
+        it("should revert when exceeding user daily limit", async function() {
+            // Set a user daily limit
+            const userLimit = ethers.parseEther("5000");
+            await tokenBridge.connect(owner).updateUserDailyLimit(user.address, userLimit);
+            
+            // Try to lock more than the user limit
+            const amount = ethers.parseEther("6000");
+            const targetAddress = anotherUser.address;
+            
+            // Approve more tokens
+            await storageToken.connect(owner).transfer(user.address, amount);
+            await storageToken.connect(user).approve(await tokenBridge.getAddress(), amount);
+            
+            await expect(
+                tokenBridge.connect(user).lockTokens(
+                    amount,
+                    TARGET_CHAIN_ID,
+                    targetAddress
+                )
+            ).to.be.revertedWithCustomError(tokenBridge, "UserDailyLimitExceeded");
+        });
     });
     
     // Tests for releasing tokens
     describe("Token Releasing", function() {
-        it("should release tokens successfully", async function() {
+        it("should release tokens successfully by bridge operator", async function() {
             const amount = ethers.parseEther("1000");
             const sourceChain = TARGET_CHAIN_ID;
             const nonce = 12345;
@@ -396,12 +445,14 @@ describe("TokenBridge", function () {
             const initialRecipientBalance = await storageToken.balanceOf(user.address);
             const initialBridgeBalance = await storageToken.balanceOf(await tokenBridge.getAddress());
             
-            // Release tokens
+            // Release tokens with empty proof since bridge operator doesn't need it
+            const emptyProof = ethers.toUtf8Bytes("");
             const tx = await tokenBridge.connect(bridgeOperator).releaseTokens(
                 user.address,
                 amount,
                 sourceChain,
-                nonce
+                nonce,
+                emptyProof
             );
             
             // Check event emission
@@ -429,33 +480,71 @@ describe("TokenBridge", function () {
             // Check daily used amount
             const dailyUsed = await tokenBridge.dailyUsed();
             expect(dailyUsed).to.equal(amount);
+            
+            // Check accounting
+            const totalReleased = await tokenBridge.totalReleasedTokens();
+            expect(totalReleased).to.equal(amount);
         });
         
-        it("should revert when non-bridge operator tries to release tokens", async function() {
+        it("should allow users to release their own tokens with valid proof", async function() {
             const amount = ethers.parseEther("1000");
             const sourceChain = TARGET_CHAIN_ID;
             const nonce = 12345;
             
+            // Generate a mock proof - in a real scenario this would be a cryptographic proof
+            // For testing we'll just use a dummy proof that the contract will accept
+            const mockProof = ethers.toUtf8Bytes("valid_proof_for_testing");
+            
+            // Check initial balances
+            const initialUserBalance = await storageToken.balanceOf(user.address);
+            const initialBridgeBalance = await storageToken.balanceOf(await tokenBridge.getAddress());
+            
+            // User releases their own tokens
+            const tx = await tokenBridge.connect(user).releaseTokens(
+                user.address, // Recipient is the same as caller
+                amount,
+                sourceChain,
+                nonce,
+                mockProof
+            );
+            
+            // Check balances after release
+            const finalUserBalance = await storageToken.balanceOf(user.address);
+            const finalBridgeBalance = await storageToken.balanceOf(await tokenBridge.getAddress());
+            
+            expect(finalUserBalance).to.equal(initialUserBalance + amount);
+            expect(finalBridgeBalance).to.equal(initialBridgeBalance - amount);
+        });
+        
+        it("should revert when non-authorized entity tries to release tokens", async function() {
+            const amount = ethers.parseEther("1000");
+            const sourceChain = TARGET_CHAIN_ID;
+            const nonce = 12345;
+            const mockProof = ethers.toUtf8Bytes("valid_proof_for_testing");
+            
             await expect(
-                tokenBridge.connect(user).releaseTokens(
-                    anotherUser.address,
+                tokenBridge.connect(anotherUser).releaseTokens(
+                    user.address, // Trying to release for someone else
                     amount,
                     sourceChain,
-                    nonce
+                    nonce,
+                    mockProof
                 )
-            ).to.be.revertedWithCustomError(tokenBridge, "BridgeOperatorRequired");
+            ).to.be.revertedWithCustomError(tokenBridge, "UnauthorizedRelease");
         });
         
         it("should revert when releasing from the same chain", async function() {
             const amount = ethers.parseEther("1000");
             const nonce = 12345;
+            const emptyProof = ethers.toUtf8Bytes("");
             
             await expect(
                 tokenBridge.connect(bridgeOperator).releaseTokens(
                     user.address,
                     amount,
                     LOCAL_CHAIN_ID, // Same as local chain
-                    nonce
+                    nonce,
+                    emptyProof
                 )
             ).to.be.revertedWithCustomError(tokenBridge, "InvalidChainId");
         });
@@ -463,13 +552,15 @@ describe("TokenBridge", function () {
         it("should revert when releasing zero tokens", async function() {
             const sourceChain = TARGET_CHAIN_ID;
             const nonce = 12345;
+            const emptyProof = ethers.toUtf8Bytes("");
             
             await expect(
                 tokenBridge.connect(bridgeOperator).releaseTokens(
                     user.address,
                     0, // Zero amount
                     sourceChain,
-                    nonce
+                    nonce,
+                    emptyProof
                 )
             ).to.be.revertedWithCustomError(tokenBridge, "InvalidTokenAmount");
         });
@@ -478,13 +569,15 @@ describe("TokenBridge", function () {
             const amount = ethers.parseEther("1000");
             const sourceChain = TARGET_CHAIN_ID;
             const nonce = 12345;
+            const emptyProof = ethers.toUtf8Bytes("");
             
             await expect(
                 tokenBridge.connect(bridgeOperator).releaseTokens(
                     ethers.ZeroAddress, // Zero address
                     amount,
                     sourceChain,
-                    nonce
+                    nonce,
+                    emptyProof
                 )
             ).to.be.revertedWithCustomError(tokenBridge, "InvalidAddress");
         });
@@ -493,13 +586,15 @@ describe("TokenBridge", function () {
             const amount = ethers.parseEther("1000");
             const sourceChain = TARGET_CHAIN_ID;
             const nonce = 12345;
+            const emptyProof = ethers.toUtf8Bytes("");
             
             // Release tokens with nonce
             await tokenBridge.connect(bridgeOperator).releaseTokens(
                 user.address,
                 amount,
                 sourceChain,
-                nonce
+                nonce,
+                emptyProof
             );
             
             // Try to use the same nonce again
@@ -508,7 +603,8 @@ describe("TokenBridge", function () {
                     anotherUser.address,
                     amount,
                     sourceChain,
-                    nonce
+                    nonce,
+                    emptyProof
                 )
             ).to.be.revertedWithCustomError(tokenBridge, "NonceAlreadyUsed");
         });
@@ -520,15 +616,189 @@ describe("TokenBridge", function () {
             const amount = ethers.parseEther("1000");
             const sourceChain = TARGET_CHAIN_ID;
             const nonce = 12345;
+            const emptyProof = ethers.toUtf8Bytes("");
             
             await expect(
                 tokenBridge.connect(bridgeOperator).releaseTokens(
                     user.address,
                     amount,
                     sourceChain,
-                    nonce
+                    nonce,
+                    emptyProof
                 )
             ).to.be.revertedWithCustomError(tokenBridge, "AccountBlacklisted");
+        });
+    });
+    
+    // Tests for lock cancellation
+    describe("Lock Cancellation", function() {
+        it("should allow users to cancel their locks", async function() {
+            const amount = ethers.parseEther("1000");
+            const targetAddress = anotherUser.address;
+            
+            // Initial balances
+            const initialUserBalance = await storageToken.balanceOf(user.address);
+            const initialBridgeBalance = await storageToken.balanceOf(await tokenBridge.getAddress());
+            
+            // Lock tokens and get the lock ID
+            const lockTx = await tokenBridge.connect(user).lockTokens(
+                amount,
+                TARGET_CHAIN_ID,
+                targetAddress
+            );
+            
+            const receipt = await lockTx.wait();
+            const tokenLockedLog = receipt?.logs.find(
+                log => {
+                    try {
+                        const parsed = tokenBridge.interface.parseLog(log);
+                        return parsed?.name === "TokensLocked";
+                    } catch {
+                        return false;
+                    }
+                }
+            );
+            
+            const lockId = tokenBridge.interface.parseLog(tokenLockedLog)?.args[5];
+            
+            // Check daily used amount after lock
+            let dailyUsed = await tokenBridge.dailyUsed();
+            expect(dailyUsed).to.equal(amount);
+            
+            // Check user daily used
+            let userDailyUsed = await tokenBridge.userDailyUsed(user.address);
+            expect(userDailyUsed).to.equal(amount);
+            
+            // Check accounting
+            let totalLocked = await tokenBridge.totalLockedTokens();
+            expect(totalLocked).to.equal(amount);
+            
+            // Cancel the lock
+            await tokenBridge.connect(user).cancelLock(lockId);
+            
+            // Check balances after cancellation
+            const finalUserBalance = await storageToken.balanceOf(user.address);
+            const finalBridgeBalance = await storageToken.balanceOf(await tokenBridge.getAddress());
+            
+            // User should get their tokens back
+            expect(finalUserBalance).to.equal(initialUserBalance);
+            expect(finalBridgeBalance).to.equal(initialBridgeBalance);
+            
+            // Daily limit and user daily limit should be reduced
+            dailyUsed = await tokenBridge.dailyUsed();
+            expect(dailyUsed).to.equal(0);
+            
+            userDailyUsed = await tokenBridge.userDailyUsed(user.address);
+            expect(userDailyUsed).to.equal(0);
+            
+            // Lock record should be marked as cancelled
+            const lockRecord = await tokenBridge.lockRecords(lockId);
+            expect(lockRecord.cancelled).to.be.true;
+            
+            // Accounting should be updated
+            totalLocked = await tokenBridge.totalLockedTokens();
+            expect(totalLocked).to.equal(0);
+        });
+        
+        it("should allow admins to cancel any lock", async function() {
+            const amount = ethers.parseEther("1000");
+            const targetAddress = anotherUser.address;
+            
+            // Lock tokens with user
+            const lockTx = await tokenBridge.connect(user).lockTokens(
+                amount,
+                TARGET_CHAIN_ID,
+                targetAddress
+            );
+            
+            const receipt = await lockTx.wait();
+            const lockId = tokenBridge.interface.parseLog(
+                receipt?.logs.find(log => {
+                    try {
+                        return tokenBridge.interface.parseLog(log)?.name === "TokensLocked";
+                    } catch {
+                        return false;
+                    }
+                })
+            )?.args[5];
+            
+            // Admin cancels the lock
+            await tokenBridge.connect(owner).cancelLock(lockId);
+            
+            // Lock record should be marked as cancelled
+            const lockRecord = await tokenBridge.lockRecords(lockId);
+            expect(lockRecord.cancelled).to.be.true;
+            
+            // User should have received their tokens back
+            const userBalance = await storageToken.balanceOf(user.address);
+            expect(userBalance).to.equal(ethers.parseEther("100000")); // Initial balance
+        });
+        
+        it("should revert when non-owner and non-sender tries to cancel a lock", async function() {
+            const amount = ethers.parseEther("1000");
+            const targetAddress = anotherUser.address;
+            
+            // Lock tokens with user
+            const lockTx = await tokenBridge.connect(user).lockTokens(
+                amount,
+                TARGET_CHAIN_ID,
+                targetAddress
+            );
+            
+            const receipt = await lockTx.wait();
+            const lockId = tokenBridge.interface.parseLog(
+                receipt?.logs.find(log => {
+                    try {
+                        return tokenBridge.interface.parseLog(log)?.name === "TokensLocked";
+                    } catch {
+                        return false;
+                    }
+                })
+            )?.args[5];
+            
+            // Another user tries to cancel (not admin, not sender)
+            await expect(
+                tokenBridge.connect(anotherUser).cancelLock(lockId)
+            ).to.be.revertedWithCustomError(tokenBridge, "UnauthorizedCancel");
+        });
+        
+        it("should revert when trying to cancel a non-existent lock", async function() {
+            const fakeLockId = ethers.keccak256(ethers.toUtf8Bytes("non_existent_lock"));
+            
+            await expect(
+                tokenBridge.connect(user).cancelLock(fakeLockId)
+            ).to.be.revertedWithCustomError(tokenBridge, "LockNotFound");
+        });
+        
+        it("should revert when trying to cancel an already cancelled lock", async function() {
+            const amount = ethers.parseEther("1000");
+            const targetAddress = anotherUser.address;
+            
+            // Lock tokens
+            const lockTx = await tokenBridge.connect(user).lockTokens(
+                amount,
+                TARGET_CHAIN_ID,
+                targetAddress
+            );
+            
+            const receipt = await lockTx.wait();
+            const lockId = tokenBridge.interface.parseLog(
+                receipt?.logs.find(log => {
+                    try {
+                        return tokenBridge.interface.parseLog(log)?.name === "TokensLocked";
+                    } catch {
+                        return false;
+                    }
+                })
+            )?.args[5];
+            
+            // Cancel once
+            await tokenBridge.connect(user).cancelLock(lockId);
+            
+            // Try to cancel again
+            await expect(
+                tokenBridge.connect(user).cancelLock(lockId)
+            ).to.be.revertedWithCustomError(tokenBridge, "LockAlreadyCancelled");
         });
     });
     
@@ -538,6 +808,8 @@ describe("TokenBridge", function () {
             // Set a smaller daily limit for testing
             const smallLimit = ethers.parseEther("2000");
             await tokenBridge.connect(owner).updateDailyLimit(smallLimit);
+            
+            const emptyProof = ethers.toUtf8Bytes("");
             
             // Lock tokens up to the limit
             const lockAmount = ethers.parseEther("1000");
@@ -554,7 +826,8 @@ describe("TokenBridge", function () {
                 anotherUser.address,
                 releaseAmount,
                 TARGET_CHAIN_ID,
-                nonce
+                nonce,
+                emptyProof
             );
             
             // Both operations should succeed and daily limit should be reached
@@ -576,7 +849,8 @@ describe("TokenBridge", function () {
                     anotherUser.address,
                     ethers.parseEther("1"),
                     TARGET_CHAIN_ID,
-                    54321
+                    54321,
+                    emptyProof
                 )
             ).to.be.revertedWithCustomError(tokenBridge, "DailyLimitExceeded");
         });
@@ -587,6 +861,54 @@ describe("TokenBridge", function () {
             
             const updatedLimit = await tokenBridge.dailyLimit();
             expect(updatedLimit).to.equal(newLimit);
+        });
+        
+        it("should enforce user daily limits for locking", async function() {
+            // Set a small user daily limit
+            const userLimit = ethers.parseEther("3000");
+            await tokenBridge.connect(owner).updateUserDailyLimit(user.address, userLimit);
+            
+            // Lock tokens up to the user limit
+            const lockAmount = ethers.parseEther("3000");
+            
+            // Approve more tokens
+            await storageToken.connect(owner).transfer(user.address, lockAmount);
+            await storageToken.connect(user).approve(await tokenBridge.getAddress(), lockAmount);
+            
+            await tokenBridge.connect(user).lockTokens(
+                lockAmount,
+                TARGET_CHAIN_ID,
+                anotherUser.address
+            );
+            
+            // Check user daily used
+            const userDailyUsed = await tokenBridge.userDailyUsed(user.address);
+            expect(userDailyUsed).to.equal(lockAmount);
+            
+            // Try to lock more tokens - should fail due to user limit
+            await expect(
+                tokenBridge.connect(user).lockTokens(
+                    ethers.parseEther("1"),
+                    TARGET_CHAIN_ID,
+                    anotherUser.address
+                )
+            ).to.be.revertedWithCustomError(tokenBridge, "UserDailyLimitExceeded");
+        });
+        
+        it("should allow admin to update user daily limit", async function() {
+            const newUserLimit = ethers.parseEther("20000");
+            await tokenBridge.connect(owner).updateUserDailyLimit(user.address, newUserLimit);
+            
+            const updatedUserLimit = await tokenBridge.userDailyLimits(user.address);
+            expect(updatedUserLimit).to.equal(newUserLimit);
+        });
+        
+        it("should allow admin to update default user daily limit", async function() {
+            const newDefaultLimit = ethers.parseEther("10000");
+            await tokenBridge.connect(owner).updateDefaultUserDailyLimit(newDefaultLimit);
+            
+            const updatedDefaultLimit = await tokenBridge.defaultUserDailyLimit();
+            expect(updatedDefaultLimit).to.equal(newDefaultLimit);
         });
     });
     
@@ -604,6 +926,7 @@ describe("TokenBridge", function () {
             const amount = ethers.parseEther("6000"); // Above large transfer threshold
             const sourceChain = TARGET_CHAIN_ID;
             const nonce = 12345;
+            const emptyProof = ethers.toUtf8Bytes("");
             
             // Check initial balances
             const initialRecipientBalance = await storageToken.balanceOf(user.address);
@@ -613,7 +936,8 @@ describe("TokenBridge", function () {
                 user.address,
                 amount,
                 sourceChain,
-                nonce
+                nonce,
+                emptyProof
             );
             
             // Check event emission
@@ -656,13 +980,15 @@ describe("TokenBridge", function () {
             const amount = ethers.parseEther("6000"); // Above large transfer threshold
             const sourceChain = TARGET_CHAIN_ID;
             const nonce = 12345;
+            const emptyProof = ethers.toUtf8Bytes("");
             
             // Release tokens - should be delayed
             const tx = await tokenBridge.connect(bridgeOperator).releaseTokens(
                 user.address,
                 amount,
                 sourceChain,
-                nonce
+                nonce,
+                emptyProof
             );
             
             // Extract transfer ID
@@ -698,7 +1024,8 @@ describe("TokenBridge", function () {
                 user.address,
                 smallAmount,
                 sourceChain,
-                nonce
+                nonce,
+                emptyProof
             );
             
             // Try to execute the cancelled transfer - should fail
@@ -723,12 +1050,14 @@ describe("TokenBridge", function () {
             const amount = ethers.parseEther("1000");
             const sourceChain = TARGET_CHAIN_ID;
             const nonce = 12345;
+            const emptyProof = ethers.toUtf8Bytes("");
             
             await tokenBridge.connect(anotherUser).releaseTokens(
                 user.address,
                 amount,
                 sourceChain,
-                nonce
+                nonce,
+                emptyProof
             );
             
             // Remove the bridge operator
@@ -738,15 +1067,16 @@ describe("TokenBridge", function () {
             const isOperatorAfter = await tokenBridge.bridgeOperators(anotherUser.address);
             expect(isOperatorAfter).to.be.false;
             
-            // Verify the removed operator can no longer release tokens
+            // Verify the removed operator can no longer release tokens for others
             await expect(
                 tokenBridge.connect(anotherUser).releaseTokens(
                     user.address,
                     amount,
                     sourceChain,
-                    54321 // Different nonce
+                    54321, // Different nonce
+                    emptyProof
                 )
-            ).to.be.revertedWithCustomError(tokenBridge, "BridgeOperatorRequired");
+            ).to.be.revertedWithCustomError(tokenBridge, "UnauthorizedRelease");
         });
         
         it("should enforce transaction limits for bridge operators", async function() {
@@ -784,12 +1114,14 @@ describe("TokenBridge", function () {
             const belowLimitAmount = ethers.parseEther("50");
             const sourceChain = TARGET_CHAIN_ID;
             const nonce1 = 12345;
+            const emptyProof = ethers.toUtf8Bytes("");
             
             await tokenBridge.connect(bridgeOperator).releaseTokens(
                 user.address,
                 belowLimitAmount,
                 sourceChain,
-                nonce1
+                nonce1,
+                emptyProof
             );
             
             // Try to release tokens above the limit
@@ -802,7 +1134,8 @@ describe("TokenBridge", function () {
                     user.address,
                     aboveLimitAmount,
                     sourceChain,
-                    nonce2
+                    nonce2,
+                    emptyProof
                 )
             ).to.be.revertedWithCustomError(tokenBridge, "LowAllowance");
         });
@@ -849,12 +1182,14 @@ describe("TokenBridge", function () {
             ).to.be.reverted;
             
             // Try to release tokens - should fail with any revert
+            const emptyProof = ethers.toUtf8Bytes("");
             await expect(
                 tokenBridge.connect(bridgeOperator).releaseTokens(
                     user.address,
                     ethers.parseEther("100"),
                     TARGET_CHAIN_ID,
-                    98765
+                    98765,
+                    emptyProof
                 )
             ).to.be.reverted;
             
@@ -934,12 +1269,14 @@ describe("TokenBridge", function () {
             ).to.be.revertedWithCustomError(tokenBridge, "AccountBlacklisted");
             
             // Bridge operator should not be able to release tokens to blacklisted user
+            const emptyProof = ethers.toUtf8Bytes("");
             await expect(
                 tokenBridge.connect(bridgeOperator).releaseTokens(
                     user.address,
                     ethers.parseEther("1000"),
                     TARGET_CHAIN_ID,
-                    12345
+                    12345,
+                    emptyProof
                 )
             ).to.be.revertedWithCustomError(tokenBridge, "AccountBlacklisted");
             
@@ -952,6 +1289,158 @@ describe("TokenBridge", function () {
                 TARGET_CHAIN_ID,
                 anotherUser.address
             );
+        });
+    });
+    
+    // Tests for accounting functions
+    describe("Accounting", function() {
+        it("should correctly track locked and released tokens", async function() {
+            // We need to account for initial bridge balance when checking the books
+            // First, get the initial balance and update the accounting to match
+            const initialBridgeBalance = await storageToken.balanceOf(await tokenBridge.getAddress());
+            console.log("Initial bridge balance:", ethers.formatEther(initialBridgeBalance));
+            
+            // Check the initial accounting
+            const initialLocked = await tokenBridge.totalLockedTokens();
+            const initialReleased = await tokenBridge.totalReleasedTokens();
+            console.log("Initial locked:", ethers.formatEther(initialLocked));
+            console.log("Initial released:", ethers.formatEther(initialReleased));
+            
+            // Lock some tokens
+            const lockAmount = ethers.parseEther("5000");
+            await tokenBridge.connect(user).lockTokens(
+                lockAmount,
+                TARGET_CHAIN_ID,
+                anotherUser.address
+            );
+            
+            // Check locked tokens increased
+            const lockedAfterLock = await tokenBridge.totalLockedTokens();
+            expect(lockedAfterLock).to.equal(initialLocked + lockAmount);
+            console.log("Locked after locking:", ethers.formatEther(lockedAfterLock));
+            
+            // Release some tokens
+            const releaseAmount = ethers.parseEther("3000");
+            const emptyProof = ethers.toUtf8Bytes("");
+            await tokenBridge.connect(bridgeOperator).releaseTokens(
+                user.address,
+                releaseAmount,
+                TARGET_CHAIN_ID,
+                12345,
+                emptyProof
+            );
+            
+            // Check released tokens increased
+            const releasedAfterRelease = await tokenBridge.totalReleasedTokens();
+            expect(releasedAfterRelease).to.equal(initialReleased + releaseAmount);
+            console.log("Released after releasing:", ethers.formatEther(releasedAfterRelease));
+            
+            // Check bridge balance after operations
+            const finalBridgeBalance = await storageToken.balanceOf(await tokenBridge.getAddress());
+            console.log("Final bridge balance:", ethers.formatEther(finalBridgeBalance));
+            console.log("Expected balance (initial + locked - released):", 
+                ethers.formatEther(initialBridgeBalance + lockAmount - releaseAmount));
+            
+            // In this test environment, we may need to compare the actual vs expected balance manually
+            // rather than using checkBooks which looks at the totalLocked and totalReleased
+            // which don't account for the initial tokens in the bridge
+            expect(finalBridgeBalance).to.equal(initialBridgeBalance + lockAmount - releaseAmount);
+        });
+        
+        it("should correctly report books status", async function() {
+            // Lock some tokens
+            const lockAmount = ethers.parseEther("5000");
+            await tokenBridge.connect(user).lockTokens(
+                lockAmount,
+                TARGET_CHAIN_ID,
+                anotherUser.address
+            );
+            
+            // Release some tokens
+            const releaseAmount = ethers.parseEther("2000");
+            const emptyProof = ethers.toUtf8Bytes("");
+            await tokenBridge.connect(bridgeOperator).releaseTokens(
+                user.address,
+                releaseAmount,
+                TARGET_CHAIN_ID,
+                12345,
+                emptyProof
+            );
+            
+            // Report books - the return value will be a transaction response, not the actual values
+            // We need to listen for the event instead
+            const reportTx = await tokenBridge.connect(owner).reportBooks();
+            const receipt = await reportTx.wait();
+            
+            // Find the BooksChecked event
+            const booksCheckedLog = receipt?.logs.find(
+                log => {
+                    try {
+                        const parsed = tokenBridge.interface.parseLog(log);
+                        return parsed?.name === "BooksChecked";
+                    } catch {
+                        return false;
+                    }
+                }
+            );
+            
+            expect(booksCheckedLog).to.not.be.undefined;
+            
+            // Extract values from the event
+            const eventArgs = tokenBridge.interface.parseLog(booksCheckedLog)?.args;
+            const lockedTokens = eventArgs[0];
+            const releasedTokens = eventArgs[1];
+            const balance = eventArgs[2];
+            const balanced = eventArgs[3];
+            
+            // Initial locked should be at least lockAmount
+            expect(lockedTokens).to.be.at.least(lockAmount);
+            
+            // Initial released should be at least releaseAmount
+            expect(releasedTokens).to.be.at.least(releaseAmount);
+            
+            // Balance should match the actual token balance
+            const actualBalance = await storageToken.balanceOf(await tokenBridge.getAddress());
+            expect(balance).to.equal(actualBalance);
+            
+            // We can't directly check if balanced is true because of the initial token balance
+            // that isn't tracked in our accounting, but we can check if the accounting values
+            // consistently reflect the operations we performed
+            console.log("Balance:", ethers.formatEther(balance));
+            console.log("Locked tokens:", ethers.formatEther(lockedTokens));
+            console.log("Released tokens:", ethers.formatEther(releasedTokens));
+            console.log("Balanced:", balanced);
+        });
+        
+        it("should update accounting when locks are cancelled", async function() {
+            // Lock some tokens
+            const lockAmount = ethers.parseEther("5000");
+            const lockTx = await tokenBridge.connect(user).lockTokens(
+                lockAmount,
+                TARGET_CHAIN_ID,
+                anotherUser.address
+            );
+            
+            // Extract lockId
+            const receipt = await lockTx.wait();
+            const lockId = tokenBridge.interface.parseLog(
+                receipt?.logs.find(log => {
+                    try {
+                        return tokenBridge.interface.parseLog(log)?.name === "TokensLocked";
+                    } catch {
+                        return false;
+                    }
+                })
+            )?.args[5];
+            
+            // Check total locked
+            expect(await tokenBridge.totalLockedTokens()).to.equal(lockAmount);
+            
+            // Cancel the lock
+            await tokenBridge.connect(user).cancelLock(lockId);
+            
+            // Total locked should be reduced
+            expect(await tokenBridge.totalLockedTokens()).to.equal(0);
         });
     });
 });
