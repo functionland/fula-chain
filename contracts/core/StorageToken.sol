@@ -53,6 +53,7 @@ contract StorageToken is
         // Initialize governance module (handles UUPSUpgradeable, Ownable, ReentrancyGuard, 
         // Pausable, AccessControlEnumerable, role grants, and timelocks)
         __GovernanceModule_init(initialOwner, initialAdmin);
+        _grantRole(ProposalTypes.BRIDGE_OPERATOR_ROLE, initialAdmin);
 
         // Deploy Treasury
         treasury = new Treasury(address(this), initialAdmin);
