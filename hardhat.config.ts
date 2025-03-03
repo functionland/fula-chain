@@ -21,6 +21,31 @@ const config: HardhatUserConfig = {
         enabled: true
     },
     networks: {
+        // Mainnets
+        ethereum: {
+            url: "https://ethereum.publicnode.com",
+            accounts: vars.has("PK") ? [vars.get("PK")] : [],
+            chainId: 1,
+            gasPrice: "auto",
+            // Uncomment if you need higher gas limits (adjust as needed)
+            // gas: 2100000,
+        },
+        base: {
+            url: "https://mainnet.base.org",
+            accounts: vars.has("PK") ? [vars.get("PK")] : [],
+            chainId: 8453,
+            gasPrice: "auto",
+            // Base can sometimes need higher gas estimates
+            // gas: 3000000,
+        },
+        "iotex-mainnet": {
+            url: "https://babel-api.mainnet.iotex.io",
+            accounts: vars.has("PK") ? [vars.get("PK")] : [],
+            chainId: 4689,
+            gasPrice: "auto",
+        },
+        
+        // Testnets
         sepolia: {
             url: "https://ethereum-sepolia.publicnode.com",
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
@@ -57,8 +82,31 @@ const config: HardhatUserConfig = {
         }
     },
     etherscan: {
-        apiKey: vars.has("ETHERSCAN_API_KEY") ? vars.get("ETHERSCAN_API_KEY") : "",
+        apiKey: {
+            mainnet: vars.has("ETHERSCAN_API_KEY") ? vars.get("ETHERSCAN_API_KEY") : "",
+            sepolia: vars.has("ETHERSCAN_API_KEY") ? vars.get("ETHERSCAN_API_KEY") : "",
+            base: vars.has("BASESCAN_API_KEY") ? vars.get("BASESCAN_API_KEY") : "",
+            "base-sepolia": vars.has("BASESCAN_API_KEY") ? vars.get("BASESCAN_API_KEY") : "",
+            "iotex-mainnet": vars.has("IOTEXSCAN_API_KEY") ? vars.get("IOTEXSCAN_API_KEY") : "",
+            "iotex-testnet": vars.has("IOTEXSCAN_API_KEY") ? vars.get("IOTEXSCAN_API_KEY") : ""
+        },
         customChains: [
+            {
+                network: "base",
+                chainId: 8453,
+                urls: {
+                  apiURL: "https://api.basescan.org/api",
+                  browserURL: "https://basescan.org"
+                }
+            },
+            {
+                network: "base-sepolia",
+                chainId: 84532,
+                urls: {
+                  apiURL: "https://api-sepolia.basescan.org/api",
+                  browserURL: "https://sepolia.basescan.org"
+                }
+            },
             {
               network: "iotex-mainnet",
               chainId: 4689,
