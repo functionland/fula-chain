@@ -40,7 +40,7 @@ async function main() {
     }
 
     // Calculate initial minted tokens (half of total supply)
-    const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
+    const TOTAL_SUPPLY = ethers.parseEther("0"); // 2 billion tokens
     const initialMintedTokens = TOTAL_SUPPLY;
 
     // Get current account balance

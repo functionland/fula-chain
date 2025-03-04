@@ -23,7 +23,7 @@ const config: HardhatUserConfig = {
     networks: {
         // Mainnets
         ethereum: {
-            url: "https://ethereum.publicnode.com",
+            url: "https://eth-mainnet.g.alchemy.com/v2/_LnQrpSkygkgsX96sfS_fMl78FeAHnhw",
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 1,
             gasPrice: "auto",
@@ -31,7 +31,7 @@ const config: HardhatUserConfig = {
             // gas: 2100000,
         },
         base: {
-            url: "https://mainnet.base.org",
+            url: "https://base-mainnet.g.alchemy.com/v2/_LnQrpSkygkgsX96sfS_fMl78FeAHnhw",
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 8453,
             gasPrice: "auto",
@@ -87,8 +87,8 @@ const config: HardhatUserConfig = {
             sepolia: vars.has("ETHERSCAN_API_KEY") ? vars.get("ETHERSCAN_API_KEY") : "",
             base: vars.has("BASESCAN_API_KEY") ? vars.get("BASESCAN_API_KEY") : "",
             "base-sepolia": vars.has("BASESCAN_API_KEY") ? vars.get("BASESCAN_API_KEY") : "",
-            "iotex-mainnet": vars.has("IOTEXSCAN_API_KEY") ? vars.get("IOTEXSCAN_API_KEY") : "",
-            "iotex-testnet": vars.has("IOTEXSCAN_API_KEY") ? vars.get("IOTEXSCAN_API_KEY") : ""
+            "iotex-mainnet": vars.has("IOTEXSCAN_API_KEY") ? vars.get("IOTEXSCAN_API_KEY") : "arbitrary",
+            "iotex-testnet": vars.has("IOTEXSCAN_API_KEY") ? vars.get("IOTEXSCAN_API_KEY") : "arbitrary",
         },
         customChains: [
             {
@@ -116,12 +116,12 @@ const config: HardhatUserConfig = {
               }
             },
             {
-              network: "iotext-testnet",
-              chainId: 4690,
-              urls: {
-                apiURL: "https://testnet.iotexscout.io/api",
-                browserURL: "https://testnet.iotexscan.io"
-              }
+                network: "iotex-mainnet",
+                chainId: 4689,
+                urls: {
+                  apiURL: "https://iotexscout.io/api",
+                  browserURL: "https://iotexscan.io"
+                }
             }
         ]
     },
