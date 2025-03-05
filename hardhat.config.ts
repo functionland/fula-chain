@@ -67,9 +67,9 @@ const config: HardhatUserConfig = {
             chainId: 4690
         },
         "skale-testnet": {
-            url: "https://testnet.skalenodes.com/v1/giant-half-dual-testnet",
+            url: "https://testnet.skalenodes.com/v1/juicy-low-small-testnet",
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
-            chainId: 974399131
+            chainId: 1444673419
         },
         "sfi-testnet": {
             url: "https://rpc-testnet.singularityfinance.ai",
@@ -89,6 +89,7 @@ const config: HardhatUserConfig = {
             "base-sepolia": vars.has("BASESCAN_API_KEY") ? vars.get("BASESCAN_API_KEY") : "",
             "iotex-mainnet": vars.has("IOTEXSCAN_API_KEY") ? vars.get("IOTEXSCAN_API_KEY") : "arbitrary",
             "iotex-testnet": vars.has("IOTEXSCAN_API_KEY") ? vars.get("IOTEXSCAN_API_KEY") : "arbitrary",
+            "skale-testnet": vars.has("SKALESCAN_API_KEY") ? vars.get("SKALESCAN_API_KEY") : "arbitrary",
         },
         customChains: [
             {
@@ -121,6 +122,14 @@ const config: HardhatUserConfig = {
                 urls: {
                   apiURL: "https://iotexscout.io/api",
                   browserURL: "https://iotexscan.io"
+                }
+            },
+            {
+                network: "skale-testnet",
+                chainId: 1444673419,
+                urls: {
+                    apiURL: "https://juicy-low-small-testnet.explorer.testnet.skalenodes.com/api",
+                    browserURL: "https://europa-explorer.testnet.skalenodes.com"
                 }
             }
         ]
