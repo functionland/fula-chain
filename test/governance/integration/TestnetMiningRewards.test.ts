@@ -310,6 +310,7 @@ describe("TestnetMiningRewards", function () {
     describe("Multiple Users with Different Vesting Caps", function () {
         let user2: Wallet;
         let SUBSTRATE_WALLET_2: string;
+        let localRewardsContract: TestnetMiningRewards;
 
         beforeEach(async function () {
             // Create second user with matching addresses
@@ -321,9 +322,56 @@ describe("TestnetMiningRewards", function () {
                 toQuantity(ethers.parseEther('100'))
             ]);
 
+            // Deploy a fresh contract instance for this test to avoid sharing state
+            const TestnetMiningRewards = await ethers.getContractFactory("TestnetMiningRewards");
+            localRewardsContract = await upgrades.deployProxy(
+                TestnetMiningRewards, 
+                [
+                    await storageToken.getAddress(),
+                    owner.address,
+                    admin.address
+                ],
+                { kind: 'uups', initializer: 'initialize' }
+            );
+            await localRewardsContract.waitForDeployment();
+
+            // Wait for role change timelock to expire (ROLE_CHANGE_DELAY is 1 day)
+            await time.increase(24 * 60 * 60 + 1);
+
+            // Set up roles and permissions
+            await localRewardsContract.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+
+            // Wait for execution delay
+            await time.increase(24 * 60 * 60 + 1);
+            
+            // Whitelist the contract
+            const addWhitelistType = 5;
+            const tx = await storageToken.connect(owner).createProposal(
+                addWhitelistType,
+                0,
+                await localRewardsContract.getAddress(),
+                ethers.ZeroHash,
+                0,
+                ZeroAddress
+            );
+            
+            const receipt = await tx.wait();
+            const proposalId = receipt?.logs[0].topics[1];
+
+            await time.increase(24 * 60 * 60 + 1);
+            await storageToken.connect(admin).approveProposal(proposalId);
+            
+            await time.increase(24 * 60 * 60 + 1);
+            
+            // Transfer tokens to rewards contract
+            await storageToken.connect(owner).transferFromContract(
+                await localRewardsContract.getAddress(),
+                REWARDS_AMOUNT
+            );
+
             // Create two vesting caps with different parameters
             // Cap 1: No cliff, 6 month vesting, 10:1 ratio
-            await rewardsContract.connect(owner).addVestingCap(
+            await localRewardsContract.connect(owner).addVestingCap(
                 2, // new cap ID
                 ethers.encodeBytes32String("Cap1"),
                 1, // Add startDate parameter (will be replaced by TGE timestamp)
@@ -337,7 +385,7 @@ describe("TestnetMiningRewards", function () {
             );
 
             // Cap 2: 12 month cliff, 6 month vesting, 6:1 ratio
-            await rewardsContract.connect(owner).addVestingCap(
+            await localRewardsContract.connect(owner).addVestingCap(
                 3, // new cap ID
                 ethers.encodeBytes32String("Cap2"),
                 1, // Add startDate parameter (will be replaced by TGE timestamp)
@@ -350,15 +398,9 @@ describe("TestnetMiningRewards", function () {
                 6 // 6:1 ratio
             );
 
-            // Verify cap settings
-            const cap2 = await rewardsContract.vestingCaps(2);
-            const cap3 = await rewardsContract.vestingCaps(3);
-            expect(cap2.cliff).to.equal(0); // No cliff for cap 2
-            expect(cap3.cliff).to.equal(365 * 24 * 60 * 60); // 365 days cliff for cap 3
-
             // Add users to their respective caps
             // User 1 -> Cap 2
-            const addUser1Proposal = await rewardsContract.connect(owner).createProposal(
+            const addUser1Proposal = await localRewardsContract.connect(owner).createProposal(
                 7, // AddDistributionWallets type
                 2, // capId
                 user.address,
@@ -366,14 +408,14 @@ describe("TestnetMiningRewards", function () {
                 REWARDS_AMOUNT,
                 ethers.ZeroAddress
             );
-            let receipt = await addUser1Proposal.wait();
-            let proposalId = receipt?.logs[0].topics[1];
+            let propReceipt = await addUser1Proposal.wait();
+            let propId = propReceipt?.logs[0].topics[1];
             await time.increase(24 * 60 * 60 + 1);
-            await rewardsContract.connect(admin).approveProposal(proposalId);
+            await localRewardsContract.connect(admin).approveProposal(propId);
             await time.increase(24 * 60 * 60 + 1);
 
             // User 2 -> Cap 3
-            const addUser2Proposal = await rewardsContract.connect(owner).createProposal(
+            const addUser2Proposal = await localRewardsContract.connect(owner).createProposal(
                 7, // AddDistributionWallets type
                 3, // capId
                 user2.address,
@@ -381,27 +423,37 @@ describe("TestnetMiningRewards", function () {
                 REWARDS_AMOUNT,
                 ethers.ZeroAddress
             );
-            receipt = await addUser2Proposal.wait();
-            proposalId = receipt?.logs[0].topics[1];
+            propReceipt = await addUser2Proposal.wait();
+            propId = propReceipt?.logs[0].topics[1];
             await time.increase(24 * 60 * 60 + 1);
-            await rewardsContract.connect(admin).approveProposal(proposalId);
+            await localRewardsContract.connect(admin).approveProposal(propId);
             await time.increase(24 * 60 * 60 + 1);
 
             // Set up wallet mappings
-            await rewardsContract.connect(owner).batchAddAddresses(
+            await localRewardsContract.connect(owner).batchAddAddresses(
                 [user.address, user2.address],
                 [ethers.toUtf8Bytes(SUBSTRATE_WALLET), ethers.toUtf8Bytes(SUBSTRATE_WALLET_2)]
             );
 
             // Set substrate rewards for both users
-            await rewardsContract.connect(owner).updateSubstrateRewards(
+            await localRewardsContract.connect(owner).updateSubstrateRewards(
                 user.address,
                 SUBSTRATE_REWARDS
             );
-            await rewardsContract.connect(owner).updateSubstrateRewards(
+            await localRewardsContract.connect(owner).updateSubstrateRewards(
                 user2.address,
                 SUBSTRATE_REWARDS
             );
+
+            // Initialize TGE
+            await localRewardsContract.connect(owner).initiateTGE();
+            
+            // Verify that vesting cap start dates are set to TGE timestamp
+            const tgeTimestamp = await localRewardsContract.tgeTimestamp();
+            const cap2After = await localRewardsContract.vestingCaps(2);
+            const cap3After = await localRewardsContract.vestingCaps(3);
+            expect(cap2After.startDate).to.equal(tgeTimestamp);
+            expect(cap3After.startDate).to.equal(tgeTimestamp);
         });
 
         it("should correctly calculate and distribute rewards based on different ratios and cliffs", async function () {
@@ -410,7 +462,7 @@ describe("TestnetMiningRewards", function () {
             
             // User 1 should be able to claim immediately (no cliff)
             const expectedUser1Rewards = SUBSTRATE_REWARDS / BigInt(10); // 10:1 ratio
-            const dueTokens1 = await rewardsContract.calculateDueTokens(
+            const dueTokens1 = await localRewardsContract.calculateDueTokens(
                 user.address,
                 SUBSTRATE_WALLET,
                 2
@@ -418,7 +470,7 @@ describe("TestnetMiningRewards", function () {
             expect(dueTokens1).to.equal(expectedUser1Rewards);
 
             // User 2 should not be able to claim yet (12 month cliff)
-            const amount = await rewardsContract.calculateDueTokens(user2.address, SUBSTRATE_WALLET_2, 3);
+            const amount = await localRewardsContract.calculateDueTokens(user2.address, SUBSTRATE_WALLET_2, 3);
             expect(amount).to.equal(0n);
 
             // Move forward 13 months to pass the cliff for user2
@@ -426,7 +478,7 @@ describe("TestnetMiningRewards", function () {
 
             // User 2 should now be able to claim
             const expectedUser2Rewards = SUBSTRATE_REWARDS / BigInt(6); // 6:1 ratio
-            const dueTokens2 = await rewardsContract.calculateDueTokens(
+            const dueTokens2 = await localRewardsContract.calculateDueTokens(
                 user2.address,
                 SUBSTRATE_WALLET_2,
                 3
@@ -434,12 +486,12 @@ describe("TestnetMiningRewards", function () {
             expect(dueTokens2).to.equal(expectedUser2Rewards);
 
             // Both users claim
-            await rewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 2);
-            await rewardsContract.connect(user2).claimTokens(SUBSTRATE_WALLET_2, 3);
+            await localRewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 2);
+            await localRewardsContract.connect(user2).claimTokens(SUBSTRATE_WALLET_2, 3);
 
             // Verify claimed amounts
-            const walletInfo1 = await rewardsContract.vestingWallets(user.address, 2);
-            const walletInfo2 = await rewardsContract.vestingWallets(user2.address, 3);
+            const walletInfo1 = await localRewardsContract.vestingWallets(user.address, 2);
+            const walletInfo2 = await localRewardsContract.vestingWallets(user2.address, 3);
 
             expect(walletInfo1.claimed).to.equal(expectedUser1Rewards);
             expect(walletInfo2.claimed).to.equal(expectedUser2Rewards);
@@ -448,12 +500,12 @@ describe("TestnetMiningRewards", function () {
             await time.increase(30 * 24 * 60 * 60);
 
             // Both users should be able to claim again
-            await rewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 2);
-            await rewardsContract.connect(user2).claimTokens(SUBSTRATE_WALLET_2, 3);
+            await localRewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 2);
+            await localRewardsContract.connect(user2).claimTokens(SUBSTRATE_WALLET_2, 3);
 
             // Verify new claimed amounts
-            const walletInfo1After = await rewardsContract.vestingWallets(user.address, 2);
-            const walletInfo2After = await rewardsContract.vestingWallets(user2.address, 3);
+            const walletInfo1After = await localRewardsContract.vestingWallets(user.address, 2);
+            const walletInfo2After = await localRewardsContract.vestingWallets(user2.address, 3);
 
             expect(walletInfo1After.claimed).to.equal(expectedUser1Rewards * BigInt(2));
             expect(walletInfo2After.claimed).to.equal(expectedUser2Rewards * BigInt(2));
