@@ -44,6 +44,11 @@ const config: HardhatUserConfig = {
             chainId: 4689,
             gasPrice: "auto",
         },
+        "skale": {
+            url: "https://mainnet.skalenodes.com/v1/elated-tan-skat",
+            accounts: vars.has("PK") ? [vars.get("PK")] : [],
+            chainId: 2046399126
+        },
         
         // Testnets
         sepolia: {
@@ -88,6 +93,7 @@ const config: HardhatUserConfig = {
             base: vars.has("BASESCAN_API_KEY") ? vars.get("BASESCAN_API_KEY") : "",
             "base-sepolia": vars.has("BASESCAN_API_KEY") ? vars.get("BASESCAN_API_KEY") : "",
             "iotex-mainnet": vars.has("IOTEXSCAN_API_KEY") ? vars.get("IOTEXSCAN_API_KEY") : "arbitrary",
+            "skale": vars.has("SKALESCAN_API_KEY") ? vars.get("SKALESCAN_API_KEY") : "arbitrary",
             "iotex-testnet": vars.has("IOTEXSCAN_API_KEY") ? vars.get("IOTEXSCAN_API_KEY") : "arbitrary",
             "skale-testnet": vars.has("SKALESCAN_API_KEY") ? vars.get("SKALESCAN_API_KEY") : "arbitrary",
         },
@@ -117,11 +123,11 @@ const config: HardhatUserConfig = {
               }
             },
             {
-                network: "iotex-mainnet",
-                chainId: 4689,
+                network: "skale",
+                chainId: 2046399126,
                 urls: {
-                  apiURL: "https://iotexscout.io/api",
-                  browserURL: "https://iotexscan.io"
+                    apiURL: "https://elated-tan-skat.explorer.mainnet.skalenodes.com/api",
+                    browserURL: "https://elated-tan-skat.explorer.mainnet.skalenodes.com"
                 }
             },
             {

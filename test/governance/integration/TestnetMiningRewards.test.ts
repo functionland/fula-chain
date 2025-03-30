@@ -127,6 +127,7 @@ describe("TestnetMiningRewards", function () {
         await rewardsContract.connect(owner).addVestingCap(
             1,
             ethers.encodeBytes32String("Mining Rewards"),
+            1, // Add startDate parameter (will be replaced by TGE timestamp)
             REWARDS_AMOUNT,
             CLIFF_PERIOD,
             VESTING_PERIOD,
@@ -325,6 +326,7 @@ describe("TestnetMiningRewards", function () {
             await rewardsContract.connect(owner).addVestingCap(
                 2, // new cap ID
                 ethers.encodeBytes32String("Cap1"),
+                1, // Add startDate parameter (will be replaced by TGE timestamp)
                 REWARDS_AMOUNT,
                 0, // no cliff
                 6, // 6 months vesting
@@ -338,6 +340,7 @@ describe("TestnetMiningRewards", function () {
             await rewardsContract.connect(owner).addVestingCap(
                 3, // new cap ID
                 ethers.encodeBytes32String("Cap2"),
+                1, // Add startDate parameter (will be replaced by TGE timestamp)
                 REWARDS_AMOUNT,
                 365, // 12 months cliff
                 6, // 6 months vesting
@@ -346,6 +349,12 @@ describe("TestnetMiningRewards", function () {
                 MAX_MONTHLY_REWARDS,
                 6 // 6:1 ratio
             );
+
+            // Verify cap settings
+            const cap2 = await rewardsContract.vestingCaps(2);
+            const cap3 = await rewardsContract.vestingCaps(3);
+            expect(cap2.cliff).to.equal(0); // No cliff for cap 2
+            expect(cap3.cliff).to.equal(365 * 24 * 60 * 60); // 365 days cliff for cap 3
 
             // Add users to their respective caps
             // User 1 -> Cap 2
@@ -396,7 +405,9 @@ describe("TestnetMiningRewards", function () {
         });
 
         it("should correctly calculate and distribute rewards based on different ratios and cliffs", async function () {
+            // Increase time by 30 days - this should be within the cliff period for user2
             await time.increase(30 * 24 * 60 * 60 + 1);
+            
             // User 1 should be able to claim immediately (no cliff)
             const expectedUser1Rewards = SUBSTRATE_REWARDS / BigInt(10); // 10:1 ratio
             const dueTokens1 = await rewardsContract.calculateDueTokens(
@@ -410,7 +421,7 @@ describe("TestnetMiningRewards", function () {
             const amount = await rewardsContract.calculateDueTokens(user2.address, SUBSTRATE_WALLET_2, 3);
             expect(amount).to.equal(0n);
 
-            // Move forward 13 months
+            // Move forward 13 months to pass the cliff for user2
             await time.increase(395 * 24 * 60 * 60); // Past cliff for both users
 
             // User 2 should now be able to claim
@@ -455,6 +466,7 @@ describe("TestnetMiningRewards", function () {
                 rewardsContract.connect(owner).addVestingCap(
                     2, // new cap ID
                     ethers.encodeBytes32String("Test Cap"),
+                    1, // Add startDate parameter (will be replaced by TGE timestamp)
                     0, // zero allocation
                     CLIFF_PERIOD,
                     VESTING_PERIOD,
@@ -471,6 +483,7 @@ describe("TestnetMiningRewards", function () {
                 rewardsContract.connect(owner).addVestingCap(
                     2, // new cap ID
                     ethers.encodeBytes32String("Test Cap"),
+                    1, // Add startDate parameter (will be replaced by TGE timestamp)
                     REWARDS_AMOUNT,
                     CLIFF_PERIOD,
                     VESTING_PERIOD,
@@ -487,6 +500,7 @@ describe("TestnetMiningRewards", function () {
             await rewardsContract.connect(owner).addVestingCap(
                 capId,
                 ethers.encodeBytes32String("Test Cap"),
+                1, // Add startDate parameter (will be replaced by TGE timestamp)
                 REWARDS_AMOUNT,
                 CLIFF_PERIOD,
                 VESTING_PERIOD,
@@ -510,6 +524,7 @@ describe("TestnetMiningRewards", function () {
             await rewardsContract.connect(owner).addVestingCap(
                 capId,
                 ethers.encodeBytes32String("Test Cap"),
+                1, // Add startDate parameter (will be replaced by TGE timestamp)
                 REWARDS_AMOUNT,
                 CLIFF_PERIOD,
                 VESTING_PERIOD,
@@ -524,6 +539,7 @@ describe("TestnetMiningRewards", function () {
                 rewardsContract.connect(owner).addVestingCap(
                     capId, // same ID
                     ethers.encodeBytes32String("Test Cap 2"),
+                    1, // Add startDate parameter (will be replaced by TGE timestamp)
                     REWARDS_AMOUNT,
                     CLIFF_PERIOD,
                     VESTING_PERIOD,
