@@ -14,7 +14,8 @@ library VestingCalculator {
         if(currentTime < cap.startDate + cap.cliff) return 0;
 
         uint256 monthsSinceStart = (currentTime - cap.startDate) / 30 days;
-        if(monthsSinceStart == walletInfo.lastClaimMonth) return 0;
+        // Allow new wallets (lastClaimMonth == 0) to claim, but prevent claiming twice in the same month
+        if(monthsSinceStart == walletInfo.lastClaimMonth && walletInfo.lastClaimMonth != 0) return 0;
 
         return rewards.amount / cap.ratio;
     }
