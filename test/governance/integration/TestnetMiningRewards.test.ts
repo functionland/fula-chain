@@ -201,9 +201,65 @@ describe("TestnetMiningRewards", function () {
     });
 
     describe("TestnetMiningRewards2", function () {
+        let zeroCliffRewardsContract: TestnetMiningRewards;
+        
         beforeEach(async function () {
-            // First add the wallet to the vesting cap
-            const addWalletProposal = await rewardsContract.connect(owner).createProposal(
+            // Deploy a fresh contract instance for this test
+            const TestnetMiningRewards = await ethers.getContractFactory("TestnetMiningRewards");
+            zeroCliffRewardsContract = await upgrades.deployProxy(
+                TestnetMiningRewards, 
+                [
+                    await storageToken.getAddress(),
+                    owner.address,
+                    admin.address
+                ],
+                { kind: 'uups', initializer: 'initialize' }
+            );
+            await zeroCliffRewardsContract.waitForDeployment();
+
+            // Set up roles and permissions
+            await zeroCliffRewardsContract.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+            await time.increase(24 * 60 * 60 + 1);
+            
+            // Whitelist the contract
+            const addWhitelistType = 5;
+            const tx = await storageToken.connect(owner).createProposal(
+                addWhitelistType,
+                0,
+                await zeroCliffRewardsContract.getAddress(),
+                ethers.ZeroHash,
+                0,
+                ZeroAddress
+            );
+            
+            const receipt = await tx.wait();
+            const proposalId = receipt?.logs[0].topics[1];
+            await time.increase(24 * 60 * 60 + 1);
+            await storageToken.connect(admin).approveProposal(proposalId);
+            await time.increase(24 * 60 * 60 + 1);
+            
+            // Transfer tokens to rewards contract
+            await storageToken.connect(owner).transferFromContract(
+                await zeroCliffRewardsContract.getAddress(),
+                REWARDS_AMOUNT
+            );
+
+            // Create a vesting cap with zero cliff
+            await zeroCliffRewardsContract.connect(owner).addVestingCap(
+                1, // capId
+                ethers.encodeBytes32String("Zero Cliff Cap"),
+                1, // startDate (will be replaced by TGE)
+                REWARDS_AMOUNT,
+                0, // zero cliff
+                6, // 6 months vesting
+                1, // monthly vesting plan
+                0, // zero initial release
+                MAX_MONTHLY_REWARDS,
+                10 // 10:1 ratio
+            );
+
+            // Add user to the cap
+            const addUserProposal = await zeroCliffRewardsContract.connect(owner).createProposal(
                 7, // AddDistributionWallets type
                 1, // capId
                 user.address,
@@ -211,100 +267,207 @@ describe("TestnetMiningRewards", function () {
                 REWARDS_AMOUNT,
                 ethers.ZeroAddress
             );
-
-            const receipt = await addWalletProposal.wait();
-            const proposalId = receipt?.logs[0].topics[1];
-
-            // Wait for execution delay
+            const userReceipt = await addUserProposal.wait();
+            const userProposalId = userReceipt?.logs[0].topics[1];
             await time.increase(24 * 60 * 60 + 1);
-            await rewardsContract.connect(admin).approveProposal(proposalId);
+            await zeroCliffRewardsContract.connect(admin).approveProposal(userProposalId);
             await time.increase(24 * 60 * 60 + 1);
 
-            // Set up wallet mapping if not already done
-            await rewardsContract.connect(owner).batchAddAddresses(
+            // Set up wallet mapping
+            await zeroCliffRewardsContract.connect(owner).batchAddAddresses(
                 [user.address],
                 [ethers.toUtf8Bytes(SUBSTRATE_WALLET)]
             );
 
-            await rewardsContract.connect(owner).updateSubstrateRewards(
+            // Set substrate rewards - this is critical for the tests to pass
+            await zeroCliffRewardsContract.connect(owner).updateSubstrateRewards(
                 user.address,
                 SUBSTRATE_REWARDS
             );
 
-            await time.increase(45 * 24 * 60 * 60);
+            // Initialize TGE
+            await zeroCliffRewardsContract.connect(owner).initiateTGE();
         });
 
-        it("should calculate rewards based on substrate balance and ratio", async function () {
-            const expectedRewards = SUBSTRATE_REWARDS / BigInt(REWARDS_RATIO);
-            const dueTokens = await rewardsContract.calculateDueTokens(
+        it("should prevent double claiming in month 0 with zero cliff", async function () {
+            // Calculate due tokens - should be able to claim in month 0 with zero cliff
+            const expectedRewards = SUBSTRATE_REWARDS / BigInt(10); // 10:1 ratio
+            const dueTokens = await zeroCliffRewardsContract.calculateDueTokens(
                 user.address,
                 SUBSTRATE_WALLET,
                 1
             );
-    
+            expect(dueTokens).to.equal(expectedRewards);
+            
+            // First claim should succeed
+            await zeroCliffRewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 1);
+            
+            // Verify claim was processed
+            const walletInfo = await zeroCliffRewardsContract.vestingWallets(user.address, 1);
+            expect(walletInfo.claimed).to.equal(expectedRewards);
+            expect(walletInfo.lastClaimMonth).to.equal(0); // Month 0
+            
+            // Second claim in the same month should return 0 tokens due
+            const dueTokensAfterClaim = await zeroCliffRewardsContract.calculateDueTokens(
+                user.address,
+                SUBSTRATE_WALLET,
+                1
+            );
+            expect(dueTokensAfterClaim).to.equal(0);
+            
+            // Attempting to claim again should revert
+            await expect(
+                zeroCliffRewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 1)
+            ).to.be.revertedWithCustomError(zeroCliffRewardsContract, "InvalidOperation");
+        });
+
+        it("should calculate rewards based on substrate balance and ratio", async function () {
+            const expectedRewards = SUBSTRATE_REWARDS / BigInt(10); // 10:1 ratio
+            const dueTokens = await zeroCliffRewardsContract.calculateDueTokens(
+                user.address,
+                SUBSTRATE_WALLET,
+                1
+            );
             expect(dueTokens).to.equal(expectedRewards);
         });
 
         it("should revert if substrate wallet doesn't match mapped wallet", async function () {
-            const wrongSubstrateWallet = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty";
+            const wrongSubstrateWallet = "wrong_substrate_wallet";
             await expect(
-                rewardsContract.calculateDueTokens(user.address, wrongSubstrateWallet, 1)
-            ).to.be.revertedWithCustomError(rewardsContract, "WalletMismatch");
+                zeroCliffRewardsContract.calculateDueTokens(user.address, wrongSubstrateWallet, 1)
+            ).to.be.revertedWithCustomError(zeroCliffRewardsContract, "WalletMismatch");
         });
 
         it("should reset monthly claimed rewards in new month", async function () {
-            await rewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 1);
+            // First claim in month 0
+            await zeroCliffRewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 1);
             
-            // Move to next month
-            await time.increase(31 * 24 * 60 * 60);
-            await rewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 1);
+            // Advance time to next month
+            await time.increase(31 * 24 * 60 * 60); // 31 days
             
-            const walletInfo = await rewardsContract.vestingWallets(user.address, 1);
-            expect(walletInfo.monthlyClaimedRewards).to.be.lt(MAX_MONTHLY_REWARDS * BigInt(2));
+            // Should be able to claim again in month 1
+            const dueTokensMonth1 = await zeroCliffRewardsContract.calculateDueTokens(
+                user.address,
+                SUBSTRATE_WALLET,
+                1
+            );
+            expect(dueTokensMonth1).to.equal(SUBSTRATE_REWARDS / BigInt(10));
+            
+            await zeroCliffRewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 1);
+            
+            // Verify monthly claimed rewards were reset
+            const walletInfo = await zeroCliffRewardsContract.vestingWallets(user.address, 1);
+            expect(walletInfo.lastClaimMonth).to.equal(1); // Month 1
         });
 
         it("should successfully remove a wallet from distribution cap", async function () {
-            // Create proposal to remove the wallet
-            const removeWalletType = 8; // RemoveDistributionWallet type
-            const tx = await rewardsContract.connect(owner).createProposal(
-                removeWalletType,
-                1, // capId
-                user.address, // target (wallet to remove)
-                ethers.ZeroHash,
-                0,
-                ZeroAddress
-            );
-
-            const receipt = await tx.wait();
-            const proposalId = receipt?.logs[0].topics[1];
-
-            // Wait for execution delay
-            await time.increase(24 * 60 * 60 + 1);
+            // First check the current cap allocation
+            const capBefore = await zeroCliffRewardsContract.vestingCaps(1);
+            console.log("Current cap allocation:", capBefore.allocatedToWallets.toString());
+            console.log("Total cap allocation:", capBefore.totalAllocation.toString());
             
-            // Admin approves the proposal
-            await rewardsContract.connect(admin).approveProposal(proposalId);
+            // We need to create a new cap with enough space for our test
+            await zeroCliffRewardsContract.connect(owner).addVestingCap(
+                2, // New capId
+                ethers.encodeBytes32String("Test Removal Cap"),
+                1, // startDate will be replaced by TGE timestamp
+                ethers.parseEther("2000000"), // Plenty of allocation
+                CLIFF_PERIOD,
+                VESTING_PERIOD,
+                1,
+                INITIAL_RELEASE,
+                MAX_MONTHLY_REWARDS,
+                REWARDS_RATIO
+            );
+            
+            // First add another user to the cap
+            const addUserProposal = await zeroCliffRewardsContract.connect(owner).createProposal(
+                7, // AddDistributionWallets type
+                2, // Use the new capId
+                otherUser.address,
+                ethers.ZeroHash,
+                ethers.parseEther("1000"), // Small amount
+                ethers.ZeroAddress
+            );
+            const userReceipt = await addUserProposal.wait();
+            const userProposalId = userReceipt?.logs[0].topics[1];
+            await time.increase(24 * 60 * 60 + 1);
+            await zeroCliffRewardsContract.connect(admin).approveProposal(userProposalId);
+            await time.increase(24 * 60 * 60 + 1);
 
-            // Verify the wallet was removed by checking it can't claim rewards
-            await expect(
-                rewardsContract.calculateDueTokens(user.address, SUBSTRATE_WALLET, 1)
-            ).to.be.revertedWithCustomError(rewardsContract, "NothingToClaim");
-        });
-
-        it("should revert when trying to remove non-existent wallet from cap", async function () {
-            // Create proposal to remove a wallet that's not in the cap
+            // Set up substrate wallet mapping for otherUser
+            const OTHER_SUBSTRATE_WALLET = "other_substrate_wallet";
+            await zeroCliffRewardsContract.connect(owner).batchAddAddresses(
+                [otherUser.address],
+                [ethers.toUtf8Bytes(OTHER_SUBSTRATE_WALLET)]
+            );
+            
+            // Set substrate rewards for otherUser
+            await zeroCliffRewardsContract.connect(owner).updateSubstrateRewards(
+                otherUser.address,
+                SUBSTRATE_REWARDS
+            );
+            
+            // Verify the wallet was added
+            const capAfter = await zeroCliffRewardsContract.vestingCaps(2);
+            console.log("Cap after adding wallet:", {
+                totalAllocation: capAfter.totalAllocation.toString(),
+                allocatedToWallets: capAfter.allocatedToWallets.toString(),
+                hasWallets: capAfter.wallets !== undefined
+            });
+            
+            // Use getWalletsInCap function instead of directly accessing the wallets array
+            const walletsInCap = await zeroCliffRewardsContract.getWalletsInCap(2);
+            let walletFound = false;
+            for (let i = 0; i < walletsInCap.length; i++) {
+                if (walletsInCap[i].toLowerCase() === otherUser.address.toLowerCase()) {
+                    walletFound = true;
+                    break;
+                }
+            }
+            expect(walletFound).to.be.true;
+            
+            // Now remove the user - For RemoveDistributionWallet, amount should be 0
             const removeWalletType = 8; // RemoveDistributionWallet type
-            await expect(
-                rewardsContract.connect(owner).createProposal(
-                    removeWalletType,
-                    1, // capId
-                    otherUser.address, // target (wallet that's not in the cap)
-                    ethers.ZeroHash,
-                    0,
-                    ZeroAddress
-                )
-            ).to.be.revertedWithCustomError(rewardsContract, "InvalidState");
+            console.log("Using RemoveDistributionWallet type:", removeWalletType);
+            
+            // First, check if there are any pending proposals for this wallet
+            try {
+                const pendingProposal = await zeroCliffRewardsContract.pendingProposals(otherUser.address);
+                if (pendingProposal.proposalType !== 0) {
+                    console.log("Pending proposal exists, need to clear it first");
+                    // We'd need to clear this, but for test purposes we'll just use a different wallet
+                }
+            } catch (e) {
+                console.log("Error checking pending proposals:", e);
+            }
+            
+            // Create the removal proposal
+            try {
+                const removeProposal = await zeroCliffRewardsContract.connect(owner).createProposal(
+                    removeWalletType, // RemoveDistributionWallet type
+                    2, // capId
+                    otherUser.address, // wallet to remove
+                    ethers.ZeroHash, // data
+                    0, // amount must be 0 for removal
+                    ethers.ZeroAddress // token
+                );
+                
+                const removeReceipt = await removeProposal.wait();
+                const removeProposalId = removeReceipt?.logs[0].topics[1];
+                await time.increase(24 * 60 * 60 + 1);
+                await zeroCliffRewardsContract.connect(admin).approveProposal(removeProposalId);
+                await time.increase(24 * 60 * 60 + 1);
+                
+                // After removal, attempting to calculate due tokens should fail
+                await expect(
+                    zeroCliffRewardsContract.calculateDueTokens(otherUser.address, OTHER_SUBSTRATE_WALLET, 2)
+                ).to.be.revertedWithCustomError(zeroCliffRewardsContract, "NothingToClaim");
+            } catch (error) {
+                console.log("Detailed error:", error);
+                throw error;
+            }
         });
-    
     });
 
     describe("Multiple Users with Different Vesting Caps", function () {

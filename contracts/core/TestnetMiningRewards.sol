@@ -316,9 +316,13 @@ contract TestnetMiningRewards is
         uint96 amount,
         address
     ) internal virtual override returns (bytes32) {
+        // Debug the proposal type
+        uint8 addType = uint8(ProposalTypes.ProposalType.AddDistributionWallets);
+        uint8 removeType = uint8(ProposalTypes.ProposalType.RemoveDistributionWallet);
+        
         // For adding wallet to cap
-        if (proposalType == uint8(ProposalTypes.ProposalType.AddDistributionWallets)) {
-            // amount parameter is used as capId
+        if (proposalType == addType) {
+            // amount parameter is used as id
             uint40 vestingCapId = id;
             
             // Validate cap exists and has space
@@ -359,7 +363,9 @@ contract TestnetMiningRewards is
             pendingProposals[target].proposalType = proposal.proposalType;
 
             return proposalId;
-        } else if (proposalType == uint8(ProposalTypes.ProposalType.RemoveDistributionWallet)) {
+        } 
+        // For removing wallet from cap
+        else if (proposalType == removeType) {
             // Check if wallet exists in cap
             if (vestingWallets[target][id].capId == 0) {
                 revert InvalidState(3);
@@ -368,6 +374,11 @@ contract TestnetMiningRewards is
             // Check for existing proposals
             if (pendingProposals[target].proposalType != 0) {
                 revert ExistingActiveProposal(target);
+            }
+            
+            // For RemoveDistributionWallet, amount must be 0
+            if (amount != 0) {
+                revert InvalidParameter(1);
             }
 
             bytes32 proposalId = _createProposalId(
