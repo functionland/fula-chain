@@ -360,6 +360,99 @@ describe("TestnetMiningRewards", function () {
             expect(walletInfo.lastClaimMonth).to.equal(1); // Month 1
         });
 
+        it("should not allow claiming more than total allocation", async function () {
+            // First create a new vesting cap with specific allocation and monthly limit
+            const totalAllocation = ethers.parseEther("16000");
+            const monthlyLimit = ethers.parseEther("8000");
+            
+            await zeroCliffRewardsContract.connect(owner).addVestingCap(
+                3, // new capId
+                ethers.encodeBytes32String("Total Allocation Test Cap"),
+                1, // startDate (will be replaced by TGE)
+                totalAllocation,
+                0, // zero cliff
+                6, // 6 months vesting
+                1, // monthly vesting plan
+                0, // zero initial release
+                monthlyLimit, // monthly limit of 8000 tokens
+                10 // 10:1 ratio
+            );
+
+            // Add user to the cap
+            const addWalletProposal = await zeroCliffRewardsContract.connect(owner).createProposal(
+                7, // AddDistributionWallets type
+                3, // capId
+                user.address,
+                ethers.ZeroHash,
+                totalAllocation,
+                ethers.ZeroAddress
+            );
+
+            const receipt = await addWalletProposal.wait();
+            const proposalId = receipt?.logs[0].topics[1];
+
+            // Wait for execution delay
+            await time.increase(24 * 60 * 60 + 1);
+            await zeroCliffRewardsContract.connect(admin).approveProposal(proposalId);
+            await time.increase(24 * 60 * 60 + 1);
+
+            // Set substrate rewards to match total allocation with ratio
+            const substrateRewards = totalAllocation * BigInt(10); // 10:1 ratio
+            await zeroCliffRewardsContract.connect(owner).updateSubstrateRewards(
+                user.address,
+                substrateRewards
+            );
+            
+            // First month claim (should get 8000 tokens due to monthly limit)
+            const dueTokensMonth1 = await zeroCliffRewardsContract.calculateDueTokens(
+                user.address,
+                SUBSTRATE_WALLET,
+                3
+            );
+            
+            // Due tokens should be the full amount divided by ratio, but limited by monthly cap
+            const expectedDueTokens = substrateRewards / BigInt(10);
+            expect(dueTokensMonth1).to.equal(expectedDueTokens);
+            
+            // Claim the tokens
+            await zeroCliffRewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 3);
+            
+            // Verify claimed amount is limited by monthly cap
+            let walletInfo = await zeroCliffRewardsContract.vestingWallets(user.address, 3);
+            expect(walletInfo.claimed).to.equal(monthlyLimit);
+            expect(walletInfo.monthlyClaimedRewards).to.equal(monthlyLimit);
+            
+            // Move to next month
+            await time.increase(31 * 24 * 60 * 60);
+            
+            // Second month claim (should get remaining 8000 tokens)
+            const dueTokensMonth2 = await zeroCliffRewardsContract.calculateDueTokens(
+                user.address,
+                SUBSTRATE_WALLET,
+                3
+            );
+            expect(dueTokensMonth2).to.equal(expectedDueTokens);
+            
+            await zeroCliffRewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 3);
+            
+            // Verify total claimed amount equals total allocation
+            walletInfo = await zeroCliffRewardsContract.vestingWallets(user.address, 3);
+            expect(walletInfo.claimed).to.equal(totalAllocation);
+            
+            // Move to next month
+            await time.increase(31 * 24 * 60 * 60);
+            
+            // Third month claim (should revert as total allocation is exhausted)
+            // This is where we test if the contract properly prevents claiming more than total allocation
+            await expect(
+                zeroCliffRewardsContract.calculateDueTokens(user.address, SUBSTRATE_WALLET, 3)
+            ).to.be.revertedWithCustomError(zeroCliffRewardsContract, "InvalidOperation").withArgs(2);
+            
+            await expect(
+                zeroCliffRewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 3)
+            ).to.be.revertedWithCustomError(zeroCliffRewardsContract, "InvalidOperation").withArgs(2);
+        });
+
         it("should successfully remove a wallet from distribution cap", async function () {
             // First check the current cap allocation
             const capBefore = await zeroCliffRewardsContract.vestingCaps(1);
