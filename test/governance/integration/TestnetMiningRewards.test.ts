@@ -368,7 +368,7 @@ describe("TestnetMiningRewards", function () {
             await zeroCliffRewardsContract.connect(owner).addVestingCap(
                 3, // new capId
                 ethers.encodeBytes32String("Total Allocation Test Cap"),
-                1, // startDate (will be replaced by TGE)
+                1, // startDate (will be replaced by TGE timestamp)
                 totalAllocation,
                 0, // zero cliff
                 6, // 6 months vesting
@@ -442,12 +442,16 @@ describe("TestnetMiningRewards", function () {
             // Move to next month
             await time.increase(31 * 24 * 60 * 60);
             
-            // Third month claim (should revert as total allocation is exhausted)
+            // Third month claim (should return 0 as total allocation is exhausted)
             // This is where we test if the contract properly prevents claiming more than total allocation
-            await expect(
-                zeroCliffRewardsContract.calculateDueTokens(user.address, SUBSTRATE_WALLET, 3)
-            ).to.be.revertedWithCustomError(zeroCliffRewardsContract, "InvalidOperation").withArgs(2);
+            const dueTokensMonth3 = await zeroCliffRewardsContract.calculateDueTokens(
+                user.address,
+                SUBSTRATE_WALLET,
+                3
+            );
+            expect(dueTokensMonth3).to.equal(0);
             
+            // Attempting to claim should revert with InvalidOperation(2) - Nothing due
             await expect(
                 zeroCliffRewardsContract.connect(user).claimTokens(SUBSTRATE_WALLET, 3)
             ).to.be.revertedWithCustomError(zeroCliffRewardsContract, "InvalidOperation").withArgs(2);
