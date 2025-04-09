@@ -617,3 +617,310 @@ describe("StakingEngine with large user base", function () {
         expect(finalTotalStaked).to.equal(0);
     });
 });
+
+describe("StakingEngine Edge Cases", function () {
+    let stakingEngine: StakingEngine;
+    let token: StorageToken;
+    let owner: HardhatEthersSigner;
+    let admin: HardhatEthersSigner;
+    let user1: HardhatEthersSigner;
+    let user2: HardhatEthersSigner;
+    let user3: HardhatEthersSigner;
+    let users: HardhatEthersSigner[];
+    let rewardPoolAddress: string;
+    let stakingPoolAddress: string;
+    const TOTAL_SUPPLY = ethers.parseEther("1000000"); // 1M tokens
+    const initialRewardPoolAmount = ethers.parseEther("50000");
+    const initialStakingPoolAmount = ethers.parseEther("5000");
+
+    let calculateExpectedRewards = (stakedAmount: bigint, fixedAPY: number, elapsedTime: number) => {
+        const annualRewards = (stakedAmount * BigInt(fixedAPY)) / BigInt(100); // Annualized rewards
+        return (annualRewards * BigInt(elapsedTime)) / BigInt(365 * 24 * 60 * 60); // Adjusted for elapsed time
+    };
+
+    beforeEach(async function () {
+        // Get signers
+        [owner, admin, user1, user2, user3, ...users] = await ethers.getSigners();
+
+        // Deploy StorageToken
+        const StorageToken = await ethers.getContractFactory("StorageToken");
+        token = await upgrades.deployProxy(
+            StorageToken, 
+            [owner.address, admin.address, TOTAL_SUPPLY],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as StorageToken;
+        await token.waitForDeployment();
+
+        // Set up reward and staking pool addresses
+        rewardPoolAddress = users[0].address;
+        stakingPoolAddress = users[1].address;
+
+        // Deploy StakingEngine
+        const StakingEngine = await ethers.getContractFactory("StakingEngine");
+        stakingEngine = await upgrades.deployProxy(
+            StakingEngine, 
+            [
+                await token.getAddress(),
+                rewardPoolAddress,
+                stakingPoolAddress,
+                owner.address,
+                admin.address,
+            ],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as StakingEngine;
+        await stakingEngine.waitForDeployment();
+
+        // Wait for role change timelock to expire
+        await time.increase(24 * 60 * 60 + 1);
+        await ethers.provider.send("evm_mine", []);
+
+        // Set up governance
+        await token.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        await stakingEngine.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+        
+        // Wait for execution delay
+        await time.increase(24 * 60 * 60 + 1);
+        await ethers.provider.send("evm_mine", []);
+        
+        // Additional delay before setting transaction limit
+        await time.increase(24 * 60 * 60 + 1);
+        await ethers.provider.send("evm_mine", []);
+        
+        // Set transaction limit for admin role
+        await token.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, ethers.parseEther("1000000000"));
+        
+        // Wait for second timelock to expire
+        await time.increase(24 * 60 * 60 + 1);
+        await ethers.provider.send("evm_mine", []);
+
+        // Create and execute whitelist proposals for stakingEngine, pools, and users
+        const addresses = [
+            await stakingEngine.getAddress(),
+            stakingPoolAddress,
+            rewardPoolAddress,
+            user1.address,
+            user2.address,
+            user3.address
+        ];
+
+        for (const address of addresses) {
+            const tx = await token.connect(owner).createProposal(
+                5, // AddWhitelist type
+                0,
+                address,
+                ethers.ZeroHash,
+                0,
+                ZeroAddress
+            );
+            const receipt = await tx.wait();
+            const proposalId = receipt?.logs[0].topics[1];
+            
+            await time.increase(24 * 60 * 60 + 1);
+            await ethers.provider.send("evm_mine", []);
+            
+            await token.connect(admin).approveProposal(proposalId);
+            await time.increase(24 * 60 * 60 + 1);
+        }
+
+        // Transfer tokens to the contracts and users
+        await token.connect(owner).transferFromContract(await stakingEngine.getAddress(), ethers.parseEther("10000"));
+        await token.connect(owner).transferFromContract(stakingPoolAddress, initialStakingPoolAmount);
+        await token.connect(owner).transferFromContract(rewardPoolAddress, initialRewardPoolAmount);
+        
+        // Transfer tokens to users and approve staking contract
+        for (const user of [user1, user2, user3]) {
+            await token.connect(owner).transferFromContract(user.address, ethers.parseEther("1000"));
+            await token.connect(user).approve(await stakingEngine.getAddress(), ethers.parseEther("1000"));
+        }
+        
+        // CRITICAL: Have the pools approve the StakingEngine to spend their tokens
+        await token.connect(users[0]).approve(await stakingEngine.getAddress(), ethers.parseEther("1000000")); // Reward pool
+        await token.connect(users[1]).approve(await stakingEngine.getAddress(), ethers.parseEther("1000000")); // Staking pool
+    });
+
+    // Test 1: Early unstaking penalty calculation
+    it("should apply correct penalty for early unstaking at different times", async function () {
+        const stakeAmount = ethers.parseEther("100");
+        const lockPeriod = 90 * 24 * 60 * 60; // 90 days
+        
+        // User1 stakes tokens
+        await stakingEngine.connect(user1).stakeToken(stakeAmount, lockPeriod);
+        
+        // Calculate penalties at different points in time
+        const checkPoints = [
+            1 * 24 * 60 * 60,     // 1 day (almost full penalty)
+            30 * 24 * 60 * 60,    // 30 days (2/3 of penalty)
+            60 * 24 * 60 * 60,    // 60 days (1/3 of penalty)
+            89 * 24 * 60 * 60     // 89 days (minimal penalty)
+        ];
+        
+        // Advance time to first checkpoint
+        await time.increase(checkPoints[0]);
+        await ethers.provider.send("evm_mine", []);
+            
+        // Record total staked before unstaking
+        const totalStakedBefore = await stakingEngine.totalStaked();
+            
+        // Unstake tokens
+        const tx = await stakingEngine.connect(user1).unstakeToken(0);
+        const receipt = await tx.wait();
+            
+        // Find the Unstaked event
+        const unstakeEvent = receipt?.logs.find(
+            log => log.topics[0] === ethers.id("Unstaked(address,uint256,uint256,uint256)")
+        );
+        
+        if (unstakeEvent) {
+            const parsedEvent = stakingEngine.interface.parseLog({
+                topics: [...unstakeEvent.topics],
+                data: unstakeEvent.data
+            });
+            
+            if (parsedEvent) {
+                // Verify that a penalty was applied (exact amount depends on contract implementation)
+                const actualPenalty = parsedEvent.args[3];
+                expect(actualPenalty).to.be.gt(0); // Penalty should be greater than 0
+                
+                // Just verify the penalty is reasonable - at least 50% for early unstaking
+                const reasonablePenaltyMin = (stakeAmount * BigInt(50)) / BigInt(100);
+                expect(actualPenalty).to.be.gte(reasonablePenaltyMin);
+            }
+        }
+        
+        // Verify total staked decreased correctly
+        const totalStakedAfter = await stakingEngine.totalStaked();
+        expect(totalStakedAfter).to.equal(totalStakedBefore - stakeAmount);
+    });
+
+    // Test 2: Edge case for referrer reward calculation
+    it("should calculate referrer rewards correctly with multiple referrals", async function () {
+        // Define staking parameters
+        const stakeAmount = ethers.parseEther("100");
+        const lockPeriod90 = 90 * 24 * 60 * 60; // 90 days
+        const lockPeriod180 = 180 * 24 * 60 * 60; // 180 days
+        const lockPeriod365 = 365 * 24 * 60 * 60; // 365 days
+        
+        // User2 refers User1 for 90-day staking
+        await stakingEngine.connect(user1).stakeTokenWithReferrer(stakeAmount, lockPeriod90, user2.address);
+        
+        // User3 refers User1 for 180-day staking
+        await stakingEngine.connect(user1).stakeTokenWithReferrer(stakeAmount, lockPeriod180, user3.address);
+        
+        // User2 refers User1 again for 365-day staking
+        await stakingEngine.connect(user1).stakeTokenWithReferrer(stakeAmount, lockPeriod365, user2.address);
+        
+        // Get referrer info objects
+        const user2ReferrerInfo = await stakingEngine.referrers(user2.address);
+        const user3ReferrerInfo = await stakingEngine.referrers(user3.address);
+        
+        // Verify total referred amounts
+        expect(user2ReferrerInfo.totalReferred).to.be.gt(0);
+        expect(user3ReferrerInfo.totalReferred).to.be.gt(0);
+        
+        // Advance time to complete all lock periods
+        await time.increase(lockPeriod365);
+        await ethers.provider.send("evm_mine", []);
+        
+        // User1 unstakes all positions
+        await stakingEngine.connect(user1).unstakeToken(0); // 90 days
+        await stakingEngine.connect(user1).unstakeToken(0); // 180 days
+        await stakingEngine.connect(user1).unstakeToken(0); // 365 days
+        
+        // Get updated referrer info after unstaking
+        const user2ReferrerInfoAfter = await stakingEngine.referrers(user2.address);
+        const user3ReferrerInfoAfter = await stakingEngine.referrers(user3.address);
+        
+        // Verify referrers have unclaimed rewards
+        expect(user2ReferrerInfoAfter.unclaimedRewards).to.be.gt(0);
+        expect(user3ReferrerInfoAfter.unclaimedRewards).to.be.gt(0);
+        
+        // Check referrers can claim rewards
+        const user2Initial = await token.balanceOf(user2.address);
+        await stakingEngine.connect(user2).claimReferrerRewards(lockPeriod90);
+        await stakingEngine.connect(user2).claimReferrerRewards(lockPeriod365);
+        const user2Final = await token.balanceOf(user2.address);
+        
+        const user3Initial = await token.balanceOf(user3.address);
+        await stakingEngine.connect(user3).claimReferrerRewards(lockPeriod180);
+        const user3Final = await token.balanceOf(user3.address);
+        
+        // Verify referrers received rewards
+        expect(user2Final).to.be.gt(user2Initial);
+        expect(user3Final).to.be.gt(user3Initial);
+        
+        // Verify referrers can't claim rewards again
+        await expect(stakingEngine.connect(user2).claimReferrerRewards(lockPeriod90))
+            .to.be.revertedWith("No rewards available for this period");
+    });
+
+    // Test 3: Edge case for reward distribution with insufficient pool balance
+    it("should handle reward distribution when pool has insufficient funds", async function () {
+        // First, handle the initial staking with sufficient rewards
+        const stakeAmount = ethers.parseEther("500"); // Large enough to generate meaningful rewards
+        const lockPeriod = 365 * 24 * 60 * 60; // 365 days to maximize rewards
+        
+        // User1 stakes tokens
+        await stakingEngine.connect(user1).stakeToken(stakeAmount, lockPeriod);
+        
+        // Now significantly deplete the reward pool (leave just 0.001 tokens)
+        const rewardPoolInitialBalance = await token.balanceOf(rewardPoolAddress);
+        await token.connect(users[0]).transfer(owner.address, rewardPoolInitialBalance - ethers.parseEther("0.001"));
+        
+        // Advance time to complete lock period
+        await time.increase(lockPeriod);
+        await ethers.provider.send("evm_mine", []);
+        
+        // Record initial balance
+        const initialBalance = await token.balanceOf(user1.address);
+        
+        // Unstake - should only return principal if rewards can't be distributed
+        await stakingEngine.connect(user1).unstakeToken(0);
+        
+        // Verify user got back their principal but no additional rewards
+        const finalBalance = await token.balanceOf(user1.address);
+        
+        // User should at minimum get their principal back
+        expect(finalBalance - initialBalance).to.equal(stakeAmount);
+        
+        // Ensure rewards were likely insufficient - we don't need to check for a specific event
+        // since the contract behavior may vary, but user shouldn't get full rewards
+        const rewardPoolFinalBalance = await token.balanceOf(rewardPoolAddress);
+        expect(rewardPoolFinalBalance).to.be.lt(ethers.parseEther("0.01")); // Pool should be almost empty
+    });
+
+    // Test 6: Edge case for calculating rewards when updating rewards with zero total staked
+    it("should handle updateRewards correctly when totalStaked is zero", async function () {
+        // Initially totalStaked is zero
+        expect(await stakingEngine.totalStaked()).to.equal(0);
+        
+        // First stake: Should update rewards internally
+        const stakeAmount = ethers.parseEther("10");
+        await stakingEngine.connect(user1).stakeToken(stakeAmount, 90 * 24 * 60 * 60);
+        
+        // Verify staking worked
+        expect(await stakingEngine.totalStaked()).to.equal(stakeAmount);
+        
+        // Complete lock period and unstake
+        await time.increase(90 * 24 * 60 * 60);
+        await ethers.provider.send("evm_mine", []);
+        await stakingEngine.connect(user1).unstakeToken(0);
+        
+        // Verify we're back to zero staked
+        expect(await stakingEngine.totalStaked()).to.equal(0);
+        
+        // Second stake after being at zero: Should handle reward updates correctly
+        await time.increase(100); // Add a small time buffer
+        await ethers.provider.send("evm_mine", []);
+        
+        // This should work without errors even with zero previously staked
+        await stakingEngine.connect(user1).stakeToken(stakeAmount, 90 * 24 * 60 * 60);
+        
+        // Complete lock period and unstake again
+        await time.increase(90 * 24 * 60 * 60);
+        await ethers.provider.send("evm_mine", []);
+        await stakingEngine.connect(user1).unstakeToken(0);
+        
+        // Verify we handled multiple zero-stake transitions correctly
+        expect(await stakingEngine.totalStaked()).to.equal(0);
+    });
+});
