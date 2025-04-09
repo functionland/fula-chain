@@ -120,17 +120,7 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
 
         lastUpdateTime = block.timestamp;
 
-        // Approve staking contract to spend tokens
-        try token.approve(address(this), 0) {
-            try token.approve(address(this), type(uint256).max) {
-                uint256 newAllowance = token.allowance(address(this), address(this));
-                if (newAllowance != type(uint256).max) revert OperationFailed(1);
-            } catch {
-                revert OperationFailed(2);
-            }
-        } catch {
-            revert OperationFailed(3);
-        }
+        // Removed unlimited token approval which is a security risk
     }
 
     function emergencyPauseRewardDistribution() external onlyRole(ProposalTypes.ADMIN_ROLE) {
@@ -162,58 +152,41 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
     }
 
     /**
-     * @dev Stakes tokens with an optional referrer
+     * @dev Internal function for staking tokens with shared logic
      * @param amount The amount to stake
      * @param lockPeriod The lock period (90, 180, or 365 days)
      * @param referrer Optional address of the referrer
      */
-    function stakeTokenWithReferrer(uint256 amount, uint256 lockPeriod, address referrer) external whenNotPaused {
-        require(amount > 0, "Amount must be greater than zero");
-        require(
-            lockPeriod == 90 days || lockPeriod == 180 days || lockPeriod == 365 days,
-            "Invalid lock period"
-        );
-        
-        // Referrer cannot be the same as the staker
-        if (referrer != address(0)) {
-            require(referrer != msg.sender, "Cannot refer yourself");
-        }
-
+    function _stakeTokenInternal(uint256 amount, uint256 lockPeriod, address referrer) internal {
         // Update rewards before processing the stake
         updateRewards();
 
         // Calculate projected APY after adding this stake
         uint256 projectedAPY = calculateProjectedAPY(amount, lockPeriod);
         if (
-            lockPeriod == 90 days && projectedAPY < FIXED_APY_90_DAYS
+            lockPeriod == LOCK_PERIOD_1 && projectedAPY < FIXED_APY_90_DAYS
         ) {
             revert APYCannotBeSatisfied(1, projectedAPY, FIXED_APY_90_DAYS);
         }
         if (
-            lockPeriod == 180 days && projectedAPY < FIXED_APY_180_DAYS
+            lockPeriod == LOCK_PERIOD_2 && projectedAPY < FIXED_APY_180_DAYS
         ) {
             revert APYCannotBeSatisfied(2, projectedAPY, FIXED_APY_180_DAYS);
         }
         if (
-            lockPeriod == 365 days && projectedAPY < FIXED_APY_365_DAYS
+            lockPeriod == LOCK_PERIOD_3 && projectedAPY < FIXED_APY_365_DAYS
         ) {
             revert APYCannotBeSatisfied(3, projectedAPY, FIXED_APY_365_DAYS);
         }
 
         // Calculate pending rewards for all existing stakes of the user
         uint256 pendingRewards = calculatePendingRewards(msg.sender);
-        if (pendingRewards > 0) {
-            token.safeTransferFrom(rewardPoolAddress, msg.sender, pendingRewards);
-        }
-
-        // Transfer staked tokens to staking pool
-        token.safeTransferFrom(msg.sender, stakingPoolAddress, amount);
         
         // Add new stake entry for this user
         stakes[msg.sender].push(
             StakeInfo({
                 amount: amount,
-                rewardDebt: calculateRewardDebt(amount, lockPeriod), // Updated reward debt calculation
+                rewardDebt: calculateRewardDebt(amount, lockPeriod),
                 lockPeriod: lockPeriod,
                 startTime: block.timestamp,
                 referrer: referrer
@@ -221,11 +194,11 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
         );
 
         // Update total staked for the specific lock period
-        if (lockPeriod == 90 days) {
+        if (lockPeriod == LOCK_PERIOD_1) {
             totalStaked90Days += amount;
-        } else if (lockPeriod == 180 days) {
+        } else if (lockPeriod == LOCK_PERIOD_2) {
             totalStaked180Days += amount;
-        } else if (lockPeriod == 365 days) {
+        } else if (lockPeriod == LOCK_PERIOD_3) {
             totalStaked365Days += amount;
         }
 
@@ -235,71 +208,57 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
         // Update referrer information if provided
         if (referrer != address(0)) {
             referrers[referrer].totalReferred += amount;
+        }
+        
+        // Execute external interactions after state changes
+        // Transfer staked tokens to staking pool
+        token.safeTransferFrom(msg.sender, stakingPoolAddress, amount);
+        
+        if (pendingRewards > 0) {
+            token.safeTransferFrom(rewardPoolAddress, msg.sender, pendingRewards);
+        }
+    }
+
+    /**
+     * @dev Stakes tokens with an optional referrer
+     * @param amount The amount to stake
+     * @param lockPeriod The lock period (90, 180, or 365 days)
+     * @param referrer Optional address of the referrer
+     */
+    function stakeTokenWithReferrer(uint256 amount, uint256 lockPeriod, address referrer) external nonReentrant whenNotPaused {
+        require(amount > 0, "Amount must be greater than zero");
+        require(
+            lockPeriod == LOCK_PERIOD_1 || lockPeriod == LOCK_PERIOD_2 || lockPeriod == LOCK_PERIOD_3,
+            "Invalid lock period"
+        );
+        
+        // Referrer cannot be the same as the staker
+        if (referrer != address(0)) {
+            require(referrer != msg.sender, "Cannot refer yourself");
+            // Additional validation to check referrer is not a contract
+            uint256 size;
+            assembly { size := extcodesize(referrer) }
+            require(size == 0, "Referrer cannot be a contract");
+        }
+
+        _stakeTokenInternal(amount, lockPeriod, referrer);
+        
+        if (referrer != address(0)) {
             emit StakedWithReferrer(msg.sender, referrer, amount, lockPeriod);
         } else {
             emit Staked(msg.sender, amount, lockPeriod);
         }
     }
 
-    function stakeToken(uint256 amount, uint256 lockPeriod) external whenNotPaused {
+    function stakeToken(uint256 amount, uint256 lockPeriod) external nonReentrant whenNotPaused {
         require(amount > 0, "Amount must be greater than zero");
         require(
-            lockPeriod == 90 days || lockPeriod == 180 days || lockPeriod == 365 days,
+            lockPeriod == LOCK_PERIOD_1 || lockPeriod == LOCK_PERIOD_2 || lockPeriod == LOCK_PERIOD_3,
             "Invalid lock period"
         );
 
-        // Update rewards before processing the stake
-        updateRewards();
-
-        // Calculate projected APY after adding this stake
-        uint256 projectedAPY = calculateProjectedAPY(amount, lockPeriod);
-        if (
-            lockPeriod == 90 days && projectedAPY < FIXED_APY_90_DAYS
-        ) {
-            revert APYCannotBeSatisfied(1, projectedAPY, FIXED_APY_90_DAYS);
-        }
-        if (
-            lockPeriod == 180 days && projectedAPY < FIXED_APY_180_DAYS
-        ) {
-            revert APYCannotBeSatisfied(2, projectedAPY, FIXED_APY_180_DAYS);
-        }
-        if (
-            lockPeriod == 365 days && projectedAPY < FIXED_APY_365_DAYS
-        ) {
-            revert APYCannotBeSatisfied(3, projectedAPY, FIXED_APY_365_DAYS);
-        }
-
-        // Calculate pending rewards for all existing stakes of the user
-        uint256 pendingRewards = calculatePendingRewards(msg.sender);
-        if (pendingRewards > 0) {
-            token.safeTransferFrom(rewardPoolAddress, msg.sender, pendingRewards);
-        }
-
-        // Transfer staked tokens to staking pool
-        token.safeTransferFrom(msg.sender, stakingPoolAddress, amount);
-        // Add new stake entry for this user
-        stakes[msg.sender].push(
-            StakeInfo({
-                amount: amount,
-                rewardDebt: calculateRewardDebt(amount, lockPeriod), // Updated reward debt calculation
-                lockPeriod: lockPeriod,
-                startTime: block.timestamp,
-                referrer: address(0)
-            })
-        );
-
-        // Update total staked for the specific lock period
-        if (lockPeriod == 90 days) {
-            totalStaked90Days += amount;
-        } else if (lockPeriod == 180 days) {
-            totalStaked180Days += amount;
-        } else if (lockPeriod == 365 days) {
-            totalStaked365Days += amount;
-        }
-
-        // Update global total staked
-        totalStaked += amount;
-
+        _stakeTokenInternal(amount, lockPeriod, address(0));
+        
         emit Staked(msg.sender, amount, lockPeriod);
     }
 
@@ -316,33 +275,25 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
         uint256 annualRewards = (stakedAmount * fixedAPY) / 100;
 
         // Adjust rewards proportionally to elapsed time (in seconds)
-        return (annualRewards * timeElapsed) / 365 days;
-    }
-
-
-    function calculateRewardDebt(uint256 amount, uint256 lockPeriod) internal view returns (uint256) {
-        if (lockPeriod == 90 days) {
-            return (amount * accRewardPerToken90Days) / 1e18;
-        } else if (lockPeriod == 180 days) {
-            return (amount * accRewardPerToken180Days) / 1e18;
-        } else if (lockPeriod == 365 days) {
-            return (amount * accRewardPerToken365Days) / 1e18;
+        if (timeElapsed == 0) {
+            return 0;
         }
-        return 0; // Default case; should never occur due to earlier validation
+        // Improved precision by using adding half divisor for rounding
+        return (annualRewards * timeElapsed + (365 days / 2)) / 365 days;
     }
+
     function getAccRewardPerTokenForLockPeriod(uint256 lockPeriod) internal view returns (uint256) {
-        if (lockPeriod == 90 days) {
+        if (lockPeriod == LOCK_PERIOD_1) {
             return accRewardPerToken90Days;
-        } else if (lockPeriod == 180 days) {
+        } else if (lockPeriod == LOCK_PERIOD_2) {
             return accRewardPerToken180Days;
-        } else if (lockPeriod == 365 days) {
+        } else if (lockPeriod == LOCK_PERIOD_3) {
             return accRewardPerToken365Days;
         }
         return 0; // Default case; should never occur due to earlier validation
     }
 
-
-    function unstakeToken(uint256 index) external whenNotPaused {
+    function unstakeToken(uint256 index) external nonReentrant whenNotPaused {
         require(index < stakes[msg.sender].length, "Invalid stake index");
 
         // Fetch the specific stake to be unstaked
@@ -376,17 +327,17 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
         }
 
         totalStaked -= stakedAmount;
-        if (lockPeriod == 90 days) {
+        if (lockPeriod == LOCK_PERIOD_1) {
             if (totalStaked90Days < stakedAmount) {
                 revert TotalStakedTooLow(totalStaked90Days, stakedAmount);
             }
             totalStaked90Days -= stakedAmount;
-        } else if (lockPeriod == 180 days) {
+        } else if (lockPeriod == LOCK_PERIOD_2) {
             if (totalStaked180Days < stakedAmount) {
                 revert TotalStakedTooLow(totalStaked180Days, stakedAmount);
             }
             totalStaked180Days -= stakedAmount;
-        } else if (lockPeriod == 365 days) {
+        } else if (lockPeriod == LOCK_PERIOD_3) {
             if (totalStaked365Days < stakedAmount) {
                 revert TotalStakedTooLow(totalStaked365Days, stakedAmount);
             }
@@ -396,11 +347,11 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
         // Calculate referrer rewards if the stake has a referrer and the full lock period has elapsed
         if (referrer != address(0) && elapsedTime >= lockPeriod) {
             uint256 referrerRewardPercent;
-            if (lockPeriod == 90 days) {
+            if (lockPeriod == LOCK_PERIOD_1) {
                 referrerRewardPercent = REFERRER_REWARD_PERCENT_90_DAYS;
-            } else if (lockPeriod == 180 days) {
+            } else if (lockPeriod == LOCK_PERIOD_2) {
                 referrerRewardPercent = REFERRER_REWARD_PERCENT_180_DAYS;
-            } else if (lockPeriod == 365 days) {
+            } else if (lockPeriod == LOCK_PERIOD_3) {
                 referrerRewardPercent = REFERRER_REWARD_PERCENT_365_DAYS;
             }
             
@@ -415,7 +366,7 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
             stakes[msg.sender][index] = stakes[msg.sender][lastIndex];
         }
         stakes[msg.sender].pop(); // Remove the last element
-
+        
         emit RewardDistributionLog(
             msg.sender,
             stakedAmount,
@@ -426,6 +377,7 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
             elapsedTime
         );
 
+        // Execute external interactions after state changes
         // Transfer staked tokens (principal) back to user from staking pool
         if (token.balanceOf(stakingPoolAddress) < stakedAmount) {
             revert TotalStakedTooLow(token.balanceOf(stakingPoolAddress), stakedAmount);
@@ -455,7 +407,7 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
      */
     function claimReferrerRewards(uint256 lockPeriod) external nonReentrant whenNotPaused {
         require(
-            lockPeriod == 90 days || lockPeriod == 180 days || lockPeriod == 365 days,
+            lockPeriod == LOCK_PERIOD_1 || lockPeriod == LOCK_PERIOD_2 || lockPeriod == LOCK_PERIOD_3,
             "Invalid lock period"
         );
         
@@ -511,38 +463,42 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
             uint256 rewardPoolBalance = token.balanceOf(rewardPoolAddress);
 
             // Calculate rewards for each lock period using centralized logic
-            uint256 rewardsFor90Days = calculateElapsedRewards(
+            uint256 rewardsFor90Days = totalStaked90Days > 0 ? calculateElapsedRewards(
                 totalStaked90Days,
                 FIXED_APY_90_DAYS,
                 timeElapsed
-            );
-            uint256 rewardsFor180Days = calculateElapsedRewards(
+            ) : 0;
+            uint256 rewardsFor180Days = totalStaked180Days > 0 ? calculateElapsedRewards(
                 totalStaked180Days,
                 FIXED_APY_180_DAYS,
                 timeElapsed
-            );
-            uint256 rewardsFor365Days = calculateElapsedRewards(
+            ) : 0;
+            uint256 rewardsFor365Days = totalStaked365Days > 0 ? calculateElapsedRewards(
                 totalStaked365Days,
                 FIXED_APY_365_DAYS,
                 timeElapsed
-            );
+            ) : 0;
 
             // Total new rewards to distribute across all stakes
             uint256 newRewards = rewardsFor90Days + rewardsFor180Days + rewardsFor365Days;
 
             // Ensure we do not exceed available reward pool balance
             if (newRewards > rewardPoolBalance) {
+                // Proportionally adjust rewards based on available balance
+                rewardsFor90Days = rewardPoolBalance * rewardsFor90Days / newRewards;
+                rewardsFor180Days = rewardPoolBalance * rewardsFor180Days / newRewards;
+                rewardsFor365Days = rewardPoolBalance * rewardsFor365Days / newRewards;
                 newRewards = rewardPoolBalance;
             }
 
             // Update accumulated rewards per token for each lock period
-            if (totalStaked90Days > 0) {
+            if (totalStaked90Days > 0 && rewardsFor90Days > 0) {
                 accRewardPerToken90Days += (rewardsFor90Days * 1e18) / totalStaked90Days;
             }
-            if (totalStaked180Days > 0) {
+            if (totalStaked180Days > 0 && rewardsFor180Days > 0) {
                 accRewardPerToken180Days += (rewardsFor180Days * 1e18) / totalStaked180Days;
             }
-            if (totalStaked365Days > 0) {
+            if (totalStaked365Days > 0 && rewardsFor365Days > 0) {
                 accRewardPerToken365Days += (rewardsFor365Days * 1e18) / totalStaked365Days;
             }
 
@@ -563,12 +519,15 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
         return calculateElapsedRewards(stakedAmount, fixedAPY, timeElapsed);
     }
 
-
     function calculatePendingRewards(address user) public view returns (uint256) {
         uint256 pendingRewards = 0;
-
-        // Iterate through all stakes for the user
-        for (uint256 i = 0; i < stakes[user].length; i++) {
+        uint256 stakesLength = stakes[user].length;
+        
+        // Add a limit to prevent excessive gas consumption
+        uint256 maxIterations = 100; // Arbitrary limit, adjust based on gas analysis
+        uint256 iterations = stakesLength < maxIterations ? stakesLength : maxIterations;
+        
+        for (uint256 i = 0; i < iterations; i++) {
             StakeInfo memory stake = stakes[user][i];
 
             // Get accumulated rewards per token for the stake's lock period
@@ -581,7 +540,16 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
         return pendingRewards;
     }
 
-
+    function calculateRewardDebt(uint256 amount, uint256 lockPeriod) internal view returns (uint256) {
+        if (lockPeriod == LOCK_PERIOD_1) {
+            return (amount * accRewardPerToken90Days) / 1e18;
+        } else if (lockPeriod == LOCK_PERIOD_2) {
+            return (amount * accRewardPerToken180Days) / 1e18;
+        } else if (lockPeriod == LOCK_PERIOD_3) {
+            return (amount * accRewardPerToken365Days) / 1e18;
+        }
+        return 0; // Default case; should never occur due to earlier validation
+    }
 
     function calculateProjectedAPY(uint256 additionalStake, uint256 lockPeriod)
         public
@@ -589,17 +557,21 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
         returns (uint256)
     {
         uint256 rewardPoolBalance = token.balanceOf(rewardPoolAddress);
-        if (rewardPoolBalance == 0 || totalStaked + additionalStake == 0) {
-            return 0; // No rewards available if reward pool or total staked is zero
+        if (rewardPoolBalance == 0) {
+            return 0; // No rewards available if reward pool is empty
+        }
+        
+        if (totalStaked == 0 && additionalStake == 0) {
+            return 0; // Avoid division by zero
         }
 
         // Define reward multipliers based on lock periods
         uint256 fixedAPY;
-        if (lockPeriod == 90 days) {
+        if (lockPeriod == LOCK_PERIOD_1) {
             fixedAPY = FIXED_APY_90_DAYS; // 2%
-        } else if (lockPeriod == 180 days) {
+        } else if (lockPeriod == LOCK_PERIOD_2) {
             fixedAPY = FIXED_APY_180_DAYS; // 9%
-        } else if (lockPeriod == 365 days) {
+        } else if (lockPeriod == LOCK_PERIOD_3) {
             fixedAPY = FIXED_APY_365_DAYS; // 23%
         } else {
             revert("Invalid lock period");
@@ -616,7 +588,6 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
             return 0;
         }
     }
-
 
     function calculatePenalty(uint256 lockPeriod, uint256 elapsedTime, uint256 stakedAmount) internal pure returns (uint256) {
         // If the full lock period has elapsed, no penalty applies
