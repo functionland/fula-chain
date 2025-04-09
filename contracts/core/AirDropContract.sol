@@ -207,14 +207,6 @@ contract AirdropContract is ERC20Upgradeable, GovernanceModule {
         if(initialRelease > 100) revert InitialReleaseTooLarge();
         if(vestingPlan >= vestingTerm) revert OutOfRangeVestingPlan();
         
-        uint256 defaultStartDate = block.timestamp + (30 * 365 days);
-
-        // Check if TGE is initiated
-        PackedVars storage vars = packedVars;
-        if ((vars.flags & TGE_INITIATED) != 0) {
-            startDate = defaultStartDate;
-        }
-
         vestingCaps[capId] = VestingCap({
             totalAllocation: totalAllocation,
             name: name,
