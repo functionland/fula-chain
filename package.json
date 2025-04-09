@@ -17,6 +17,7 @@
     "test:airdrop": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/AirDropContract.test.ts",
     "test:mining": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/TestnetMiningRewards.test.ts",
     "test:bridge": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/TokenBridgeContract.test.ts",
+    "test:staking": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/StakingEngine.test.ts",
     "test": "yarn hardhat test"
   },
   "devDependencies": {
