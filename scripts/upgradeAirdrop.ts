@@ -6,11 +6,11 @@ async function main() {
     console.log("Deploying new AirDrop implementation with the account:", deployer.address);
 
     // Get the contract factory
-    const AirDrop = await ethers.getContractFactory("AirDrop");
+    const AirdropContract = await ethers.getContractFactory("AirdropContract");
     
     // Deploy the implementation directly (not through upgrades plugin)
     console.log("Deploying new implementation...");
-    const implementation = await AirDrop.deploy();
+    const implementation = await AirdropContract.deploy();
     await implementation.waitForDeployment();
     
     const implementationAddress = await implementation.getAddress();
