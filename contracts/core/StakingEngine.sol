@@ -1,18 +1,55 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import "../governance/GovernanceModule.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
+
+/*
+Staking Periods and Rewards
+User cannot claim rewards before the staking priod is over
+| Lock Period | Duration | Fixed APY | Referrer Reward | 
+|-------------|----------|-----------|-----------------| 
+| LOCK_PERIOD_1 | 90 days | 2% | 0% | 
+| LOCK_PERIOD_2 | 180 days | 6% | 1% | 
+| LOCK_PERIOD_3 | 365 days | 15% | 4% |
+*/
+/*
+Early Unstaking Penalty
+| Time Remaining | Penalty Applied | 
+|----------------|-----------------| 
+| Very short period (< 3 dayS) | 95% penalty + 20% principal penalty | 
+| > 90% time remaining | 90% penalty | 
+| > 75% time remaining | 75% penalty | 
+| > 60% time remaining | 60% penalty | 
+| > 45% time remaining | 45% penalty | 
+| > 30% time remaining | 30% penalty | 
+| > 15% time remaining | 20% penalty | 
+| < 15% time remaining | 10% penalty | 
+| Full lock period elapsed | 0% (no penalty) |
+*/
+/*
+Maximum and Minimum Limits
+| Limit | Value | Description | 
+|-------|-------|-------------| 
+| Minimum Stake Amount | > 0 | The amount staked must be greater than zero | 
+| MAX_STAKES_TO_PROCESS | 100 | Maximum number of stakes that can be processed in a single operation (for gas efficiency) | 
+| PRECISION_FACTOR | 1e18 | Used for precision in calculations to avoid rounding errors |
+*/
 
 /// @title StakingEngine
 /// @notice Handles token staking with different lock periods and rewards
-/// @dev Inherits governance functionality from GovernanceModule
-contract StakingEngine is ERC20Upgradeable, GovernanceModule {
+/// @dev Non-upgradeable version of the staking contract with single pool address
+contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
+
+    // Define roles for access control
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    bytes32 public constant OWNER_ROLE = keccak256("OWNER_ROLE");
 
     // Lock periods in seconds
     uint32 public constant LOCK_PERIOD_1 = 90 days;
@@ -25,8 +62,8 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
     uint256 public constant FIXED_APY_365_DAYS = 15; // 15% for 365 days
 
     // Referrer reward percentages for each lock period
-    uint256 public constant REFERRER_REWARD_PERCENT_90_DAYS = 1; // 1% for 90 days
-    uint256 public constant REFERRER_REWARD_PERCENT_180_DAYS = 2; // 2% for 180 days
+    uint256 public constant REFERRER_REWARD_PERCENT_90_DAYS = 0; // 0% for 90 days
+    uint256 public constant REFERRER_REWARD_PERCENT_180_DAYS = 1; // 1% for 180 days
     uint256 public constant REFERRER_REWARD_PERCENT_365_DAYS = 4; // 4% for 365 days
 
     // Precision factor for calculations to avoid rounding errors
@@ -35,19 +72,53 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
     // Maximum number of stakes to process in a single operation
     uint256 public constant MAX_STAKES_TO_PROCESS = 100;
 
+    // Referrer reward claim period
+    uint256 public constant REFERRER_CLAIM_PERIOD = 90 days;
+
     struct StakeInfo {
         uint256 amount;
         uint256 rewardDebt; // Tracks user's share of accumulated rewards
         uint256 lockPeriod;
         uint256 startTime; // Track when the stake was created
         address referrer; // Address of the referrer (if any)
+        bool isActive; // Whether the stake is still active
     }
 
     struct ReferrerInfo {
-        uint256 totalReferred;
-        uint256 totalReferrerRewards;
-        uint256 unclaimedRewards;
+        uint256 totalReferred; // Total amount of tokens referred
+        uint256 totalReferrerRewards; // Total rewards earned by the referrer
+        uint256 unclaimedRewards; // Unclaimed rewards
+        uint256 lastClaimTime; // Last time rewards were claimed
+        uint256 referredStakersCount; // Number of unique stakers referred
+        uint256 activeReferredStakersCount; // Number of active stakers referred
+        uint256 totalActiveStaked; // Total amount of tokens currently staked by referees
+        uint256 totalUnstaked; // Total amount of tokens unstaked by referees
+        uint256 totalActiveStaked90Days; // Total active staked for 90 days
+        uint256 totalActiveStaked180Days; // Total active staked for 180 days
+        uint256 totalActiveStaked365Days; // Total active staked for 365 days
     }
+
+    struct ReferrerRewardInfo {
+        uint256 stakeId; // ID of the stake
+        uint256 amount; // Amount of the stake
+        uint256 lockPeriod; // Lock period of the stake
+        uint256 startTime; // Start time of the stake
+        uint256 endTime; // End time of the stake (startTime + lockPeriod)
+        uint256 totalReward; // Total reward for the referrer
+        uint256 claimedReward; // Amount of reward already claimed
+        uint256 nextClaimTime; // Next time rewards can be claimed
+        bool isActive; // Whether the stake is still active
+        address referee; // Address of the referee
+    }
+
+    // Mapping from referrer to array of referred stakers
+    mapping(address => address[]) public referredStakers;
+    
+    // Mapping from referrer to mapping of staker to whether they are referred
+    mapping(address => mapping(address => bool)) public isReferred;
+
+    // Mapping from referrer to array of referrer reward info
+    mapping(address => ReferrerRewardInfo[]) public referrerRewards;
 
     mapping(address => StakeInfo[]) public stakes;
     mapping(address => ReferrerInfo) public referrers;
@@ -58,8 +129,12 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
 
     IERC20 public token;
 
-    address public rewardPoolAddress; // Address holding reward pool tokens
-    address public stakingPoolAddress; // Address holding staked tokens
+    // Single pool address instead of separate addresses
+    address public tokenPool;
+
+    // Tracking variables for internal accounting
+    uint256 public totalStakedInPool;    // Total tokens staked by users
+    uint256 public totalRewardsInPool;   // Total tokens allocated for rewards
 
     uint256 public accRewardPerToken90Days;
     uint256 public accRewardPerToken180Days;
@@ -70,11 +145,13 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
     uint256 public totalStaked365Days;
 
     event RewardsAdded(uint256 amount);
+    event RewardsWithdrawn(uint256 amount);
     event Staked(address indexed user, uint256 amount, uint256 lockPeriod);
     event StakedWithReferrer(address indexed user, address indexed referrer, uint256 amount, uint256 lockPeriod);
     event Unstaked(address indexed user, uint256 amount, uint256 distributedReward, uint256 penalty);
     event MissedRewards(address indexed user, uint256 amount);
-    event ReferrerRewardsClaimed(address indexed referrer, uint256 amount, uint256 lockPeriod);
+    event ReferrerRewardsClaimed(address indexed referrer, uint256 amount);
+    event ReferrerRewardUpdated(address indexed referrer, address indexed referee, uint256 stakeId, uint256 amount, uint256 lockPeriod);
     event TokensTransferredToStorageToken(address indexed from, uint256 amount);
     event RewardDistributionLog(
         address indexed user,
@@ -88,6 +165,7 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
     event UnableToDistributeRewards(address indexed user, uint256 rewardPoolBalance, uint256 stakedAmount, uint256 finalRewards, uint256 lockPeriod);
     event EmergencyAction(string action, uint256 timestamp);
     event EarlyUnstakePenalty(address indexed user, uint256 originalAmount, uint256 penaltyAmount, uint256 returnedAmount);
+    event PoolBalanceReconciled(uint256 amount, bool isExcess);
 
     error OperationFailed(uint256 code);
     error TotalStakedTooLow(uint256 totalStaked, uint256 required);
@@ -97,26 +175,29 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
     error InvalidTokenAddress();
     error InvalidReferrerAddress();
     error InsufficientApproval();
+    error NoClaimableRewards();
+    error ClaimPeriodNotReached();
 
     /**
-     * @notice Initialize the contract
+     * @notice Constructor for the non-upgradeable contract
      * @param _token Address of the StorageToken
-     * @param _rewardPoolAddress Address of the reward pool
-     * @param _stakingPoolAddress Address of the staking pool
+     * @param _tokenPool Address of the token pool
      * @param initialOwner Address of the initial owner
      * @param initialAdmin Address of the initial admin
+     * @param name Name of the token
+     * @param symbol Symbol of the token
      */
-    function initialize(
+    constructor(
         address _token,
-        address _rewardPoolAddress,
-        address _stakingPoolAddress,
+        address _tokenPool,
         address initialOwner,
-        address initialAdmin
-    ) public reinitializer(1) {
+        address initialAdmin,
+        string memory name,
+        string memory symbol
+    ) ERC20(name, symbol) {
         require(
             _token != address(0) && 
-            _rewardPoolAddress != address(0) && 
-            _stakingPoolAddress != address(0) && 
+            _tokenPool != address(0) && 
             initialOwner != address(0) && 
             initialAdmin != address(0), 
             "Invalid address"
@@ -129,14 +210,17 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
             revert InvalidTokenAddress();
         }
 
-        // Initialize governance module (handles UUPSUpgradeable, Ownable, ReentrancyGuard, 
-        // Pausable, AccessControlEnumerable, role grants, and timelocks)
-        __GovernanceModule_init(initialOwner, initialAdmin);
+        // Initialize roles
+        _grantRole(OWNER_ROLE, initialOwner);
+        _grantRole(ADMIN_ROLE, initialAdmin);
+        _setRoleAdmin(ADMIN_ROLE, OWNER_ROLE);
         
         token = IERC20(_token);
-        rewardPoolAddress = _rewardPoolAddress;
-        stakingPoolAddress = _stakingPoolAddress;
-
+        tokenPool = _tokenPool;
+        
+        // Initialize tracking variables
+        totalStakedInPool = 0;
+        totalRewardsInPool = 0;
         lastUpdateTime = block.timestamp;
     }
 
@@ -144,7 +228,7 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
      * @notice Emergency pause reward distribution
      * @dev Can only be called by admin
      */
-    function emergencyPauseRewardDistribution() external onlyRole(ProposalTypes.ADMIN_ROLE) {
+    function emergencyPauseRewardDistribution() external onlyRole(ADMIN_ROLE) {
         _pause();
         emit EmergencyAction("Rewards Distribution paused", block.timestamp);
     }
@@ -153,9 +237,122 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
      * @notice Emergency unpause reward distribution
      * @dev Can only be called by admin
      */
-    function emergencyUnpauseRewardDistribution() external onlyRole(ProposalTypes.ADMIN_ROLE) {
+    function emergencyUnpauseRewardDistribution() external onlyRole(ADMIN_ROLE) {
         _unpause();
         emit EmergencyAction("Rewards Distribution unpaused", block.timestamp);
+    }
+
+    /**
+     * @notice Add rewards to the pool
+     * @param amount Amount of rewards to add
+     */
+    function addRewardsToPool(uint256 amount) external onlyRole(OWNER_ROLE) {
+        // Transfer tokens from sender to pool
+        token.safeTransferFrom(msg.sender, tokenPool, amount);
+        
+        // Update tracking
+        totalRewardsInPool += amount;
+        
+        emit RewardsAdded(amount);
+    }
+
+    /**
+     * @notice Withdraw excess rewards if needed
+     * @param amount Amount to withdraw
+     */
+    function withdrawExcessRewards(uint256 amount) external onlyRole(OWNER_ROLE) {
+        uint256 excessRewards = getExcessRewards();
+        require(amount <= excessRewards, "Cannot withdraw required rewards");
+        
+        // Update tracking before transfer
+        totalRewardsInPool -= amount;
+        
+        // Transfer tokens from pool to owner
+        // Pool must approve this contract first
+        token.safeTransferFrom(tokenPool, msg.sender, amount);
+        
+        emit RewardsWithdrawn(amount);
+    }
+
+    /**
+     * @notice Get excess rewards (rewards beyond what's needed for current stakes)
+     * @return Amount of excess rewards
+     */
+    function getExcessRewards() public view returns (uint256) {
+        uint256 requiredRewards = calculateRequiredRewards();
+        if (totalRewardsInPool > requiredRewards) {
+            return totalRewardsInPool - requiredRewards;
+        }
+        return 0;
+    }
+
+    /**
+     * @notice Calculate rewards required for current stakes
+     * @return Amount of rewards required
+     */
+    function calculateRequiredRewards() public view returns (uint256) {
+        // Calculate required rewards based on current stakes and APY
+        uint256 required90Days = (totalStaked90Days * FIXED_APY_90_DAYS) / 100;
+        uint256 required180Days = (totalStaked180Days * FIXED_APY_180_DAYS) / 100;
+        uint256 required365Days = (totalStaked365Days * FIXED_APY_365_DAYS) / 100;
+        
+        return required90Days + required180Days + required365Days;
+    }
+
+    /**
+     * @notice Get detailed pool status
+     * @return totalPoolBalance Expected total balance in pool
+     * @return stakedAmount Amount of staked tokens
+     * @return rewardsAmount Amount of reward tokens
+     * @return actualBalance Actual token balance in pool
+     */
+    function getPoolStatus() external view returns (
+        uint256 totalPoolBalance,
+        uint256 stakedAmount,
+        uint256 rewardsAmount,
+        uint256 actualBalance
+    ) {
+        totalPoolBalance = totalStakedInPool + totalRewardsInPool;
+        stakedAmount = totalStakedInPool;
+        rewardsAmount = totalRewardsInPool;
+        actualBalance = token.balanceOf(tokenPool);
+        
+        return (totalPoolBalance, stakedAmount, rewardsAmount, actualBalance);
+    }
+
+    /**
+     * @notice Reconcile pool balance if accounting gets out of sync
+     */
+    function reconcilePoolBalance() external onlyRole(OWNER_ROLE) {
+        uint256 expectedBalance = totalStakedInPool + totalRewardsInPool;
+        uint256 actualBalance = token.balanceOf(tokenPool);
+        
+        if (actualBalance > expectedBalance) {
+            // Excess tokens found, add to rewards
+            uint256 excess = actualBalance - expectedBalance;
+            totalRewardsInPool += excess;
+            emit PoolBalanceReconciled(excess, true);
+        } else if (actualBalance < expectedBalance) {
+            // Shortage found, reduce rewards (never reduce staked amount)
+            uint256 shortage = expectedBalance - actualBalance;
+            if (shortage <= totalRewardsInPool) {
+                totalRewardsInPool -= shortage;
+            } else {
+                // Critical situation - not enough rewards to cover shortage
+                totalRewardsInPool = 0;
+                emit EmergencyAction("Critical pool shortage detected", block.timestamp);
+            }
+            emit PoolBalanceReconciled(shortage, false);
+        }
+    }
+
+    /**
+     * @notice Set new token pool address
+     * @param _tokenPool New token pool address
+     */
+    function setTokenPool(address _tokenPool) external onlyRole(OWNER_ROLE) {
+        require(_tokenPool != address(0), "Invalid address");
+        tokenPool = _tokenPool;
     }
 
     /**
@@ -168,21 +365,208 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
     }
 
     /**
-     * @dev Transfers tokens from this contract to the StorageToken contract only
-     * @param amount The amount of tokens to transfer
+     * @notice Get total staked amount by a user
+     * @param user Address of the user
+     * @return Total staked amount
      */
-    function transferToStorageToken(uint256 amount) external onlyRole(ProposalTypes.ADMIN_ROLE) nonReentrant {
-        require(amount > 0, "Amount must be greater than zero");
-        require(token.balanceOf(address(this)) >= amount, "Insufficient balance");
+    function getUserTotalStaked(address user) external view returns (uint256) {
+        uint256 total = 0;
+        StakeInfo[] memory userStakes = stakes[user];
         
-        // Transfer tokens directly to the StorageToken contract
-        token.safeTransfer(address(token), amount);
+        for (uint256 i = 0; i < userStakes.length; i++) {
+            if (userStakes[i].isActive) {
+                total += userStakes[i].amount;
+            }
+        }
         
-        emit TokensTransferredToStorageToken(address(this), amount);
+        return total;
     }
 
     /**
-     * @dev Internal function for staking tokens with shared logic
+     * @notice Get total staked amount across all users
+     * @return Total staked amount
+     */
+    function getTotalStaked() external view returns (uint256) {
+        return totalStaked;
+    }
+
+    /**
+     * @notice Get all referrer statistics
+     * @param referrer Address of the referrer
+     * @return ReferrerInfo struct with all statistics
+     */
+    function getReferrerStats(address referrer) external view returns (ReferrerInfo memory) {
+        return referrers[referrer];
+    }
+
+    /**
+     * @notice Get all referred stakers for a referrer
+     * @param referrer Address of the referrer
+     * @return Array of referred staker addresses
+     */
+    function getReferredStakers(address referrer) external view returns (address[] memory) {
+        return referredStakers[referrer];
+    }
+
+    /**
+     * @notice Get all referrer rewards
+     * @param referrer Address of the referrer
+     * @return Array of ReferrerRewardInfo structs
+     */
+    function getReferrerRewards(address referrer) external view returns (ReferrerRewardInfo[] memory) {
+        return referrerRewards[referrer];
+    }
+
+    /**
+     * @notice Get claimable rewards for a referrer
+     * @param referrer Address of the referrer
+     * @return Claimable rewards amount
+     */
+    function getClaimableReferrerRewards(address referrer) public view returns (uint256) {
+        uint256 claimable = 0;
+        ReferrerRewardInfo[] memory rewards = referrerRewards[referrer];
+        
+        for (uint256 i = 0; i < rewards.length; i++) {
+            if (rewards[i].isActive && block.timestamp >= rewards[i].nextClaimTime) {
+                // Calculate how many claim periods have passed since last claim
+                uint256 timeSinceLastClaim = block.timestamp - (rewards[i].nextClaimTime - REFERRER_CLAIM_PERIOD);
+                uint256 claimPeriodsPassed = timeSinceLastClaim / REFERRER_CLAIM_PERIOD;
+                
+                // Only proceed if at least one period has passed
+                if (claimPeriodsPassed > 0) {
+                    // Calculate total time from start to now
+                    uint256 totalTimeElapsed = block.timestamp - rewards[i].startTime;
+                    
+                    // Calculate total reward per day
+                    uint256 rewardPerDay = rewards[i].totalReward / (rewards[i].lockPeriod / 1 days);
+                    
+                    // Calculate reward for the claim periods
+                    uint256 daysToReward = claimPeriodsPassed * (REFERRER_CLAIM_PERIOD / 1 days);
+                    
+                    // Ensure we don't exceed the lock period
+                    if (totalTimeElapsed > rewards[i].lockPeriod) {
+                        daysToReward = (rewards[i].lockPeriod / 1 days) - (rewards[i].claimedReward / rewardPerDay);
+                    }
+                    
+                    uint256 periodReward = rewardPerDay * daysToReward;
+                    
+                    // Ensure we don't exceed the total reward
+                    if (rewards[i].claimedReward + periodReward > rewards[i].totalReward) {
+                        periodReward = rewards[i].totalReward - rewards[i].claimedReward;
+                    }
+                    
+                    claimable += periodReward;
+                }
+            }
+        }
+        
+        return claimable;
+    }
+
+    /**
+     * @notice Claim referrer rewards
+     * @dev Allows referrers to claim their accumulated rewards
+     */
+    function claimReferrerRewards() external nonReentrant whenNotPaused {
+        address referrer = msg.sender;
+        uint256 claimable = getClaimableReferrerRewards(referrer);
+        
+        if (claimable == 0) {
+            revert NoClaimableRewards();
+        }
+        
+        ReferrerRewardInfo[] storage rewards = referrerRewards[referrer];
+        
+        // Update claimed amounts and next claim times
+        for (uint256 i = 0; i < rewards.length; i++) {
+            if (rewards[i].isActive && block.timestamp >= rewards[i].nextClaimTime) {
+                // Calculate how many claim periods have passed since last claim
+                uint256 timeSinceLastClaim = block.timestamp - (rewards[i].nextClaimTime - REFERRER_CLAIM_PERIOD);
+                uint256 claimPeriodsPassed = timeSinceLastClaim / REFERRER_CLAIM_PERIOD;
+                
+                // Only proceed if at least one period has passed
+                if (claimPeriodsPassed > 0) {
+                    // Calculate total time from start to now
+                    uint256 totalTimeElapsed = block.timestamp - rewards[i].startTime;
+                    
+                    // Calculate total reward per day
+                    uint256 rewardPerDay = rewards[i].totalReward / (rewards[i].lockPeriod / 1 days);
+                    
+                    // Calculate reward for the claim periods
+                    uint256 daysToReward = claimPeriodsPassed * (REFERRER_CLAIM_PERIOD / 1 days);
+                    
+                    // Ensure we don't exceed the lock period
+                    if (totalTimeElapsed > rewards[i].lockPeriod) {
+                        daysToReward = (rewards[i].lockPeriod / 1 days) - (rewards[i].claimedReward / rewardPerDay);
+                    }
+                    
+                    uint256 periodReward = rewardPerDay * daysToReward;
+                    
+                    // Ensure we don't exceed the total reward
+                    if (rewards[i].claimedReward + periodReward > rewards[i].totalReward) {
+                        periodReward = rewards[i].totalReward - rewards[i].claimedReward;
+                    }
+                    
+                    if (periodReward > 0) {
+                        rewards[i].claimedReward += periodReward;
+                        rewards[i].nextClaimTime = block.timestamp + REFERRER_CLAIM_PERIOD;
+                    }
+                }
+            }
+        }
+        
+        // Update referrer info
+        ReferrerInfo storage referrerInfo = referrers[referrer];
+        referrerInfo.lastClaimTime = block.timestamp;
+        
+        // Check if pool has sufficient balance for rewards
+        uint256 poolBalance = token.balanceOf(tokenPool);
+        uint256 availableForRewards = poolBalance - totalStakedInPool;
+        
+        if (availableForRewards < claimable) {
+            emit UnableToDistributeRewards(referrer, availableForRewards, 0, claimable, 0);
+        } else {
+            // Update tracking before transfer
+            totalRewardsInPool -= claimable;
+            
+            // Transfer rewards
+            token.safeTransferFrom(tokenPool, referrer, claimable);
+            emit ReferrerRewardsClaimed(referrer, claimable);
+        }
+    }
+
+    /**
+     * @notice Update accumulated rewards
+     * @dev Updates the accumulated rewards per token for each lock period
+     */
+    function updateRewards() public {
+        if (block.timestamp <= lastUpdateTime) {
+            return;
+        }
+        
+        uint256 timeElapsed = block.timestamp - lastUpdateTime;
+        
+        // Update accumulated rewards for each lock period
+        if (totalStaked90Days > 0) {
+            uint256 rewardsForPeriod = calculateElapsedRewards(totalStaked90Days, FIXED_APY_90_DAYS, timeElapsed);
+            accRewardPerToken90Days += (rewardsForPeriod * PRECISION_FACTOR) / totalStaked90Days;
+        }
+        
+        if (totalStaked180Days > 0) {
+            uint256 rewardsForPeriod = calculateElapsedRewards(totalStaked180Days, FIXED_APY_180_DAYS, timeElapsed);
+            accRewardPerToken180Days += (rewardsForPeriod * PRECISION_FACTOR) / totalStaked180Days;
+        }
+        
+        if (totalStaked365Days > 0) {
+            uint256 rewardsForPeriod = calculateElapsedRewards(totalStaked365Days, FIXED_APY_365_DAYS, timeElapsed);
+            accRewardPerToken365Days += (rewardsForPeriod * PRECISION_FACTOR) / totalStaked365Days;
+        }
+        
+        lastUpdateTime = block.timestamp;
+    }
+
+    /**
+     * @notice Internal function to stake tokens
      * @param amount The amount to stake
      * @param lockPeriod The lock period (90, 180, or 365 days)
      * @param referrer Optional address of the referrer
@@ -190,42 +574,38 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
     function _stakeTokenInternal(uint256 amount, uint256 lockPeriod, address referrer) internal {
         // Update rewards before processing the stake
         updateRewards();
-
-        // Calculate projected APY after adding this stake
-        uint256 projectedAPY = calculateProjectedAPY(amount, lockPeriod);
-        uint256 requiredAPY = 0;
         
-        if (lockPeriod == LOCK_PERIOD_1) {
-            requiredAPY = FIXED_APY_90_DAYS;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
-            requiredAPY = FIXED_APY_180_DAYS;
-        } else if (lockPeriod == LOCK_PERIOD_3) {
-            requiredAPY = FIXED_APY_365_DAYS;
+        // Calculate pending rewards for existing stakes
+        uint256 pendingRewards = 0;
+        for (uint256 i = 0; i < stakes[msg.sender].length; i++) {
+            StakeInfo storage stake = stakes[msg.sender][i];
+            if (stake.isActive) {
+                uint256 accRewardPerToken = getAccRewardPerTokenForLockPeriod(stake.lockPeriod);
+                uint256 pendingReward = (stake.amount * (accRewardPerToken - stake.rewardDebt)) / PRECISION_FACTOR;
+                pendingRewards += pendingReward;
+                
+                // Update reward debt to current accumulated rewards
+                stake.rewardDebt = accRewardPerToken;
+            }
         }
         
-        if (projectedAPY < requiredAPY) {
-            revert APYCannotBeSatisfied(
-                lockPeriod == LOCK_PERIOD_1 ? 1 : (lockPeriod == LOCK_PERIOD_2 ? 2 : 3),
-                projectedAPY,
-                requiredAPY
-            );
-        }
-
-        // Calculate pending rewards for all existing stakes of the user
-        uint256 pendingRewards = calculatePendingRewards(msg.sender);
-        
-        // Add new stake entry for this user
+        // Add new stake
+        uint256 accRewardPerToken = getAccRewardPerTokenForLockPeriod(lockPeriod);
         stakes[msg.sender].push(
             StakeInfo({
                 amount: amount,
-                rewardDebt: calculateRewardDebt(amount, lockPeriod),
+                rewardDebt: accRewardPerToken,
                 lockPeriod: lockPeriod,
                 startTime: block.timestamp,
-                referrer: referrer
+                referrer: referrer,
+                isActive: true
             })
         );
-
-        // Update total staked for the specific lock period
+        
+        // Update total staked amounts
+        totalStaked += amount;
+        totalStakedInPool += amount;
+        
         if (lockPeriod == LOCK_PERIOD_1) {
             totalStaked90Days += amount;
         } else if (lockPeriod == LOCK_PERIOD_2) {
@@ -233,36 +613,110 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
         } else if (lockPeriod == LOCK_PERIOD_3) {
             totalStaked365Days += amount;
         }
-
-        // Update global total staked
-        totalStaked += amount;
-
+        
         // Update referrer information if provided
         if (referrer != address(0)) {
-            referrers[referrer].totalReferred += amount;
+            ReferrerInfo storage referrerInfo = referrers[referrer];
+            
+            // If this is a new referee for this referrer
+            if (!isReferred[referrer][msg.sender]) {
+                isReferred[referrer][msg.sender] = true;
+                referredStakers[referrer].push(msg.sender);
+                referrerInfo.referredStakersCount++;
+                referrerInfo.activeReferredStakersCount++;
+            }
+            
+            referrerInfo.totalReferred += amount;
+            referrerInfo.totalActiveStaked += amount;
+            
+            if (lockPeriod == LOCK_PERIOD_1) {
+                referrerInfo.totalActiveStaked90Days += amount;
+            } else if (lockPeriod == LOCK_PERIOD_2) {
+                referrerInfo.totalActiveStaked180Days += amount;
+            } else if (lockPeriod == LOCK_PERIOD_3) {
+                referrerInfo.totalActiveStaked365Days += amount;
+            }
+            
+            // Calculate referrer reward based on lock period
+            uint256 referrerRewardPercent = 0;
+            if (lockPeriod == LOCK_PERIOD_1) {
+                referrerRewardPercent = REFERRER_REWARD_PERCENT_90_DAYS;
+            } else if (lockPeriod == LOCK_PERIOD_2) {
+                referrerRewardPercent = REFERRER_REWARD_PERCENT_180_DAYS;
+            } else if (lockPeriod == LOCK_PERIOD_3) {
+                referrerRewardPercent = REFERRER_REWARD_PERCENT_365_DAYS;
+            }
+            
+            if (referrerRewardPercent > 0) {
+                uint256 totalReferrerReward = (amount * referrerRewardPercent) / 100;
+                
+                // Add to referrer rewards
+                referrerRewards[referrer].push(
+                    ReferrerRewardInfo({
+                        stakeId: stakes[msg.sender].length - 1,
+                        amount: amount,
+                        lockPeriod: lockPeriod,
+                        startTime: block.timestamp,
+                        endTime: block.timestamp + lockPeriod,
+                        totalReward: totalReferrerReward,
+                        claimedReward: 0,
+                        nextClaimTime: block.timestamp + REFERRER_CLAIM_PERIOD,
+                        isActive: true,
+                        referee: msg.sender
+                    })
+                );
+                
+                // Update unclaimed rewards
+                referrerInfo.unclaimedRewards += totalReferrerReward;
+                
+                // Update rewards by period
+                referrerRewardsByPeriod[referrer][lockPeriod] += totalReferrerReward;
+                
+                // Update total rewards in pool to account for referrer rewards
+                totalRewardsInPool += totalReferrerReward;
+                
+                emit ReferrerRewardUpdated(referrer, msg.sender, stakes[msg.sender].length - 1, totalReferrerReward, lockPeriod);
+            }
         }
         
-        // Check if the staking pool has sufficient allowance for this contract
+        // Check if the user has sufficient allowance for this contract
         if (token.allowance(msg.sender, address(this)) < amount) {
             revert InsufficientApproval();
         }
         
+        // Check if there are sufficient rewards available for the APY
+        uint256 projectedAPY = calculateProjectedAPY(amount, lockPeriod);
+        uint256 minimumAPY = 0;
+        
+        if (lockPeriod == LOCK_PERIOD_1) {
+            minimumAPY = FIXED_APY_90_DAYS;
+        } else if (lockPeriod == LOCK_PERIOD_2) {
+            minimumAPY = FIXED_APY_180_DAYS;
+        } else if (lockPeriod == LOCK_PERIOD_3) {
+            minimumAPY = FIXED_APY_365_DAYS;
+        }
+        
+        if (projectedAPY < minimumAPY) {
+            revert APYCannotBeSatisfied(uint8(lockPeriod / (30 days)), projectedAPY, minimumAPY);
+        }
+        
         // Execute external interactions after state changes
-        // Transfer staked tokens to staking pool
-        token.safeTransferFrom(msg.sender, stakingPoolAddress, amount);
+        // Transfer staked tokens to pool
+        token.safeTransferFrom(msg.sender, tokenPool, amount);
         
         if (pendingRewards > 0) {
-            // Check if the reward pool has sufficient allowance and balance for this contract
-            if (token.allowance(rewardPoolAddress, address(this)) < pendingRewards) {
-                revert InsufficientApproval();
-            }
+            // Check if the pool has sufficient balance for rewards
+            uint256 poolBalance = token.balanceOf(tokenPool);
+            uint256 availableForRewards = poolBalance - totalStakedInPool;
             
-            // Check if reward pool has sufficient balance
-            uint256 rewardPoolBalance = token.balanceOf(rewardPoolAddress);
-            if (rewardPoolBalance < pendingRewards) {
-                emit UnableToDistributeRewards(msg.sender, rewardPoolBalance, amount, pendingRewards, lockPeriod);
+            if (availableForRewards < pendingRewards) {
+                emit UnableToDistributeRewards(msg.sender, availableForRewards, amount, pendingRewards, lockPeriod);
             } else {
-                token.safeTransferFrom(rewardPoolAddress, msg.sender, pendingRewards);
+                // Update tracking before transfer
+                totalRewardsInPool -= pendingRewards;
+                
+                // Transfer rewards
+                token.safeTransferFrom(tokenPool, msg.sender, pendingRewards);
             }
         }
     }
@@ -370,25 +824,44 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
 
         // Fetch the specific stake to be unstaked
         StakeInfo storage stake = stakes[msg.sender][index];
-        uint256 stakedAmount = stake.amount;
-        uint256 lockPeriod = stake.lockPeriod;
-        address referrer = stake.referrer;
-        require(stakedAmount > 0, "No active stake");
-
-        // Update rewards before processing unstaking
+        require(stake.isActive, "Stake already unstaked");
+        
+        // Update rewards before processing the unstake
         updateRewards();
 
-        // Calculate pending rewards for this specific stake
-        uint256 accRewardPerToken = getAccRewardPerTokenForLockPeriod(lockPeriod);
-        uint256 pendingRewards = (stakedAmount * accRewardPerToken) / PRECISION_FACTOR - stake.rewardDebt;
-
-        // Apply penalty if unstaking early
-        uint256 elapsedTime = block.timestamp - stake.startTime;
-        uint256 penalty = calculatePenalty(lockPeriod, elapsedTime, stakedAmount);
-
-        // FIXED: For very short staking periods, apply penalty to principal
+        uint256 stakedAmount = stake.amount;
+        uint256 lockPeriod = stake.lockPeriod;
+        uint256 startTime = stake.startTime;
+        address referrer = stake.referrer;
+        
+        // Calculate elapsed time
+        uint256 elapsedTime = block.timestamp - startTime;
+        
+        // Calculate rewards based on elapsed time and lock period
+        uint256 fixedAPY = 0;
+        if (lockPeriod == LOCK_PERIOD_1) {
+            fixedAPY = FIXED_APY_90_DAYS;
+        } else if (lockPeriod == LOCK_PERIOD_2) {
+            fixedAPY = FIXED_APY_180_DAYS;
+        } else if (lockPeriod == LOCK_PERIOD_3) {
+            fixedAPY = FIXED_APY_365_DAYS;
+        }
+        
+        // Calculate rewards
+        uint256 rewards = calculateElapsedRewards(stakedAmount, fixedAPY, elapsedTime);
+        
+        // Calculate penalty if unstaking early
+        uint256 penalty = 0;
+        if (elapsedTime < lockPeriod) {
+            penalty = calculatePenalty(stakedAmount, elapsedTime, lockPeriod);
+        }
+        
+        // Apply penalty to rewards
+        uint256 finalRewards = rewards > penalty ? rewards - penalty : 0;
+        
+        // For very short staking periods, apply penalty to principal
         uint256 returnAmount = stakedAmount;
-        if (elapsedTime < 1 days) {
+        if (elapsedTime < 3 days) {
             // Apply 20% penalty to principal for very short staking periods
             uint256 principalPenalty = (stakedAmount * 20) / 100;
             returnAmount = stakedAmount - principalPenalty;
@@ -399,405 +872,269 @@ contract StakingEngine is ERC20Upgradeable, GovernanceModule {
             // Emit event for tracking
             emit EarlyUnstakePenalty(msg.sender, stakedAmount, principalPenalty, returnAmount);
         }
-
-        // Ensure penalties only apply to pending rewards
-        uint256 finalRewards = 0;
-        uint256 distributedReward = 0;
-        if (pendingRewards > penalty) {
-            finalRewards = pendingRewards - penalty;
-        }
-
-        // Update state: reduce total staked amounts
-        if (totalStaked < stakedAmount) {
-            revert TotalStakedTooLow(totalStaked, stakedAmount);
-        }
-
+        
+        // Update total staked amounts
         totalStaked -= stakedAmount;
+        totalStakedInPool -= stakedAmount;
+        
         if (lockPeriod == LOCK_PERIOD_1) {
-            if (totalStaked90Days < stakedAmount) {
-                revert TotalStakedTooLow(totalStaked90Days, stakedAmount);
-            }
             totalStaked90Days -= stakedAmount;
         } else if (lockPeriod == LOCK_PERIOD_2) {
-            if (totalStaked180Days < stakedAmount) {
-                revert TotalStakedTooLow(totalStaked180Days, stakedAmount);
-            }
             totalStaked180Days -= stakedAmount;
         } else if (lockPeriod == LOCK_PERIOD_3) {
-            if (totalStaked365Days < stakedAmount) {
-                revert TotalStakedTooLow(totalStaked365Days, stakedAmount);
-            }
             totalStaked365Days -= stakedAmount;
         }
-
-        // Update referrer rewards if applicable
-        if (referrer != address(0) && finalRewards > 0) {
-            uint256 referrerRewardPercent = 0;
+        
+        // Mark stake as inactive
+        stake.isActive = false;
+        
+        // Update referrer information if provided
+        if (referrer != address(0)) {
+            ReferrerInfo storage referrerInfo = referrers[referrer];
+            referrerInfo.totalActiveStaked -= stakedAmount;
+            referrerInfo.totalUnstaked += stakedAmount;
+            
             if (lockPeriod == LOCK_PERIOD_1) {
-                referrerRewardPercent = REFERRER_REWARD_PERCENT_90_DAYS;
+                referrerInfo.totalActiveStaked90Days -= stakedAmount;
             } else if (lockPeriod == LOCK_PERIOD_2) {
-                referrerRewardPercent = REFERRER_REWARD_PERCENT_180_DAYS;
+                referrerInfo.totalActiveStaked180Days -= stakedAmount;
             } else if (lockPeriod == LOCK_PERIOD_3) {
-                referrerRewardPercent = REFERRER_REWARD_PERCENT_365_DAYS;
+                referrerInfo.totalActiveStaked365Days -= stakedAmount;
             }
-
-            uint256 referrerReward = (stakedAmount * referrerRewardPercent) / 100;
-            referrerRewardsByPeriod[referrer][lockPeriod] += referrerReward;
-            referrers[referrer].unclaimedRewards += referrerReward;
+            
+            // Check if this was the last active stake from this referee
+            bool hasActiveStakes = false;
+            for (uint256 i = 0; i < stakes[msg.sender].length; i++) {
+                if (stakes[msg.sender][i].isActive && stakes[msg.sender][i].referrer == referrer) {
+                    hasActiveStakes = true;
+                    break;
+                }
+            }
+            
+            if (!hasActiveStakes) {
+                referrerInfo.activeReferredStakersCount--;
+            }
+            
+            // Update referrer reward info
+            for (uint256 i = 0; i < referrerRewards[referrer].length; i++) {
+                if (referrerRewards[referrer][i].referee == msg.sender && 
+                    referrerRewards[referrer][i].stakeId == index) {
+                    // Mark as inactive since the stake has been unstaked
+                    referrerRewards[referrer][i].isActive = false;
+                    
+                    // Calculate unclaimed rewards to deduct
+                    uint256 unclaimedReward = referrerRewards[referrer][i].totalReward - 
+                                             referrerRewards[referrer][i].claimedReward;
+                    
+                    // Deduct from unclaimed rewards
+                    if (referrerInfo.unclaimedRewards >= unclaimedReward) {
+                        referrerInfo.unclaimedRewards -= unclaimedReward;
+                    } else {
+                        referrerInfo.unclaimedRewards = 0;
+                    }
+                    
+                    // Deduct from total rewards in pool
+                    if (totalRewardsInPool >= unclaimedReward) {
+                        totalRewardsInPool -= unclaimedReward;
+                    }
+                    
+                    break;
+                }
+            }
         }
-
-        // Remove the stake by replacing it with the last one and popping
-        uint256 lastIndex = stakes[msg.sender].length - 1;
-        if (index != lastIndex) {
-            stakes[msg.sender][index] = stakes[msg.sender][lastIndex];
-        }
-        stakes[msg.sender].pop();
-
-        // Check if the staking pool has sufficient allowance for this contract
-        if (token.allowance(stakingPoolAddress, address(this)) < returnAmount) {
+        
+        // Execute external interactions after state changes
+        // Check if the pool has sufficient allowance for this contract
+        if (token.allowance(tokenPool, address(this)) < returnAmount) {
             revert InsufficientApproval();
         }
-
-        // Execute external interactions after state changes
-        // Transfer staked tokens back to user (minus any principal penalty)
-        token.safeTransferFrom(stakingPoolAddress, msg.sender, returnAmount);
-
+        
+        // Transfer staked tokens back to user
+        token.safeTransferFrom(tokenPool, msg.sender, returnAmount);
+        
         // Transfer rewards if any
         if (finalRewards > 0) {
-            // Check if the reward pool has sufficient allowance for this contract
-            if (token.allowance(rewardPoolAddress, address(this)) < finalRewards) {
-                revert InsufficientApproval();
-            }
-
-            // Check if reward pool has sufficient balance
-            uint256 rewardPoolBalance = token.balanceOf(rewardPoolAddress);
-            if (rewardPoolBalance < finalRewards) {
-                emit UnableToDistributeRewards(msg.sender, rewardPoolBalance, stakedAmount, finalRewards, lockPeriod);
+            // Check if pool has sufficient balance for rewards
+            uint256 poolBalance = token.balanceOf(tokenPool);
+            uint256 availableForRewards = poolBalance - totalStakedInPool;
+            
+            if (availableForRewards < finalRewards) {
+                emit UnableToDistributeRewards(msg.sender, availableForRewards, stakedAmount, finalRewards, lockPeriod);
             } else {
-                token.safeTransferFrom(rewardPoolAddress, msg.sender, finalRewards);
-                distributedReward = finalRewards;
+                // Update tracking before transfer
+                totalRewardsInPool -= finalRewards;
+                
+                // Transfer rewards
+                token.safeTransferFrom(tokenPool, msg.sender, finalRewards);
             }
         }
-
-        emit Unstaked(msg.sender, stakedAmount, distributedReward, penalty);
+        
+        emit Unstaked(msg.sender, stakedAmount, finalRewards, penalty);
+        
         emit RewardDistributionLog(
             msg.sender,
             stakedAmount,
-            pendingRewards,
+            finalRewards,
             penalty,
-            token.balanceOf(rewardPoolAddress),
+            token.balanceOf(tokenPool) - totalStakedInPool, // Available rewards
             lockPeriod,
             elapsedTime
         );
     }
 
     /**
-     * @notice Claim referrer rewards for a specific lock period
-     * @param lockPeriod The lock period
-     */
-    function claimReferrerRewards(uint256 lockPeriod) external nonReentrant whenNotPaused {
-        uint256 rewards = referrerRewardsByPeriod[msg.sender][lockPeriod];
-        require(rewards > 0, "No rewards available for this period");
-
-        // Reset rewards for this period
-        referrerRewardsByPeriod[msg.sender][lockPeriod] = 0;
-        referrers[msg.sender].unclaimedRewards -= rewards;
-        referrers[msg.sender].totalReferrerRewards += rewards;
-
-        // Check if the reward pool has sufficient allowance for this contract
-        if (token.allowance(rewardPoolAddress, address(this)) < rewards) {
-            revert InsufficientApproval();
-        }
-
-        // Check if reward pool has sufficient balance
-        uint256 rewardPoolBalance = token.balanceOf(rewardPoolAddress);
-        if (rewardPoolBalance < rewards) {
-            revert NoReferrerRewardsAvailable();
-        }
-
-        // Transfer rewards to referrer
-        token.safeTransferFrom(rewardPoolAddress, msg.sender, rewards);
-
-        emit ReferrerRewardsClaimed(msg.sender, rewards, lockPeriod);
-    }
-
-    /**
-     * @notice Get total unclaimed rewards for a referrer
-     * @param referrer Address of the referrer
-     * @return Total unclaimed rewards
-     */
-    function getReferrerUnclaimedRewards(address referrer) external view returns (uint256) {
-        return referrers[referrer].unclaimedRewards;
-    }
-
-    /**
-     * @notice Get referrer rewards for a specific lock period
-     * @param referrer Address of the referrer
-     * @param lockPeriod The lock period
-     * @return Rewards for the specified lock period
-     */
-    function getReferrerRewardsByPeriod(address referrer, uint256 lockPeriod) external view returns (uint256) {
-        return referrerRewardsByPeriod[referrer][lockPeriod];
-    }
-
-    /**
-     * @notice Update accumulated rewards
-     * @dev Called before any staking or unstaking operation
-     */
-    function updateRewards() public {
-        if (block.timestamp <= lastUpdateTime) {
-            return; // No need to update if no time has passed
-        }
-
-        if (totalStaked == 0) {
-            lastUpdateTime = block.timestamp;
-            return; // No need to update if no tokens are staked
-        }
-
-        uint256 timeElapsed = block.timestamp - lastUpdateTime;
-        uint256 rewardPoolBalance = token.balanceOf(rewardPoolAddress);
-
-        if (rewardPoolBalance == 0) {
-            lastUpdateTime = block.timestamp;
-            return; // No rewards to distribute if reward pool is empty
-        }
-
-        // Cache storage variables to save gas
-        uint256 _totalStaked90Days = totalStaked90Days;
-        uint256 _totalStaked180Days = totalStaked180Days;
-        uint256 _totalStaked365Days = totalStaked365Days;
-
-        // Calculate rewards for each staking period
-        uint256 rewardsFor90Days = calculateRewardsForPeriod(_totalStaked90Days, FIXED_APY_90_DAYS, timeElapsed, rewardPoolBalance);
-        uint256 rewardsFor180Days = calculateRewardsForPeriod(_totalStaked180Days, FIXED_APY_180_DAYS, timeElapsed, rewardPoolBalance);
-        uint256 rewardsFor365Days = calculateRewardsForPeriod(_totalStaked365Days, FIXED_APY_365_DAYS, timeElapsed, rewardPoolBalance);
-
-        // Calculate total rewards needed
-        uint256 newRewards = rewardsFor90Days + rewardsFor180Days + rewardsFor365Days;
-
-        // Adjust rewards if reward pool balance is insufficient
-        if (newRewards > rewardPoolBalance) {
-            // Distribute rewards proportionally
-            if (rewardsFor90Days > 0) {
-                rewardsFor90Days = (rewardPoolBalance * rewardsFor90Days) / newRewards;
-            }
-            if (rewardsFor180Days > 0) {
-                rewardsFor180Days = (rewardPoolBalance * rewardsFor180Days) / newRewards;
-            }
-            if (rewardsFor365Days > 0) {
-                rewardsFor365Days = (rewardPoolBalance * rewardsFor365Days) / newRewards;
-            }
-        }
-
-        // Update accumulated rewards per token for each lock period
-        if (_totalStaked90Days > 0 && rewardsFor90Days > 0) {
-            accRewardPerToken90Days += (rewardsFor90Days * PRECISION_FACTOR) / _totalStaked90Days;
-        }
-        if (_totalStaked180Days > 0 && rewardsFor180Days > 0) {
-            accRewardPerToken180Days += (rewardsFor180Days * PRECISION_FACTOR) / _totalStaked180Days;
-        }
-        if (_totalStaked365Days > 0 && rewardsFor365Days > 0) {
-            accRewardPerToken365Days += (rewardsFor365Days * PRECISION_FACTOR) / _totalStaked365Days;
-        }
-
-        lastUpdateTime = block.timestamp; // Update last update timestamp
-    }
-
-    /**
-     * @notice Calculate rewards for a specific period
+     * @notice Calculate penalty for early unstaking
      * @param stakedAmount Amount staked
-     * @param fixedAPY Annual percentage yield
-     * @param timeElapsed Time elapsed in seconds
-     * @param rewardPoolBalance Available reward pool balance
-     * @return Calculated rewards
-     */
-    function calculateRewardsForPeriod(
-        uint256 stakedAmount,
-        uint256 fixedAPY,
-        uint256 timeElapsed,
-        uint256 rewardPoolBalance
-    ) public pure returns (uint256) {
-        if (rewardPoolBalance == 0) {
-            return 0; // No rewards if reward pool is empty
-        }
-
-        return calculateElapsedRewards(stakedAmount, fixedAPY, timeElapsed);
-    }
-
-    /**
-     * @notice Calculate pending rewards for a user
-     * @param user Address of the user
-     * @return Total pending rewards
-     */
-    function calculatePendingRewards(address user) public view returns (uint256) {
-        uint256 pendingRewards = 0;
-        uint256 stakesLength = stakes[user].length;
-        
-        // Add a limit to prevent excessive gas consumption
-        uint256 iterations = stakesLength < MAX_STAKES_TO_PROCESS ? stakesLength : MAX_STAKES_TO_PROCESS;
-        
-        for (uint256 i = 0; i < iterations; i++) {
-            StakeInfo memory stake = stakes[user][i];
-
-            // Get accumulated rewards per token for the stake's lock period
-            uint256 accRewardPerToken = getAccRewardPerTokenForLockPeriod(stake.lockPeriod);
-
-            // Calculate pending rewards for this specific stake
-            pendingRewards += (stake.amount * accRewardPerToken) / PRECISION_FACTOR - stake.rewardDebt;
-        }
-
-        return pendingRewards;
-    }
-
-    /**
-     * @notice Calculate reward debt for a new stake
-     * @param amount Amount staked
+     * @param elapsedTime Time elapsed since staking
      * @param lockPeriod Lock period
-     * @return Calculated reward debt
+     * @return Penalty amount
      */
-    function calculateRewardDebt(uint256 amount, uint256 lockPeriod) internal view returns (uint256) {
-        if (lockPeriod == LOCK_PERIOD_1) {
-            return (amount * accRewardPerToken90Days) / PRECISION_FACTOR;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
-            return (amount * accRewardPerToken180Days) / PRECISION_FACTOR;
-        } else if (lockPeriod == LOCK_PERIOD_3) {
-            return (amount * accRewardPerToken365Days) / PRECISION_FACTOR;
+    function calculatePenalty(
+        uint256 stakedAmount,
+        uint256 elapsedTime,
+        uint256 lockPeriod
+    ) internal pure returns (uint256) {
+        // For very short staking periods (less than 3 days), apply a flat 95% penalty
+        if (elapsedTime < 3 days) {
+            return (stakedAmount * 95) / 100;
         }
-        return 0; // Default case; should never occur due to earlier validation
+        
+        // Calculate remaining percentage of lock period
+        uint256 remainingTime = lockPeriod - elapsedTime;
+        uint256 remainingPercentage = (remainingTime * 100) / lockPeriod;
+        
+        // Apply graduated penalties based on remaining percentage
+        if (remainingPercentage > 90) {
+            return (stakedAmount * 90) / 100;
+        } else if (remainingPercentage > 75) {
+            return (stakedAmount * 75) / 100;
+        } else if (remainingPercentage > 60) {
+            return (stakedAmount * 60) / 100;
+        } else if (remainingPercentage > 45) {
+            return (stakedAmount * 45) / 100;
+        } else if (remainingPercentage > 30) {
+            return (stakedAmount * 30) / 100;
+        } else if (remainingPercentage > 15) {
+            return (stakedAmount * 20) / 100;
+        } else {
+            return (stakedAmount * 10) / 100;
+        }
     }
 
     /**
-     * @notice Calculate projected APY for a new stake
-     * @param additionalStake Amount to stake
+     * @notice Calculate projected APY based on available rewards
+     * @param additionalStake Additional amount to be staked
      * @param lockPeriod Lock period
      * @return Projected APY
      */
-    function calculateProjectedAPY(uint256 additionalStake, uint256 lockPeriod)
-        public
-        view
-        returns (uint256)
-    {
-        uint256 rewardPoolBalance = token.balanceOf(rewardPoolAddress);
-        if (rewardPoolBalance == 0) {
-            return 0; // No rewards available if reward pool is empty
-        }
+    function calculateProjectedAPY(uint256 additionalStake, uint256 lockPeriod) public view returns (uint256) {
+        uint256 fixedAPY = 0;
+        uint256 totalNeededRewards = 0;
+        uint256 totalStakedForPeriod = 0;
         
-        if (totalStaked == 0 && additionalStake == 0) {
-            return 0; // Avoid division by zero
-        }
-
-        // Define reward multipliers based on lock periods
-        uint256 fixedAPY;
         if (lockPeriod == LOCK_PERIOD_1) {
-            fixedAPY = FIXED_APY_90_DAYS; // 2%
+            fixedAPY = FIXED_APY_90_DAYS;
+            totalStakedForPeriod = totalStaked90Days;
         } else if (lockPeriod == LOCK_PERIOD_2) {
-            fixedAPY = FIXED_APY_180_DAYS; // 6%
+            fixedAPY = FIXED_APY_180_DAYS;
+            totalStakedForPeriod = totalStaked180Days;
         } else if (lockPeriod == LOCK_PERIOD_3) {
-            fixedAPY = FIXED_APY_365_DAYS; // 15%
-        } else {
-            revert("Invalid lock period");
+            fixedAPY = FIXED_APY_365_DAYS;
+            totalStakedForPeriod = totalStaked365Days;
         }
-
-        // Calculate needed rewards for each staking period using their respective APYs
-        uint256 neededNewRewards = calculateElapsedRewards(additionalStake, fixedAPY, lockPeriod);
-        uint256 neededCurrentRewards1 = calculateElapsedRewards(totalStaked90Days, FIXED_APY_90_DAYS, LOCK_PERIOD_1);
-        uint256 neededCurrentRewards2 = calculateElapsedRewards(totalStaked180Days, FIXED_APY_180_DAYS, LOCK_PERIOD_2);
-        uint256 neededCurrentRewards3 = calculateElapsedRewards(totalStaked365Days, FIXED_APY_365_DAYS, LOCK_PERIOD_3);
         
-        uint256 totalNeededRewards = neededNewRewards + neededCurrentRewards1 + neededCurrentRewards2 + neededCurrentRewards3;
+        // Calculate total staked amount including the additional stake
+        uint256 newTotalStaked = totalStakedForPeriod + additionalStake;
         
-        if (totalNeededRewards <= rewardPoolBalance) {
-            return fixedAPY;
+        // Calculate rewards needed for the fixed APY
+        totalNeededRewards = (newTotalStaked * fixedAPY) / 100;
+        
+        // Get available rewards in the reward pool
+        uint256 availableRewards = totalRewardsInPool;
+        
+        // Calculate projected APY based on available rewards
+        if (availableRewards >= totalNeededRewards) {
+            return fixedAPY; // Can satisfy the fixed APY
+        } else if (newTotalStaked == 0) {
+            return 0; // Avoid division by zero
         } else {
-            // FIXED: Ensure we always return at least 1 if there are any rewards available
-            if (rewardPoolBalance > 0) {
-                // Calculate a proportional APY based on available rewards
-                uint256 proportionalAPY = (fixedAPY * rewardPoolBalance) / totalNeededRewards;
-                return proportionalAPY > 0 ? proportionalAPY : 1;
+            // Ensure we return at least 1 (0.01%) if there are any available rewards
+            uint256 calculatedAPY = (availableRewards * 100) / newTotalStaked;
+            return calculatedAPY > 0 ? calculatedAPY : (availableRewards > 0 ? 1 : 0);
+        }
+    }
+
+    /**
+     * @notice Check if the reward pool has sufficient balance to satisfy the fixed APY
+     * @param lockPeriod Lock period to check
+     * @return Whether the reward pool has sufficient balance
+     */
+    function canSatisfyFixedAPY(uint256 lockPeriod) external view returns (bool) {
+        uint256 fixedAPY = 0;
+        uint256 totalStakedForPeriod = 0;
+        
+        if (lockPeriod == LOCK_PERIOD_1) {
+            fixedAPY = FIXED_APY_90_DAYS;
+            totalStakedForPeriod = totalStaked90Days;
+        } else if (lockPeriod == LOCK_PERIOD_2) {
+            fixedAPY = FIXED_APY_180_DAYS;
+            totalStakedForPeriod = totalStaked180Days;
+        } else if (lockPeriod == LOCK_PERIOD_3) {
+            fixedAPY = FIXED_APY_365_DAYS;
+            totalStakedForPeriod = totalStaked365Days;
+        }
+        
+        // Calculate rewards needed for the fixed APY
+        uint256 totalNeededRewards = (totalStakedForPeriod * fixedAPY) / 100;
+        
+        // Get available rewards in the reward pool
+        uint256 availableRewards = totalRewardsInPool;
+        
+        return availableRewards >= totalNeededRewards;
+    }
+
+    /**
+     * @notice Process pending rewards for a user
+     * @param user Address of the user
+     * @return Total pending rewards
+     */
+    function processPendingRewards(address user) external nonReentrant whenNotPaused returns (uint256) {
+        // Update rewards before processing
+        updateRewards();
+        
+        uint256 totalPendingRewards = 0;
+        
+        // Calculate pending rewards for each stake
+        for (uint256 i = 0; i < stakes[user].length; i++) {
+            StakeInfo storage stake = stakes[user][i];
+            if (stake.isActive) {
+                uint256 accRewardPerToken = getAccRewardPerTokenForLockPeriod(stake.lockPeriod);
+                uint256 pendingReward = (stake.amount * (accRewardPerToken - stake.rewardDebt)) / PRECISION_FACTOR;
+                totalPendingRewards += pendingReward;
+                
+                // Update reward debt to current accumulated rewards
+                stake.rewardDebt = accRewardPerToken;
             }
-            return 0;
         }
-    }
-
-    /**
-     * @notice Calculate penalty for early unstaking
-     * @param lockPeriod Lock period
-     * @param elapsedTime Time elapsed since staking
-     * @param stakedAmount Amount staked
-     * @return Calculated penalty
-     */
-    function calculatePenalty(uint256 lockPeriod, uint256 elapsedTime, uint256 stakedAmount) internal pure returns (uint256) {
-        // If the full lock period has elapsed, no penalty applies
-        if (elapsedTime >= lockPeriod) return 0;
-
-        // FIXED: Apply a flat 95% penalty for very short staking periods (less than 1 day)
-        // This effectively prevents any profit from rapid cycling
-        if (elapsedTime < 1 days) {
-            return (stakedAmount * 95) / 100;
-        }
-
-        // Calculate the percentage of time remaining in the lock period (with precision)
-        uint256 remainingPercentage = ((lockPeriod - elapsedTime) * PRECISION_FACTOR) / lockPeriod;
-
-        // Apply a more granular penalty scaling based on how early unstaking occurs
-        uint256 penaltyRate;
         
-        if (remainingPercentage > 90 * PRECISION_FACTOR / 100) { // >90% time remaining
-            penaltyRate = 90; // 90% penalty
-        } else if (remainingPercentage > 75 * PRECISION_FACTOR / 100) { // >75% time remaining
-            penaltyRate = 75; // 75% penalty
-        } else if (remainingPercentage > 60 * PRECISION_FACTOR / 100) { // >60% time remaining
-            penaltyRate = 60; // 60% penalty
-        } else if (remainingPercentage > 45 * PRECISION_FACTOR / 100) { // >45% time remaining
-            penaltyRate = 45; // 45% penalty
-        } else if (remainingPercentage > 30 * PRECISION_FACTOR / 100) { // >30% time remaining
-            penaltyRate = 30; // 30% penalty
-        } else if (remainingPercentage > 15 * PRECISION_FACTOR / 100) { // >15% time remaining
-            penaltyRate = 20; // 20% penalty
-        } else {
-            penaltyRate = 10; // 10% penalty for near-completion
+        if (totalPendingRewards > 0) {
+            // Check if pool has sufficient balance for rewards
+            uint256 poolBalance = token.balanceOf(tokenPool);
+            uint256 availableForRewards = poolBalance - totalStakedInPool;
+            
+            if (availableForRewards < totalPendingRewards) {
+                emit UnableToDistributeRewards(user, availableForRewards, 0, totalPendingRewards, 0);
+                return 0;
+            } else {
+                // Update tracking before transfer
+                totalRewardsInPool -= totalPendingRewards;
+                
+                // Transfer rewards
+                token.safeTransferFrom(tokenPool, user, totalPendingRewards);
+                return totalPendingRewards;
+            }
         }
-
-        // Calculate the penalty as a percentage of the staked amount
-        return (stakedAmount * penaltyRate) / 100;
-    }
-
-    /**
-     * @notice Authorize contract upgrade using governance module
-     * @param newImplementation Address of the new implementation
-     */
-    function _authorizeUpgrade(address newImplementation) 
-        internal 
-        nonReentrant
-        whenNotPaused
-        onlyRole(ProposalTypes.ADMIN_ROLE) 
-        override 
-    {
-        // Delegate the authorization to the governance module
-        if (!_checkUpgrade(newImplementation)) revert("UpgradeNotAuthorized");
-    }
-
-    /**
-     * @notice Handle custom proposal execution
-     */
-    function _executeCustomProposal(bytes32) internal override {
-        // No custom proposals in StakingEngine
-        revert("No custom proposals supported");
-    }
-
-    /**
-     * @notice Create a custom proposal
-     * @dev This function is required by GovernanceModule but not used in StakingEngine
-     */
-    function _createCustomProposal(
-        uint8,
-        uint40,
-        address,
-        bytes32,
-        uint96,
-        address
-    ) internal override returns (bytes32) {
-        // No custom proposals in StakingEngine
-        revert("No custom proposals supported");
+        
+        return 0;
     }
 }
