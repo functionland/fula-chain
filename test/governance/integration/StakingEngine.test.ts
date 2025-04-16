@@ -1142,6 +1142,11 @@ describe("StakingEngine Security Tests", function () {
             // Add exact rewards to the pool
             const specificRewardAmount = ethers.parseEther("150"); // 150 FULA
             
+            // MISSING CRUCIAL STEP: Actually add the rewards to the pool
+            await token.connect(owner).transferFromContract(owner.address, specificRewardAmount);
+            await token.connect(owner).approve(await stakingEngine.getAddress(), specificRewardAmount);
+            await stakingEngine.connect(owner).addRewardsToPool(specificRewardAmount);
+            
             // Use very small stake amount for precise calculation
             const stakeAmount = ethers.parseEther("10");
             const lockPeriod = 180 * 24 * 60 * 60; // 180 days (6% APY)
