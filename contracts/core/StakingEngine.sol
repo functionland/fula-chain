@@ -526,8 +526,11 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
         if (availableForRewards < claimable) {
             emit UnableToDistributeRewards(referrer, availableForRewards, 0, claimable, 0);
         } else {
-            // Update tracking before transfer
+            // Update contract accounting
             totalRewardsInPool -= claimable;
+            
+            // Update the totalReferrerRewards to track claimed rewards
+            referrerInfo.totalReferrerRewards += claimable;
             
             // Transfer rewards
             token.safeTransferFrom(tokenPool, referrer, claimable);
