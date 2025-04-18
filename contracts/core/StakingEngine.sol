@@ -43,7 +43,7 @@ Maximum and Minimum Limits
 
 /// @title StakingEngine
 /// @notice Handles token staking with different lock periods and rewards
-/// @dev Non-upgradeable version of the staking contract with single pool address
+/// @dev Non-upgradeable version of the staking contract with separate stake and reward pool addresses
 contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
@@ -129,8 +129,9 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
 
     IERC20 public token;
 
-    // Single pool address instead of separate addresses
-    address public tokenPool;
+    // CHANGE: Separate stake and reward pool addresses instead of single tokenPool
+    address public stakePool;
+    address public rewardPool;
 
     // Tracking variables for internal accounting
     uint256 public totalStakedInPool;    // Total tokens staked by users
@@ -181,7 +182,8 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
     /**
      * @notice Constructor for the non-upgradeable contract
      * @param _token Address of the StorageToken
-     * @param _tokenPool Address of the token pool
+     * @param _stakePool Address of the stake pool
+     * @param _rewardPool Address of the reward pool
      * @param initialOwner Address of the initial owner
      * @param initialAdmin Address of the initial admin
      * @param name Name of the token
@@ -189,7 +191,8 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
      */
     constructor(
         address _token,
-        address _tokenPool,
+        address _stakePool,
+        address _rewardPool,
         address initialOwner,
         address initialAdmin,
         string memory name,
@@ -197,7 +200,8 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
     ) ERC20(name, symbol) {
         require(
             _token != address(0) && 
-            _tokenPool != address(0) && 
+            _stakePool != address(0) && 
+            _rewardPool != address(0) && 
             initialOwner != address(0) && 
             initialAdmin != address(0), 
             "Invalid address"
@@ -216,7 +220,8 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
         _setRoleAdmin(ADMIN_ROLE, OWNER_ROLE);
         
         token = IERC20(_token);
-        tokenPool = _tokenPool;
+        stakePool = _stakePool;
+        rewardPool = _rewardPool;
         
         // Initialize tracking variables
         totalStakedInPool = 0;
@@ -248,7 +253,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
      */
     function addRewardsToPool(uint256 amount) external onlyRole(OWNER_ROLE) {
         // Transfer tokens from sender to pool
-        token.safeTransferFrom(msg.sender, tokenPool, amount);
+        token.safeTransferFrom(msg.sender, rewardPool, amount);
         
         // Update tracking
         totalRewardsInPool += amount;
@@ -269,7 +274,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
         
         // Transfer tokens from pool to owner
         // Pool must approve this contract first
-        token.safeTransferFrom(tokenPool, msg.sender, amount);
+        token.safeTransferFrom(rewardPool, msg.sender, amount);
         
         emit RewardsWithdrawn(amount);
     }
@@ -315,7 +320,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
         totalPoolBalance = totalStakedInPool + totalRewardsInPool;
         stakedAmount = totalStakedInPool;
         rewardsAmount = totalRewardsInPool;
-        actualBalance = token.balanceOf(tokenPool);
+        actualBalance = token.balanceOf(stakePool) + token.balanceOf(rewardPool);
         
         return (totalPoolBalance, stakedAmount, rewardsAmount, actualBalance);
     }
@@ -325,7 +330,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
      */
     function reconcilePoolBalance() external onlyRole(OWNER_ROLE) {
         uint256 expectedBalance = totalStakedInPool + totalRewardsInPool;
-        uint256 actualBalance = token.balanceOf(tokenPool);
+        uint256 actualBalance = token.balanceOf(stakePool) + token.balanceOf(rewardPool);
         
         if (actualBalance > expectedBalance) {
             // Excess tokens found, add to rewards
@@ -347,12 +352,21 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @notice Set new token pool address
-     * @param _tokenPool New token pool address
+     * @notice Set new stake pool address
+     * @param _stakePool New stake pool address
      */
-    function setTokenPool(address _tokenPool) external onlyRole(OWNER_ROLE) {
-        require(_tokenPool != address(0), "Invalid address");
-        tokenPool = _tokenPool;
+    function setStakePool(address _stakePool) external onlyRole(OWNER_ROLE) {
+        require(_stakePool != address(0), "Invalid address");
+        stakePool = _stakePool;
+    }
+
+    /**
+     * @notice Set new reward pool address
+     * @param _rewardPool New reward pool address
+     */
+    function setRewardPool(address _rewardPool) external onlyRole(OWNER_ROLE) {
+        require(_rewardPool != address(0), "Invalid address");
+        rewardPool = _rewardPool;
     }
 
     /**
@@ -520,8 +534,8 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
         referrerInfo.lastClaimTime = block.timestamp;
         
         // Check if pool has sufficient balance for rewards
-        uint256 poolBalance = token.balanceOf(tokenPool);
-        uint256 availableForRewards = poolBalance - totalStakedInPool;
+        uint256 poolBalance = token.balanceOf(rewardPool);
+        uint256 availableForRewards = poolBalance;
         
         if (availableForRewards < claimable) {
             emit UnableToDistributeRewards(referrer, availableForRewards, 0, claimable, 0);
@@ -533,7 +547,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
             referrerInfo.totalReferrerRewards += claimable;
             
             // Transfer rewards
-            token.safeTransferFrom(tokenPool, referrer, claimable);
+            token.safeTransferFrom(rewardPool, referrer, claimable);
             emit ReferrerRewardsClaimed(referrer, claimable);
         }
     }
@@ -705,12 +719,12 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
         
         // Execute external interactions after state changes
         // Transfer staked tokens to pool
-        token.safeTransferFrom(msg.sender, tokenPool, amount);
+        token.safeTransferFrom(msg.sender, stakePool, amount);
         
         if (pendingRewards > 0) {
             // Check if the pool has sufficient balance for rewards
-            uint256 poolBalance = token.balanceOf(tokenPool);
-            uint256 availableForRewards = poolBalance - totalStakedInPool;
+            uint256 poolBalance = token.balanceOf(rewardPool);
+            uint256 availableForRewards = poolBalance;
             
             if (availableForRewards < pendingRewards) {
                 emit UnableToDistributeRewards(msg.sender, availableForRewards, amount, pendingRewards, lockPeriod);
@@ -719,7 +733,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
                 totalRewardsInPool -= pendingRewards;
                 
                 // Transfer rewards
-                token.safeTransferFrom(tokenPool, msg.sender, pendingRewards);
+                token.safeTransferFrom(rewardPool, msg.sender, pendingRewards);
             }
         }
     }
@@ -948,18 +962,18 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
         
         // Execute external interactions after state changes
         // Check if the pool has sufficient allowance for this contract
-        if (token.allowance(tokenPool, address(this)) < returnAmount) {
+        if (token.allowance(stakePool, address(this)) < returnAmount) {
             revert InsufficientApproval();
         }
         
         // Transfer staked tokens back to user
-        token.safeTransferFrom(tokenPool, msg.sender, returnAmount);
+        token.safeTransferFrom(stakePool, msg.sender, returnAmount);
         
         // Transfer rewards if any
         if (finalRewards > 0) {
             // Check if pool has sufficient balance for rewards
-            uint256 poolBalance = token.balanceOf(tokenPool);
-            uint256 availableForRewards = poolBalance - totalStakedInPool;
+            uint256 poolBalance = token.balanceOf(rewardPool);
+            uint256 availableForRewards = poolBalance;
             
             if (availableForRewards < finalRewards) {
                 emit UnableToDistributeRewards(msg.sender, availableForRewards, stakedAmount, finalRewards, lockPeriod);
@@ -968,7 +982,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
                 totalRewardsInPool -= finalRewards;
                 
                 // Transfer rewards
-                token.safeTransferFrom(tokenPool, msg.sender, finalRewards);
+                token.safeTransferFrom(rewardPool, msg.sender, finalRewards);
             }
         }
         
@@ -979,7 +993,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
             stakedAmount,
             finalRewards,
             penalty,
-            token.balanceOf(tokenPool) - totalStakedInPool, // Available rewards
+            token.balanceOf(rewardPool) - totalRewardsInPool, // Available rewards
             lockPeriod,
             elapsedTime
         );
@@ -1122,8 +1136,8 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
         
         if (totalPendingRewards > 0) {
             // Check if pool has sufficient balance for rewards
-            uint256 poolBalance = token.balanceOf(tokenPool);
-            uint256 availableForRewards = poolBalance - totalStakedInPool;
+            uint256 poolBalance = token.balanceOf(rewardPool);
+            uint256 availableForRewards = poolBalance;
             
             if (availableForRewards < totalPendingRewards) {
                 emit UnableToDistributeRewards(user, availableForRewards, 0, totalPendingRewards, 0);
@@ -1133,7 +1147,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
                 totalRewardsInPool -= totalPendingRewards;
                 
                 // Transfer rewards
-                token.safeTransferFrom(tokenPool, user, totalPendingRewards);
+                token.safeTransferFrom(rewardPool, user, totalPendingRewards);
                 return totalPendingRewards;
             }
         }
