@@ -18,6 +18,7 @@
     "test:mining": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/TestnetMiningRewards.test.ts",
     "test:bridge": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/TokenBridgeContract.test.ts",
     "test:staking": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/StakingEngine.test.ts",
+    "test:stakingpool": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/StakingPool.test.ts",
     "test": "yarn hardhat test"
   },
   "devDependencies": {

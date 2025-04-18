@@ -8,6 +8,7 @@ import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
+import "../governance/libraries/ProposalTypes.sol";
 
 /*
 Staking Periods and Rewards
@@ -48,7 +49,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
     // Define roles for access control
-    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    // bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant OWNER_ROLE = keccak256("OWNER_ROLE");
 
     // Lock periods in seconds
@@ -216,8 +217,9 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
 
         // Initialize roles
         _grantRole(OWNER_ROLE, initialOwner);
-        _grantRole(ADMIN_ROLE, initialAdmin);
-        _setRoleAdmin(ADMIN_ROLE, OWNER_ROLE);
+        _grantRole(ProposalTypes.ADMIN_ROLE, initialOwner); // Grant ADMIN_ROLE to owner as well
+        _grantRole(ProposalTypes.ADMIN_ROLE, initialAdmin);
+        _setRoleAdmin(ProposalTypes.ADMIN_ROLE, OWNER_ROLE);
         
         token = IERC20(_token);
         stakePool = _stakePool;
@@ -233,7 +235,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
      * @notice Emergency pause reward distribution
      * @dev Can only be called by admin
      */
-    function emergencyPauseRewardDistribution() external onlyRole(ADMIN_ROLE) {
+    function emergencyPauseRewardDistribution() external onlyRole(ProposalTypes.ADMIN_ROLE) {
         _pause();
         emit EmergencyAction("Rewards Distribution paused", block.timestamp);
     }
@@ -242,7 +244,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
      * @notice Emergency unpause reward distribution
      * @dev Can only be called by admin
      */
-    function emergencyUnpauseRewardDistribution() external onlyRole(ADMIN_ROLE) {
+    function emergencyUnpauseRewardDistribution() external onlyRole(ProposalTypes.ADMIN_ROLE) {
         _unpause();
         emit EmergencyAction("Rewards Distribution unpaused", block.timestamp);
     }
@@ -251,7 +253,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
      * @notice Add rewards to the pool
      * @param amount Amount of rewards to add
      */
-    function addRewardsToPool(uint256 amount) external onlyRole(OWNER_ROLE) {
+    function addRewardsToPool(uint256 amount) external onlyRole(ProposalTypes.ADMIN_ROLE) {
         // Transfer tokens from sender to pool
         token.safeTransferFrom(msg.sender, rewardPool, amount);
         
@@ -265,7 +267,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
      * @notice Withdraw excess rewards if needed
      * @param amount Amount to withdraw
      */
-    function withdrawExcessRewards(uint256 amount) external onlyRole(OWNER_ROLE) {
+    function withdrawExcessRewards(uint256 amount) external onlyRole(ProposalTypes.ADMIN_ROLE) {
         uint256 excessRewards = getExcessRewards();
         require(amount <= excessRewards, "Cannot withdraw required rewards");
         
@@ -328,7 +330,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
     /**
      * @notice Reconcile pool balance if accounting gets out of sync
      */
-    function reconcilePoolBalance() external onlyRole(OWNER_ROLE) {
+    function reconcilePoolBalance() external onlyRole(ProposalTypes.ADMIN_ROLE) {
         uint256 expectedBalance = totalStakedInPool + totalRewardsInPool;
         uint256 actualBalance = token.balanceOf(stakePool) + token.balanceOf(rewardPool);
         
@@ -355,7 +357,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
      * @notice Set new stake pool address
      * @param _stakePool New stake pool address
      */
-    function setStakePool(address _stakePool) external onlyRole(OWNER_ROLE) {
+    function setStakePool(address _stakePool) external onlyRole(ProposalTypes.ADMIN_ROLE) {
         require(_stakePool != address(0), "Invalid address");
         stakePool = _stakePool;
     }
@@ -364,7 +366,7 @@ contract StakingEngine is ERC20, AccessControl, ReentrancyGuard, Pausable {
      * @notice Set new reward pool address
      * @param _rewardPool New reward pool address
      */
-    function setRewardPool(address _rewardPool) external onlyRole(OWNER_ROLE) {
+    function setRewardPool(address _rewardPool) external onlyRole(ProposalTypes.ADMIN_ROLE) {
         require(_rewardPool != address(0), "Invalid address");
         rewardPool = _rewardPool;
     }
