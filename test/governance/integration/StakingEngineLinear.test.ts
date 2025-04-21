@@ -418,8 +418,8 @@ describe("StakingEngineLinear Security Tests", function () {
             // Get final balance
             const finalBalance = await token.balanceOf(user1.address);
             
-            // Check claimed rewards
-            const tolerance = expectedPartialReward / 10n;
+            // Very precise check - small tolerance
+            const tolerance = expectedPartialReward / 100n; // 1% tolerance
             expect(finalBalance - initialBalance).to.be.closeTo(expectedPartialReward, tolerance);
             
             // Advance time to end of lock period
@@ -769,6 +769,8 @@ describe("StakingEngineLinear Security Tests", function () {
             
             // Transfer tokens to user1 for staking
             await token.connect(owner).transferFromContract(user1.address, stakeAmount);
+            
+            // Approve token spending
             await token.connect(user1).approve(await StakingEngineLinear.getAddress(), stakeAmount);
             
             // Ensure the owner has enough tokens and approvals for adding to reward pool
@@ -984,6 +986,273 @@ describe("StakingEngineLinear Security Tests", function () {
             const tolerance = expectedReferrerReward / 20n; // 5% tolerance
             
             expect(totalReferrerReward).to.be.closeTo(expectedReferrerReward, tolerance);
+        });
+    });
+
+    // Add a comprehensive test for multiple users, referrals, and daily claiming
+    describe("Comprehensive Daily Claiming Scenario", function () {
+        it("should handle multiple users, referrals, and daily claiming correctly", async function () {
+            // This test might take a while
+            this.timeout(60000);
+            
+            // 1. Set up users and stake amounts
+            const referrer = user1;
+            const referredUser1 = user2;
+            const referredUser2 = user3;
+            const nonReferredUser = user4;
+            
+            const stakeAmount = ethers.parseEther("1000");
+            const lockPeriod1 = 90 * 24 * 60 * 60; // 90 days (shorter period)
+            const lockPeriod2 = 365 * 24 * 60 * 60; // 365 days (longer period)
+            
+            // Fixed APY rates from the contract
+            const APY_90_DAYS = 2n; // 2%
+            const APY_365_DAYS = 15n; // 15%
+            
+            // Referrer reward percents from the contract
+            const REFERRER_REWARD_PERCENT_90_DAYS = 0n; // 0%
+            const REFERRER_REWARD_PERCENT_365_DAYS = 4n; // 4%
+            
+            // 2. Add a large amount to reward pool
+            const rewardAmount = ethers.parseEther("100000"); // Large enough for all rewards
+            await token.connect(owner).transferFromContract(owner.address, rewardAmount);
+            await token.connect(owner).approve(await StakingEngineLinear.getAddress(), rewardAmount);
+            await StakingEngineLinear.connect(owner).addRewardsToPool(rewardAmount);
+            
+            // 3. Transfer and approve tokens for all users
+            for (const user of [referrer, referredUser1, referredUser2, nonReferredUser]) {
+                await token.connect(owner).transferFromContract(user.address, stakeAmount);
+                await token.connect(user).approve(await StakingEngineLinear.getAddress(), stakeAmount);
+            }
+            
+            // 4. Users stake tokens with different periods
+            console.log("\n--- Initial Staking ---");
+            // referredUser1 stakes for 90 days with referrer
+            const referredUser1StakeId = 0;
+            await StakingEngineLinear.connect(referredUser1).stakeTokenWithReferrer(
+                stakeAmount, lockPeriod1, referrer.address
+            );
+            console.log(`User2 staked ${ethers.formatEther(stakeAmount)} FULA for 90 days with User1 as referrer`);
+            
+            // referredUser2 stakes for 365 days with referrer
+            const referredUser2StakeId = 0;
+            await StakingEngineLinear.connect(referredUser2).stakeTokenWithReferrer(
+                stakeAmount, lockPeriod2, referrer.address
+            );
+            console.log(`User3 staked ${ethers.formatEther(stakeAmount)} FULA for 365 days with User1 as referrer`);
+            
+            // nonReferredUser stakes for 365 days without referrer
+            const nonReferredUserStakeId = 0;
+            await StakingEngineLinear.connect(nonReferredUser).stakeToken(stakeAmount, lockPeriod2);
+            console.log(`User4 staked ${ethers.formatEther(stakeAmount)} FULA for 365 days without referrer`);
+            
+            // 5. Initialize tracking for rewards
+            const referrerTotalRewards: bigint = 0n;
+            const user2TotalRewards: bigint = 0n;
+            const user3TotalRewards: bigint = 0n;
+            const user4TotalRewards: bigint = 0n;
+            
+            // Arrays to track daily rewards for each user
+            const referrerDailyRewards: bigint[] = [];
+            const user2DailyRewards: bigint[] = [];
+            const user3DailyRewards: bigint[] = [];
+            const user4DailyRewards: bigint[] = [];
+            
+            // Calculate expected daily rewards
+            // User2: 89 days @ 2% APY (not 90 because we unstake on day 90 before claiming)
+            const user2DailyExpected = (stakeAmount * APY_90_DAYS) / (100n * 365n);
+            
+            // User3: 365 days @ 15% APY
+            const user3DailyExpected = (stakeAmount * APY_365_DAYS) / (100n * 365n);
+            
+            // User4: 365 days @ 15% APY (same as user3, no referrer)
+            const user4DailyExpected = user3DailyExpected;
+            
+            // Referrer rewards
+            // - From User2: 90 days @ 0% (no referrer reward for 90 days)
+            // - From User3: 365 days @ 4%
+            const referrerDailyFromUser3 = (stakeAmount * REFERRER_REWARD_PERCENT_365_DAYS) / (100n * 365n);
+            
+            // 6. Daily claiming for 90 days (covers the shorter period)
+            console.log("\n--- Starting Daily Claims ---");
+            const ONE_DAY = 24 * 60 * 60;
+            
+            for (let day = 1; day <= 90; day++) {
+                // Advance time by one day
+                await time.increase(ONE_DAY);
+                
+                // Track balances before claims
+                const referrerBalanceBefore = await token.balanceOf(referrer.address);
+                const user2BalanceBefore = await token.balanceOf(referredUser1.address);
+                const user3BalanceBefore = await token.balanceOf(referredUser2.address);
+                const user4BalanceBefore = await token.balanceOf(nonReferredUser.address);
+                
+                // Everyone claims their rewards
+                await StakingEngineLinear.connect(referrer).claimReferrerReward(referredUser2StakeId); // Claim referrer reward from user3 (index 1)
+                if (day < 90) { // User2 still staking
+                    await StakingEngineLinear.connect(referredUser1).claimStakerReward(referredUser1StakeId);
+                }
+                await StakingEngineLinear.connect(referredUser2).claimStakerReward(referredUser2StakeId);
+                await StakingEngineLinear.connect(nonReferredUser).claimStakerReward(nonReferredUserStakeId);
+                
+                // Track rewards claimed
+                const referrerReward = BigInt(await token.balanceOf(referrer.address)) - referrerBalanceBefore;
+                const user2Reward = BigInt(await token.balanceOf(referredUser1.address)) - user2BalanceBefore;
+                const user3Reward = BigInt(await token.balanceOf(referredUser2.address)) - user3BalanceBefore;
+                const user4Reward = BigInt(await token.balanceOf(nonReferredUser.address)) - user4BalanceBefore;
+                
+                referrerDailyRewards.push(referrerReward);
+                user2DailyRewards.push(user2Reward);
+                user3DailyRewards.push(user3Reward);
+                user4DailyRewards.push(user4Reward);
+                
+                // Every 30 days, log progress
+                if (day % 30 === 0) {
+                    console.log(`Day ${day} claims completed`);
+                    console.log(`- Referrer claimed: ${ethers.formatEther(referrerReward)} FULA (daily)`);
+                    console.log(`- User2 claimed: ${ethers.formatEther(user2Reward)} FULA (daily)`);
+                    console.log(`- User3 claimed: ${ethers.formatEther(user3Reward)} FULA (daily)`);
+                    console.log(`- User4 claimed: ${ethers.formatEther(user4Reward)} FULA (daily)`);
+                    
+                    // Verify daily reward amounts (with small tolerance for rounding)
+                    if (day < 90) { // User2 still staking
+                        expect(user2Reward).to.be.closeTo(user2DailyExpected, user2DailyExpected / 100n);
+                    }
+                    expect(user3Reward).to.be.closeTo(user3DailyExpected, user3DailyExpected / 100n);
+                    expect(user4Reward).to.be.closeTo(user4DailyExpected, user4DailyExpected / 100n);
+                    
+                    // Referrer should get rewards from User3 only
+                    expect(referrerReward).to.be.closeTo(referrerDailyFromUser3, referrerDailyFromUser3 / 100n);
+                }
+            }
+            
+            // 7. User2 can now unstake (90 days have passed)
+            console.log("\n--- After 90 Days: User2 Unstaking ---");
+            
+            // First unstake should succeed
+            const user2BalanceBeforeUnstake = await token.balanceOf(referredUser1.address);
+            await StakingEngineLinear.connect(referredUser1).unstakeToken(referredUser1StakeId);
+            const user2BalanceAfterUnstake = await token.balanceOf(referredUser1.address);
+            const unstakeAmount = user2BalanceAfterUnstake - user2BalanceBeforeUnstake;
+            
+            console.log(`User2 unstaked: ${ethers.formatEther(unstakeAmount)} FULA`);
+            expect(unstakeAmount).to.equal(stakeAmount); // Should get back the full stake amount
+            
+            // 8. Continue daily claiming for the remaining 275 days (to complete 365 days)
+            console.log("\n--- Continuing Daily Claims for User3 and User4 ---");
+            
+            for (let day = 91; day <= 365; day++) {
+                // Advance time by one day
+                await time.increase(ONE_DAY);
+                
+                // Track balances before claims
+                const referrerBalanceBefore = await token.balanceOf(referrer.address);
+                const user3BalanceBefore = await token.balanceOf(referredUser2.address);
+                const user4BalanceBefore = await token.balanceOf(nonReferredUser.address);
+                
+                // Remaining users claim their rewards
+                await StakingEngineLinear.connect(referrer).claimReferrerReward(referredUser2StakeId); // Still claiming from user3
+                
+                // User2 should no longer be able to claim (already unstaked)
+                if (day === 91) {
+                    await expect(
+                        StakingEngineLinear.connect(referredUser1).claimStakerReward(referredUser1StakeId)
+                    ).to.be.revertedWith("Stake not active");
+                }
+                
+                await StakingEngineLinear.connect(referredUser2).claimStakerReward(referredUser2StakeId);
+                await StakingEngineLinear.connect(nonReferredUser).claimStakerReward(nonReferredUserStakeId);
+                
+                // Track rewards claimed
+                const referrerReward = BigInt(await token.balanceOf(referrer.address)) - referrerBalanceBefore;
+                const user3Reward = BigInt(await token.balanceOf(referredUser2.address)) - user3BalanceBefore;
+                const user4Reward = BigInt(await token.balanceOf(nonReferredUser.address)) - user4BalanceBefore;
+
+                referrerDailyRewards.push(referrerReward);
+                user3DailyRewards.push(user3Reward);
+                user4DailyRewards.push(user4Reward);
+                
+                // Every 90 days, log progress
+                if (day % 90 === 0) {
+                    console.log(`Day ${day} claims completed`);
+                    console.log(`- Referrer claimed: ${ethers.formatEther(referrerReward)} FULA (daily)`);
+                    console.log(`- User3 claimed: ${ethers.formatEther(user3Reward)} FULA (daily)`);
+                    console.log(`- User4 claimed: ${ethers.formatEther(user4Reward)} FULA (daily)`);
+                    
+                    // Verify daily reward amounts (with small tolerance for rounding)
+                    expect(user3Reward).to.be.closeTo(user3DailyExpected, user3DailyExpected / 100n);
+                    expect(user4Reward).to.be.closeTo(user4DailyExpected, user4DailyExpected / 100n);
+                    expect(referrerReward).to.be.closeTo(referrerDailyFromUser3, referrerDailyFromUser3 / 100n);
+                }
+            }
+            
+            // 9. All users can now unstake their tokens
+            console.log("\n--- After 365 Days: Final Unstaking ---");
+            
+            // User3 unstakes
+            const user3BalanceBeforeUnstake = await token.balanceOf(referredUser2.address);
+            await StakingEngineLinear.connect(referredUser2).unstakeToken(referredUser2StakeId);
+            const user3BalanceAfterUnstake = await token.balanceOf(referredUser2.address);
+            const user3UnstakeAmount = user3BalanceAfterUnstake - user3BalanceBeforeUnstake;
+            console.log(`User3 unstaked: ${ethers.formatEther(user3UnstakeAmount)} FULA`);
+            expect(user3UnstakeAmount).to.equal(stakeAmount); // Should get back the full stake amount
+            
+            // User4 unstakes
+            const user4BalanceBeforeUnstake = await token.balanceOf(nonReferredUser.address);
+            await StakingEngineLinear.connect(nonReferredUser).unstakeToken(nonReferredUserStakeId);
+            const user4BalanceAfterUnstake = await token.balanceOf(nonReferredUser.address);
+            const user4UnstakeAmount = user4BalanceAfterUnstake - user4BalanceBeforeUnstake;
+            console.log(`User4 unstaked: ${ethers.formatEther(user4UnstakeAmount)} FULA`);
+            expect(user4UnstakeAmount).to.equal(stakeAmount); // Should get back the full stake amount
+            
+            // 10. After unstaking, referrer should no longer be able to claim rewards
+            await expect(
+                StakingEngineLinear.connect(referrer).claimReferrerReward(referredUser2StakeId)
+            ).to.be.revertedWith("Referrer reward not active");
+            
+            // 11. Try claiming rewards after unstaking (should fail)
+            await expect(
+                StakingEngineLinear.connect(referredUser2).claimStakerReward(referredUser2StakeId)
+            ).to.be.revertedWith("Stake not active");
+            
+            await expect(
+                StakingEngineLinear.connect(nonReferredUser).claimStakerReward(nonReferredUserStakeId)
+            ).to.be.revertedWith("Stake not active");
+            
+            // 12. Verify total rewards received
+            console.log("\n--- Final Reward Summary ---");
+            
+            // Calculate expected rewards for each user
+            // User2: 89 days @ 2% APY (not 90 because we unstake on day 90 before claiming)
+            const user2ExpectedTotal = (stakeAmount * APY_90_DAYS * BigInt(89 * 24 * 60 * 60)) / (100n * BigInt(365 * 24 * 60 * 60));
+            
+            // User3: 365 days @ 15% APY
+            const user3ExpectedTotal = (stakeAmount * APY_365_DAYS * BigInt(lockPeriod2)) / (100n * BigInt(365 * 24 * 60 * 60));
+            
+            // User4: 365 days @ 15% APY (same as user3, no referrer)
+            const user4ExpectedTotal = user3ExpectedTotal;
+            
+            // Referrer: From User3 only (365 days @ 4%)
+            const referrerExpectedTotal = (stakeAmount * REFERRER_REWARD_PERCENT_365_DAYS * BigInt(lockPeriod2)) / (100n * BigInt(365 * 24 * 60 * 60));
+            
+            // Sum all daily rewards to get actual totals
+            const user2ActualTotal = user2DailyRewards.reduce((sum, reward) => sum + reward, 0n);
+            const user3ActualTotal = user3DailyRewards.reduce((sum, reward) => sum + reward, 0n);
+            const user4ActualTotal = user4DailyRewards.reduce((sum, reward) => sum + reward, 0n);
+            const referrerActualTotal = referrerDailyRewards.reduce((sum, reward) => sum + reward, 0n);
+            
+            console.log(`User2 total rewards: ${ethers.formatEther(user2ActualTotal)} FULA`);
+            console.log(`User3 total rewards: ${ethers.formatEther(user3ActualTotal)} FULA`);
+            console.log(`User4 total rewards: ${ethers.formatEther(user4ActualTotal)} FULA`);
+            console.log(`Referrer total rewards: ${ethers.formatEther(referrerActualTotal)} FULA`);
+            
+            // Verify total rewards with 1% tolerance for rounding errors
+            expect(user2ActualTotal).to.be.closeTo(user2ExpectedTotal, user2ExpectedTotal / 100n);
+            expect(user3ActualTotal).to.be.closeTo(user3ExpectedTotal, user3ExpectedTotal / 100n);
+            expect(user4ActualTotal).to.be.closeTo(user4ExpectedTotal, user4ExpectedTotal / 100n);
+            expect(referrerActualTotal).to.be.closeTo(referrerExpectedTotal, referrerExpectedTotal / 100n);
+            
+            console.log("\n--- Test Completed Successfully ---");
         });
     });
 });
