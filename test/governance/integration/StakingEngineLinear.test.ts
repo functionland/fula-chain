@@ -1185,6 +1185,22 @@ describe("StakingEngineLinear Security Tests", function () {
                     expect(referrerReward).to.be.closeTo(referrerDailyFromUser3, referrerDailyFromUser3 / 100n);
                 }
             }
+
+            for (let day = 366; day <= 370; day++) {
+                // Advance time by one day
+                await time.increase(ONE_DAY);
+                            
+                await expect(
+                    StakingEngineLinear.connect(referrer).claimStakerReward(referredUser2StakeId)
+                ).to.be.revertedWith("Invalid stake index");
+                // User2 should no longer be able to claim (already unstaked)
+                await expect(
+                    StakingEngineLinear.connect(referredUser2).claimStakerReward(referredUser2StakeId)
+                ).to.be.revertedWith("No claimable rewards");
+                await expect(
+                    StakingEngineLinear.connect(nonReferredUser).claimStakerReward(nonReferredUserStakeId)
+                ).to.be.revertedWith("No claimable rewards");
+            }
             
             // 9. All users can now unstake their tokens
             console.log("\n--- After 365 Days: Final Unstaking ---");
