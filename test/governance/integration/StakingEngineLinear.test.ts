@@ -142,8 +142,8 @@ describe("StakingEngineLinear Security Tests", function () {
         }
 
         // Give both pools approval to StakingEngineLinear to handle token transfers
-        await token.connect(stakePoolSigner).approve(await StakingEngineLinear.getAddress(), ethers.parseEther("1000000")); // Stake pool approval
-        await token.connect(rewardPoolSigner).approve(await StakingEngineLinear.getAddress(), ethers.parseEther("1000000")); // Reward pool approval
+        await token.connect(stakePoolSigner).approve(await StakingEngineLinear.getAddress(), ethers.parseEther("5000000")); // Stake pool approval
+        await token.connect(rewardPoolSigner).approve(await StakingEngineLinear.getAddress(), ethers.parseEther("5000000")); // Reward pool approval
         
         // Transfer tokens to owner for adding to the pool
         await token.connect(owner).transferFromContract(owner.address, ethers.parseEther("50000"));
@@ -361,6 +361,13 @@ describe("StakingEngineLinear Security Tests", function () {
             
             // Approve for staking
             await token.connect(user1).approve(await StakingEngineLinear.getAddress(), stakeAmount);
+            
+            // Ensure the owner has enough tokens and approvals for adding to reward pool
+            await token.connect(owner).transferFromContract(owner.address, stakeAmount * 2n);
+            await token.connect(owner).approve(await StakingEngineLinear.getAddress(), stakeAmount);
+            
+            // Add rewards to the pool
+            await StakingEngineLinear.connect(owner).addRewardsToPool(stakeAmount);
             
             // Stake with referrer
             await StakingEngineLinear.connect(user1).stakeTokenWithReferrer(stakeAmount, lockPeriod, user2.address);
@@ -1269,6 +1276,208 @@ describe("StakingEngineLinear Security Tests", function () {
             expect(referrerActualTotal).to.be.closeTo(referrerExpectedTotal, referrerExpectedTotal / 100n);
             
             console.log("\n--- Test Completed Successfully ---");
+        });
+    });
+
+    describe("View Methods: Staker/Referrer Global Queries", function () {
+        it("should return correct global and period-based staker/referrer lists and stats, including after unstaking", async function () {
+            // Setup: 3 referrers, 5 stakers (some referred, some not, some with multiple stakes/periods)
+            const [ref1, ref2, ref3, ...testUsers] = users;
+            const stakers = testUsers.slice(0, 5); // Use only 5 stakers
+            // Give all stakers tokens and approve
+            const stakeAmount = ethers.parseEther("100");
+            
+            // Whitelist stakers and referrers before funding
+            const whitelistAddrs = [...stakers.map(s => s.address), ref3.address];
+            console.log(whitelistAddrs)
+            
+            for (const addr of whitelistAddrs) {
+                const tx = await token.connect(owner).createProposal(
+                    5, // AddWhitelist type
+                    0, // id (uint40)
+                    addr, // target address
+                    ethers.ZeroHash, // role
+                    0n, // amount (uint96)
+                    ethers.ZeroAddress // tokenAddress
+                );
+                const receipt = await tx.wait();
+                await time.increase(24 * 60 * 60 + 1);
+                await ethers.provider.send("evm_mine", []);
+                if (receipt && receipt.logs) {
+                    let proposalId;
+                    if (receipt.logs[0].topics && receipt.logs[0].topics.length > 1) {
+                        proposalId = receipt.logs[0].topics[1];
+                    } else if (receipt.logs[0].data) {
+                        proposalId = receipt.logs[0].data;
+                    }
+                    await token.connect(admin).approveProposal(proposalId);
+                }
+                await time.increase(24 * 60 * 60 + 1);
+                await ethers.provider.send("evm_mine", []);
+                await time.increase(24 * 60 * 60 + 1);
+                await ethers.provider.send("evm_mine", []);
+            }
+            for (const s of stakers) {
+                await token.connect(owner).transferFromContract(s.address, stakeAmount * 5n);
+                await token.connect(s).approve(await StakingEngineLinear.getAddress(), stakeAmount * 5n);
+            }
+            // Approve for referrers (in case they stake too)
+            for (const r of [ref1, ref2, ref3]) {
+                await token.connect(owner).transferFromContract(r.address, stakeAmount * 2n);
+                await token.connect(r).approve(await StakingEngineLinear.getAddress(), stakeAmount * 2n);
+            }
+
+            // Staking pattern:
+            // - stakers[0]: 90 days, no referrer
+            // - stakers[1]: 90 days, ref1
+            // - stakers[2]: 180 days, ref1
+            // - stakers[3]: 365 days, ref2
+            // - stakers[4]: 90 days, ref2
+            // - stakers[4]: multiple stakes: 90 days (twice), 365 days (once, with ref1)
+            // - stakers[1] also stakes in 365 days (multi-period)
+
+            // Helper: stake
+            async function stakeWith(signer, amount, period, ref) {
+                if (ref) {
+                    await StakingEngineLinear.connect(signer).stakeTokenWithReferrer(amount, period, ref.address);
+                } else {
+                    await StakingEngineLinear.connect(signer).stakeToken(amount, period);
+                }
+            }
+
+            // Helper: unstake
+            async function unstake(signer, id) {
+                await StakingEngineLinear.connect(signer).unstakeToken(id);
+            }
+            const LOCK_PERIOD_1 = 90 * 24 * 60 * 60;
+            const LOCK_PERIOD_2 = 180 * 24 * 60 * 60;
+            const LOCK_PERIOD_3 = 365 * 24 * 60 * 60;
+
+            await stakeWith(stakers[0], stakeAmount, LOCK_PERIOD_1, null);
+            await stakeWith(stakers[1], stakeAmount, LOCK_PERIOD_1, ref1);
+            await stakeWith(stakers[2], stakeAmount, LOCK_PERIOD_2, ref1);
+            await stakeWith(stakers[3], stakeAmount, LOCK_PERIOD_3, ref2);
+            await stakeWith(stakers[4], stakeAmount, LOCK_PERIOD_1, ref2);
+            // stakers[4]: 90d (no ref), 90d (ref2), 365d (ref1)
+            await stakeWith(stakers[4], stakeAmount, LOCK_PERIOD_1, null);
+            await stakeWith(stakers[4], stakeAmount, LOCK_PERIOD_1, ref2);
+            await stakeWith(stakers[4], stakeAmount, LOCK_PERIOD_3, ref1);
+            // stakers[1] stakes in 365d (multi-period)
+            await stakeWith(stakers[1], stakeAmount, LOCK_PERIOD_3, null);
+
+            // --- Test view methods ---
+            // All stakers
+            const allStakers = await StakingEngineLinear.getAllStakerAddresses();
+            expect(allStakers.length).to.be.gte(stakers.length);
+            for (const s of stakers) expect(allStakers).to.include(s.address);
+            // All referrers
+            const allReferrers = await StakingEngineLinear.getAllReferrerAddresses();
+            expect(allReferrers.length).to.equal(2);
+            expect(allReferrers).to.include(ref1.address);
+            expect(allReferrers).to.include(ref2.address);
+            expect(allReferrers).to.not.include(ref3.address);
+            // By period
+            for (const [period, label] of [[LOCK_PERIOD_1, "90d"], [LOCK_PERIOD_2, "180d"], [LOCK_PERIOD_3, "365d"]]) {
+                const stakersByPeriod = await StakingEngineLinear.getStakerAddressesByPeriod(period);
+                const [stakerList, amounts] = await StakingEngineLinear.getStakedAmountsByPeriod(period);
+                // Check that all stakers who staked in this period are present and amounts match
+                for (let i = 0; i < stakerList.length; i++) {
+                    const addr = stakerList[i];
+                    const amt = amounts[i];
+                    // There should be at least one active stake for this period
+                    const stakes = await StakingEngineLinear.getStakes(addr);
+                    let sum = 0n;
+                    for (let j = 0; j < stakes.length; j++) {
+                        if (
+                            stakes[j].lockPeriod.toString() === period.toString() &&
+                            stakes[j].isActive
+                        ) {
+                            sum += stakes[j].amount;
+                        }
+                    }
+                    expect(amt).to.equal(sum);
+                }
+            }
+            // Referrers by period
+            for (const [period, label] of [[LOCK_PERIOD_1, "90d"], [LOCK_PERIOD_2, "180d"], [LOCK_PERIOD_3, "365d"]]) {
+                const referrersByPeriod = await StakingEngineLinear.getReferrerAddressesByPeriod(period);
+                // Should include the referrers who referred in this period
+                if (period === LOCK_PERIOD_1) {
+                    expect(referrersByPeriod).to.include(ref1.address);
+                    expect(referrersByPeriod).to.include(ref2.address);
+                }
+                if (period === LOCK_PERIOD_2) {
+                    expect(referrersByPeriod).to.include(ref1.address);
+                }
+                if (period === LOCK_PERIOD_3) {
+                    expect(referrersByPeriod).to.include(ref1.address);
+                    expect(referrersByPeriod).to.include(ref2.address);
+                }
+            }
+            // Active referrers by period (should match above)
+            for (const period of [LOCK_PERIOD_1, LOCK_PERIOD_2, LOCK_PERIOD_3]) {
+                const activeRefs = await StakingEngineLinear.getActiveReferrersByPeriod(period);
+                expect(activeRefs.length).to.be.gte(1);
+            }
+
+            const [stakerList10, amounts10] = await StakingEngineLinear.getStakedAmountsByPeriod(LOCK_PERIOD_1);
+            const [stakerList20, amounts20] = await StakingEngineLinear.getStakedAmountsByPeriod(LOCK_PERIOD_2);
+            console.log("stakerList10", stakerList10);
+            console.log("amounts10", amounts10);
+            console.log("stakerList20", stakerList20);
+            console.log("amounts20", amounts20);
+
+            // Advance time by 91 days (in seconds)
+            await time.increase(91 * 24 * 60 * 60);
+            await ethers.provider.send("evm_mine", []);
+
+            // --- Unstake some stakes and check updates ---
+            // Unstake stakers[1] from 90d, stakers[4] from 90d (all), stakers[2] from 180d
+            await StakingEngineLinear.connect(stakers[0]).unstakeToken(0); // 90d stake
+            await StakingEngineLinear.connect(stakers[1]).unstakeToken(0); // 90d stake
+            // Unstake all 90d stakes for stakers[4]
+            let stakes4 = await StakingEngineLinear.getStakes(stakers[4].address);
+            // Iterate in reverse to safely remove elements without index shifting
+            for (let j = stakes4.length - 1; j >= 0; j--) {
+                console.log(`stakes4[${j}]`, stakes4[j]);
+                if (
+                    stakes4[j].lockPeriod.toString() === LOCK_PERIOD_1.toString() &&
+                    stakes4[j].isActive
+                ) {
+                    console.log("Unstaking stake at index", j);
+                    // Ensure user has approval
+                    await token.connect(stakers[4]).approve(await StakingEngineLinear.getAddress(), stakes4[j].amount);
+                    await StakingEngineLinear.connect(stakers[4]).unstakeToken(j);
+                }
+            }
+            // Advance time by 91 days (in seconds)
+            await time.increase(91 * 24 * 60 * 60);
+            await ethers.provider.send("evm_mine", []);
+
+            await StakingEngineLinear.connect(stakers[2]).unstakeToken(0); // 180d ref1
+            // Now check that staked amounts for these addresses in those periods are 0
+            const [stakerList1, amounts1] = await StakingEngineLinear.getStakedAmountsByPeriod(LOCK_PERIOD_1);
+            const [stakerList2, amounts2] = await StakingEngineLinear.getStakedAmountsByPeriod(LOCK_PERIOD_2);
+            console.log("stakerList1", stakerList1);
+            console.log("amounts1", amounts1);
+            console.log("stakerList2", stakerList2);
+            console.log("amounts2", amounts2);
+            for (let i = 0; i < stakerList1.length; i++) {
+                if ([stakers[1].address, stakers[4].address].includes(stakerList1[i])) {
+                    expect(amounts1[i]).to.equal(0);
+                }
+            }
+            for (let i = 0; i < stakerList2.length; i++) {
+                if (stakerList2[i] === stakers[2].address) {
+                    expect(amounts2[i]).to.equal(0);
+                }
+            }
+            // Referrers by period should still include the referrers (append-only logic)
+            const referrersByPeriod1 = await StakingEngineLinear.getReferrerAddressesByPeriod(LOCK_PERIOD_1);
+            expect(referrersByPeriod1).to.include(ref1.address);
+            // All staker addresses should still include all original stakers (append-only)
+            const allStakersAfter = await StakingEngineLinear.getAllStakerAddresses();
+            for (const s of stakers) expect(allStakersAfter).to.include(s.address);
         });
     });
 });

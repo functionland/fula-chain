@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+// Top‐level pool interface
+interface IPool {
+    function transferTokens(uint256 amount) external returns (bool);
+    function receiveTokens(address from, uint256 amount) external returns (bool);
+}
+
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -133,6 +139,8 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
     // CHANGE: Separate stake and reward pool addresses instead of single tokenPool
     address public stakePool;
     address public rewardPool;
+    IPool public stakePoolContract;
+    IPool public rewardPoolContract;
 
     // Tracking variables for internal accounting
     uint256 public totalStakedInPool;    // Total tokens staked by users
@@ -145,6 +153,20 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
     uint256 public totalStaked90Days;
     uint256 public totalStaked180Days;
     uint256 public totalStaked365Days;
+
+    // --- New variables for global queries ---
+    // List of all staker addresses (unique, append-only)
+    address[] private allStakerAddresses;
+    mapping(address => bool) private isKnownStaker;
+    // For each lock period, a list of staker addresses (unique, append-only)
+    mapping(uint256 => address[]) private stakerAddressesByPeriod;
+    mapping(uint256 => mapping(address => bool)) private isStakerInPeriod;
+    // List of all referrer addresses (unique, append-only)
+    address[] private allReferrerAddresses;
+    mapping(address => bool) private isKnownReferrer;
+    // For each lock period, a list of referrer addresses (unique, append-only)
+    mapping(uint256 => address[]) private referrerAddressesByPeriod;
+    mapping(uint256 => mapping(address => bool)) private isReferrerInPeriod;
 
     event RewardsAdded(uint256 amount);
     event RewardsWithdrawn(uint256 amount);
@@ -223,6 +245,8 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
         token = IERC20(_token);
         stakePool = _stakePool;
         rewardPool = _rewardPool;
+        stakePoolContract = IPool(_stakePool);
+        rewardPoolContract = IPool(_rewardPool);
         
         // Initialize tracking variables
         totalStakedInPool = 0;
@@ -255,29 +279,12 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
     function addRewardsToPool(uint256 amount) external onlyRole(ProposalTypes.ADMIN_ROLE) {
         // Transfer tokens from sender to pool
         token.safeTransferFrom(msg.sender, rewardPool, amount);
+        rewardPoolContract.receiveTokens(msg.sender, amount);
         
         // Update tracking
         totalRewardsInPool += amount;
         
         emit RewardsAdded(amount);
-    }
-
-    /**
-     * @notice Withdraw excess rewards if needed
-     * @param amount Amount to withdraw
-     */
-    function withdrawExcessRewards(uint256 amount) external onlyRole(ProposalTypes.ADMIN_ROLE) {
-        uint256 excessRewards = getExcessRewards();
-        require(amount <= excessRewards, "Cannot withdraw required rewards");
-        
-        // Update tracking before transfer
-        totalRewardsInPool -= amount;
-        
-        // Transfer tokens from pool to owner
-        // Pool must approve this contract first
-        token.safeTransferFrom(rewardPool, msg.sender, amount);
-        
-        emit RewardsWithdrawn(amount);
     }
 
     /**
@@ -350,24 +357,6 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
             }
             emit PoolBalanceReconciled(shortage, false);
         }
-    }
-
-    /**
-     * @notice Set new stake pool address
-     * @param _stakePool New stake pool address
-     */
-    function setStakePool(address _stakePool) external onlyRole(ProposalTypes.ADMIN_ROLE) {
-        require(_stakePool != address(0), "Invalid address");
-        stakePool = _stakePool;
-    }
-
-    /**
-     * @notice Set new reward pool address
-     * @param _rewardPool New reward pool address
-     */
-    function setRewardPool(address _rewardPool) external onlyRole(ProposalTypes.ADMIN_ROLE) {
-        require(_rewardPool != address(0), "Invalid address");
-        rewardPool = _rewardPool;
     }
 
     /**
@@ -622,6 +611,28 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
             }
         }
         
+        // --- Track all stakers globally and per period ---
+        if (!isKnownStaker[msg.sender]) {
+            isKnownStaker[msg.sender] = true;
+            allStakerAddresses.push(msg.sender);
+        }
+        if (!isStakerInPeriod[lockPeriod][msg.sender]) {
+            isStakerInPeriod[lockPeriod][msg.sender] = true;
+            stakerAddressesByPeriod[lockPeriod].push(msg.sender);
+        }
+        
+        // --- Track all referrers globally and per period ---
+        if (referrer != address(0)) {
+            if (!isKnownReferrer[referrer]) {
+                isKnownReferrer[referrer] = true;
+                allReferrerAddresses.push(referrer);
+            }
+            if (!isReferrerInPeriod[lockPeriod][referrer]) {
+                isReferrerInPeriod[lockPeriod][referrer] = true;
+                referrerAddressesByPeriod[lockPeriod].push(referrer);
+            }
+        }
+        
         // Check if the user has sufficient allowance for this contract
         if (token.allowance(msg.sender, address(this)) < amount) {
             revert InsufficientApproval();
@@ -646,6 +657,7 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
         // Execute external interactions after state changes
         // Transfer staked tokens to pool
         token.safeTransferFrom(msg.sender, stakePool, amount);
+        stakePoolContract.receiveTokens(msg.sender, amount);
         
         if (pendingRewards > 0) {
             // Check if the pool has sufficient balance for rewards
@@ -659,7 +671,8 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
                 totalRewardsInPool -= pendingRewards;
                 
                 // Transfer rewards
-                token.safeTransferFrom(rewardPool, msg.sender, pendingRewards);
+                rewardPoolContract.transferTokens(pendingRewards);
+                token.safeTransfer(msg.sender, pendingRewards);
             }
         }
     }
@@ -810,8 +823,8 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
         }
 
         // Transfer staked tokens back to user
-        require(token.allowance(stakePool, address(this)) >= stakedAmount, "InsufficientApproval");
-        token.safeTransferFrom(stakePool, msg.sender, stakedAmount);
+        stakePoolContract.transferTokens(stakedAmount);
+        token.safeTransfer(msg.sender, stakedAmount);
         emit Unstaked(msg.sender, stakedAmount, 0, 0);
     }
 
@@ -841,7 +854,8 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
         // Transfer rewards
         require(token.balanceOf(rewardPool) >= toClaim, "Insufficient rewards in pool");
         totalRewardsInPool -= toClaim;
-        token.safeTransferFrom(rewardPool, msg.sender, toClaim);
+        rewardPoolContract.transferTokens(toClaim);
+        token.safeTransfer(msg.sender, toClaim);
         emit RewardDistributionLog(msg.sender, stake.amount, toClaim, 0, token.balanceOf(rewardPool), stake.lockPeriod, timeElapsed);
     }
 
@@ -862,7 +876,8 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
         info.claimedReward = claimable;
         require(token.balanceOf(rewardPool) >= toClaim, "Insufficient rewards in pool");
         totalRewardsInPool -= toClaim;
-        token.safeTransferFrom(rewardPool, msg.sender, toClaim);
+        rewardPoolContract.transferTokens(toClaim);
+        token.safeTransfer(msg.sender, toClaim);
         emit ReferrerRewardsClaimed(msg.sender, toClaim);
     }
 
@@ -939,14 +954,11 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
     }
 
     /**
-     * @notice Process pending rewards for a user
+     * @notice Check pending rewards for a user
      * @param user Address of the user
      * @return Total pending rewards
      */
-    function processPendingRewards(address user) external nonReentrant whenNotPaused returns (uint256) {
-        // Update rewards before processing
-        updateRewards();
-        
+    function checkPendingRewards(address user) external view returns (uint256) {
         uint256 totalPendingRewards = 0;
         
         // Calculate pending rewards for each stake
@@ -956,9 +968,6 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
                 uint256 accRewardPerToken = getAccRewardPerTokenForLockPeriod(stake.lockPeriod);
                 uint256 pendingReward = (stake.amount * (accRewardPerToken - stake.rewardDebt)) / PRECISION_FACTOR;
                 totalPendingRewards += pendingReward;
-                
-                // Update reward debt to current accumulated rewards
-                stake.rewardDebt = accRewardPerToken;
             }
         }
         
@@ -968,18 +977,78 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
             uint256 availableForRewards = poolBalance;
             
             if (availableForRewards < totalPendingRewards) {
-                emit UnableToDistributeRewards(user, availableForRewards, 0, totalPendingRewards, 0);
                 return 0;
             } else {
-                // Update tracking before transfer
-                totalRewardsInPool -= totalPendingRewards;
-                
-                // Transfer rewards
-                token.safeTransferFrom(rewardPool, user, totalPendingRewards);
                 return totalPendingRewards;
             }
         }
         
         return 0;
+    }
+
+    // --- View functions for global queries ---
+    /**
+     * @notice Get all staker addresses
+     */
+    function getAllStakerAddresses() external view returns (address[] memory) {
+        return allStakerAddresses;
+    }
+    /**
+     * @notice Get all staker addresses for a specific period
+     * @param lockPeriod The lock period (use LOCK_PERIOD_1, _2, or _3)
+     */
+    function getStakerAddressesByPeriod(uint256 lockPeriod) external view returns (address[] memory) {
+        return stakerAddressesByPeriod[lockPeriod];
+    }
+    /**
+     * @notice Get staked amounts for each staker for a specific period
+     * @param lockPeriod The lock period (use LOCK_PERIOD_1, _2, or _3)
+     * @return stakerAddresses, amounts arrays
+     */
+    function getStakedAmountsByPeriod(uint256 lockPeriod) external view returns (address[] memory, uint256[] memory) {
+        address[] memory stakers = stakerAddressesByPeriod[lockPeriod];
+        uint256[] memory amounts = new uint256[](stakers.length);
+        for (uint256 i = 0; i < stakers.length; i++) {
+            uint256 total = 0;
+            StakeInfo[] storage s = stakes[stakers[i]];
+            for (uint256 j = 0; j < s.length; j++) {
+                if (s[j].lockPeriod == lockPeriod && s[j].isActive) {
+                    total += s[j].amount;
+                }
+            }
+            amounts[i] = total;
+        }
+        return (stakers, amounts);
+    }
+    /**
+     * @notice Get all referrer addresses
+     */
+    function getAllReferrerAddresses() external view returns (address[] memory) {
+        return allReferrerAddresses;
+    }
+    /**
+     * @notice Get all referrer addresses for a specific period
+     * @param lockPeriod The lock period (use LOCK_PERIOD_1, _2, or _3)
+     */
+    function getReferrerAddressesByPeriod(uint256 lockPeriod) external view returns (address[] memory) {
+        return referrerAddressesByPeriod[lockPeriod];
+    }
+    /**
+     * @notice Get referrers who referred someone in a specific period
+     * @param lockPeriod The lock period (use LOCK_PERIOD_1, _2, or _3)
+     * @return referrers array (only those who actually referred at least one staker in that period)
+     */
+    function getActiveReferrersByPeriod(uint256 lockPeriod) external view returns (address[] memory) {
+        address[] memory referrers = referrerAddressesByPeriod[lockPeriod];
+        // Optionally filter to only those with at least one active referral in this period
+        // (already handled by tracking in _stakeTokenInternal)
+        return referrers;
+    }
+
+    /**
+     * @notice View all stakes for a user (for testing)
+     */
+    function getStakes(address user) external view returns (StakeInfo[] memory) {
+        return stakes[user];
     }
 }

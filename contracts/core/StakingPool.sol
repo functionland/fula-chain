@@ -84,62 +84,30 @@ contract StakingPool is
         emit StakingEngineAddressSet(_stakingEngine);
     }
     
-    /// @notice Grant allowance to StakingEngine to transfer tokens from this pool
-    /// @param amount Amount of tokens to approve
-    function grantAllowanceToStakingEngine(uint256 amount)
-        external
-        whenNotPaused
-        nonReentrant
-        onlyRole(ProposalTypes.ADMIN_ROLE)
-    {
-        if (amount == 0) revert InvalidAmount();
-        if (stakingEngine == address(0)) revert("StakingEngine not set");
-        
-        token.approve(stakingEngine, amount);
-        
-        emit AllowanceGranted(stakingEngine, amount);
-    }
-    
-    /// @notice Revoke allowance from StakingEngine
-    function revokeAllowanceFromStakingEngine()
-        external
-        whenNotPaused
-        nonReentrant
-        onlyRole(ProposalTypes.ADMIN_ROLE)
-    {
-        if (stakingEngine == address(0)) revert("StakingEngine not set");
-        
-        token.approve(stakingEngine, 0);
-        
-        emit AllowanceRevoked(stakingEngine);
-    }
-    
     /// @notice Get the current token balance of the pool
     /// @return The token balance
     function getBalance() external view returns (uint256) {
         return token.balanceOf(address(this));
     }
     
-    /// @notice Transfer tokens from the pool to the specified address
+    /// @notice Transfer tokens from the pool to the stakingEngine address
     /// @dev Can only be called by the StakingEngine
-    /// @param to Recipient address
     /// @param amount Amount to transfer
-    function transferTokens(address to, uint256 amount)
+    function transferTokens(uint256 amount)
         external
         whenNotPaused
         nonReentrant
         onlyStakingEngine
         returns (bool)
     {
-        if (to == address(0)) revert InvalidAddress();
         if (amount == 0) revert InvalidAmount();
         
         uint256 balance = token.balanceOf(address(this));
         if (amount > balance) revert InsufficientBalance(amount, balance);
         
-        token.safeTransfer(to, amount);
+        token.safeTransfer(stakingEngine, amount);
         
-        emit TokensTransferred(to, amount);
+        emit TokensTransferred(stakingEngine, amount);
         return true;
     }
     
@@ -150,6 +118,7 @@ contract StakingPool is
         external
         whenNotPaused
         nonReentrant
+        onlyStakingEngine
         returns (bool)
     {
         if (from == address(0)) revert InvalidAddress();
@@ -161,22 +130,20 @@ contract StakingPool is
     }
     
     /// @notice Emergency recovery of tokens in case of critical issues
-    /// @param to Address to recover tokens to
     /// @param amount Amount to recover
-    function emergencyRecoverTokens(address to, uint256 amount)
+    function emergencyRecoverTokens(uint256 amount)
         external
         nonReentrant
         onlyRole(ProposalTypes.ADMIN_ROLE)
     {
-        if (to == address(0)) revert InvalidAddress();
         if (amount == 0) revert InvalidAmount();
         
         uint256 balance = token.balanceOf(address(this));
         if (amount > balance) revert InsufficientBalance(amount, balance);
         
-        token.safeTransfer(to, amount);
+        token.safeTransfer(address(token), amount);
         
-        emit TokensTransferred(to, amount);
+        emit TokensTransferred(address(token), amount);
     }
     
     /// @notice Custom implementation of createProposal for pool-specific operations
@@ -220,5 +187,6 @@ contract StakingPool is
     {
         // Delegate the authorization to the governance module
         if (!_checkUpgrade(newImplementation)) revert("UpgradeNotAuthorized");
+        _initialized = false;
     }
 }
