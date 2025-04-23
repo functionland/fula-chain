@@ -7,7 +7,6 @@ interface IPool {
     function receiveTokens(address from, uint256 amount) external returns (bool);
 }
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -39,7 +38,7 @@ Maximum and Minimum Limits
 /// @title StakingEngine
 /// @notice Handles token staking with different lock periods and rewards
 /// @dev Non-upgradeable version of the staking contract with separate stake and reward pool addresses
-contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable {
+contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
     // Define roles for access control
@@ -193,18 +192,14 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
      * @param _rewardPool Address of the reward pool
      * @param initialOwner Address of the initial owner
      * @param initialAdmin Address of the initial admin
-     * @param name Name of the token
-     * @param symbol Symbol of the token
      */
     constructor(
         address _token,
         address _stakePool,
         address _rewardPool,
         address initialOwner,
-        address initialAdmin,
-        string memory name,
-        string memory symbol
-    ) ERC20(name, symbol) {
+        address initialAdmin
+    ) {
         require(
             _token != address(0) && 
             _stakePool != address(0) && 

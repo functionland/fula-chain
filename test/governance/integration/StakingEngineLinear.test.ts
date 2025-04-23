@@ -70,9 +70,7 @@ describe("StakingEngineLinear Security Tests", function () {
             stakePool,
             rewardPool,
             owner.address,
-            admin.address,
-            "Staking Token",
-            "STK"
+            admin.address
         ) as StakingEngineLinear;
         await StakingEngineLinear.waitForDeployment();
 
