@@ -31,7 +31,7 @@ async function main() {
     // Get the contract factories
     const StakingPool = await ethers.getContractFactory("StakingPool");
     const StakingPoolProxy = await ethers.getContractFactory("ERC1967Proxy");
-    const StakingEngine = await ethers.getContractFactory("StakingEngineLinear");
+    const StakingEngineLinear = await ethers.getContractFactory("StakingEngineLinear");
     
     // Validate environment variables
     const tokenAddress = process.env.TOKEN_ADDRESS?.trim();
@@ -87,22 +87,6 @@ async function main() {
             console.log(`Reward Pool balance: ${ethers.formatEther(rewardPoolBalance)}`);
         }
         
-        // Try to get name and symbol
-        try {
-            const tokenWithMetadata = new ethers.Contract(
-                tokenAddress,
-                [
-                    "function name() view returns (string)",
-                    "function symbol() view returns (string)"
-                ],
-                ethers.provider
-            );
-            const name = await tokenWithMetadata.name();
-            const symbol = await tokenWithMetadata.symbol();
-            console.log(`Token details: ${name} (${symbol})`);
-        } catch (metadataError: any) {
-            console.log("Token metadata (name/symbol) not available:", metadataError.message);
-        }
     } catch (error: any) {
         console.error("⚠️ Token contract validation failed:", error.message);
         console.log("This could indicate the token address is invalid or not accessible");
@@ -115,7 +99,7 @@ async function main() {
 
     // Wait for user confirmation
     await waitForUserConfirmation("\nPress Enter to continue with deployment or Ctrl+C to abort...");
-    console.log("Deploying StakingEngine and related contracts...");
+    console.log("Deploying StakingEngineLinear and related contracts...");
 
     let stakePool: any, rewardPool: any;
     let stakePoolAddress: string, rewardPoolAddress: string;
@@ -203,9 +187,9 @@ async function main() {
             rewardPool = await ethers.getContractAt("StakingPool", rewardPoolAddress);
         }
 
-        // Deploy StakingEngine
-        console.log("\nDeploying StakingEngine...");
-        const stakingEngine = await StakingEngine.deploy(
+        // Deploy StakingEngineLinear
+        console.log("\nDeploying StakingEngineLinear...");
+        const stakingEngine = await StakingEngineLinear.deploy(
             tokenAddress,
             stakePoolAddress,
             rewardPoolAddress,
@@ -213,19 +197,19 @@ async function main() {
             initialAdmin
         );
 
-        console.log("StakingEngine deployment transaction:", stakingEngine.deploymentTransaction ? stakingEngine.deploymentTransaction.hash : "Transaction hash not available");
+        console.log("StakingEngineLinear deployment transaction:", stakingEngine.deploymentTransaction ? stakingEngine.deploymentTransaction.hash : "Transaction hash not available");
         
         await stakingEngine.waitForDeployment();
         const contractAddress = await stakingEngine.getAddress();
 
-        console.log("StakingEngine deployed to:", contractAddress);
+        console.log("StakingEngineLinear deployed to:", contractAddress);
         console.log("Token address:", tokenAddress);
         console.log("Stake Pool address:", stakePoolAddress);
         console.log("Reward Pool address:", rewardPoolAddress);
         console.log("Initial owner:", initialOwner);
         console.log("Initial admin:", initialAdmin);
 
-        // Set up permissions - Configure StakingPool contracts to interact with StakingEngine
+        // Set up permissions - Configure StakingPool contracts to interact with StakingEngineLinear
         console.log("\nSetting up permissions...");
         console.log("IMPORTANT: This part requires the deployer to have ADMIN_ROLE on the pool addresses.");
         console.log("If you don't have admin rights, you'll need to manually configure these permissions later.");
@@ -233,26 +217,26 @@ async function main() {
         await waitForUserConfirmation("\nPress Enter to attempt setting up permissions or Ctrl+C to skip...");
         
         try {
-            // Set StakingEngine address on both pools
-            console.log("Setting StakingEngine address on stake pool...");
+            // Set StakingEngineLinear address on both pools
+            console.log("Setting StakingEngineLinear address on stake pool...");
             const setStakingEngineTx1 = await stakePool.connect(await ethers.getSigner(initialOwner)).setStakingEngine(contractAddress);
             await setStakingEngineTx1.wait();
-            console.log("Stake pool configured with StakingEngine address!");
+            console.log("Stake pool configured with StakingEngineLinear address!");
             
-            console.log("Setting StakingEngine address on reward pool...");
+            console.log("Setting StakingEngineLinear address on reward pool...");
             const setStakingEngineTx2 = await rewardPool.connect(await ethers.getSigner(initialOwner)).setStakingEngine(contractAddress);
             await setStakingEngineTx2.wait();
-            console.log("Reward pool configured with StakingEngine address!");
+            console.log("Reward pool configured with StakingEngineLinear address!");
             
-            // Grant allowances from pools to StakingEngine
-            console.log("Granting allowance from stake pool to StakingEngine...");
+            // Grant allowances from pools to StakingEngineLinear
+            console.log("Granting allowance from stake pool to StakingEngineLinear...");
             const stakePoolAllowanceTx = await stakePool.connect(await ethers.getSigner(initialOwner)).grantAllowanceToStakingEngine(
                 ethers.parseEther(approvalAmount)
             );
             await stakePoolAllowanceTx.wait();
             console.log("Stake pool allowance granted successfully!");
             
-            console.log("Granting allowance from reward pool to StakingEngine...");
+            console.log("Granting allowance from reward pool to StakingEngineLinear...");
             const rewardPoolAllowanceTx = await rewardPool.connect(await ethers.getSigner(initialOwner)).grantAllowanceToStakingEngine(
                 ethers.parseEther(approvalAmount)
             );
@@ -271,7 +255,7 @@ async function main() {
         await waitForUserConfirmation("Press Enter to reconcile pool balances or Ctrl+C to skip...");
         
         try {
-            console.log("Calling reconcilePoolBalance() on StakingEngine...");
+            console.log("Calling reconcilePoolBalance() on StakingEngineLinear...");
             const reconcileTx = await stakingEngine.connect(await ethers.getSigner(initialOwner)).reconcilePoolBalance();
             await reconcileTx.wait();
             console.log("Pool balances reconciled successfully!");
@@ -289,7 +273,7 @@ async function main() {
             console.error("Failed to reconcile pool balances:", error.message);
             console.log("\nManual reconciliation required:");
             console.log(`1. Connect to the contract with the owner address (${initialOwner})`);
-            console.log(`2. Call reconcilePoolBalance() on the StakingEngine contract (${contractAddress})`);
+            console.log(`2. Call reconcilePoolBalance() on the StakingEngineLinear contract (${contractAddress})`);
         }
 
         // Verify contract if API key is available
@@ -302,8 +286,8 @@ async function main() {
                 await new Promise(resolve => setTimeout(resolve, 15000)); // Wait 15 seconds per block
             }
             
-            // Verify the deployed StakingEngine
-            console.log("Verifying StakingEngine contract on Etherscan...");
+            // Verify the deployed StakingEngineLinear
+            console.log("Verifying StakingEngineLinear contract on Etherscan...");
             try {
                 await hre.run("verify:verify", {
                     address: contractAddress,
@@ -315,7 +299,7 @@ async function main() {
                         initialAdmin
                     ],
                 });
-                console.log("StakingEngine contract verified!");
+                console.log("StakingEngineLinear contract verified!");
             } catch (error: any) {
                 console.error("Verification failed:", error.message);
             }
@@ -342,7 +326,7 @@ async function main() {
         
         console.log("\nDeployment completed successfully!");
         console.log("Summary:");
-        console.log("- StakingEngine:", contractAddress);
+        console.log("- StakingEngineLinear:", contractAddress);
         console.log("- Stake Pool:", stakePoolAddress);
         console.log("- Reward Pool:", rewardPoolAddress);
         console.log("- Token:", tokenAddress);
@@ -368,7 +352,7 @@ main()
     });
 
 // Run with environment variables:
-// TOKEN_ADDRESS=0x... INITIAL_OWNER=0x... INITIAL_ADMIN=0x... TOKEN_NAME="Name" TOKEN_SYMBOL="SYM" APPROVAL_AMOUNT="100000000" DEPLOY_POOLS=true ETHERSCAN_API_KEY=abc... npx hardhat run scripts/deployStakingEngine.ts --network mainnet
+// TOKEN_ADDRESS=0x... INITIAL_OWNER=0x... INITIAL_ADMIN=0x... APPROVAL_AMOUNT="100000000" DEPLOY_POOLS=true ETHERSCAN_API_KEY=abc... npx hardhat run scripts/deployStakingEngineLinear.ts --network mainnet
 // 
 // Or for using existing pools:
-// TOKEN_ADDRESS=0x... STAKE_POOL_ADDRESS=0x... REWARD_POOL_ADDRESS=0x... npx hardhat run scripts/deployStakingEngine.ts --network mainnet
+// TOKEN_ADDRESS=0x... STAKE_POOL_ADDRESS=0x... REWARD_POOL_ADDRESS=0x... npx hardhat run scripts/deployStakingEngineLinear.ts --network mainnet
