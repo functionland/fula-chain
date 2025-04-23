@@ -26,20 +26,7 @@ User cannot claim rewards before the staking priod is over
 | LOCK_PERIOD_2 | 180 days | 6% | 1% | 
 | LOCK_PERIOD_3 | 365 days | 15% | 4% |
 */
-/*
-Early Unstaking Penalty
-| Time Remaining | Penalty Applied | 
-|----------------|-----------------| 
-| Very short period (< 3 dayS) | 95% penalty + 20% principal penalty | 
-| > 90% time remaining | 90% penalty | 
-| > 75% time remaining | 75% penalty | 
-| > 60% time remaining | 60% penalty | 
-| > 45% time remaining | 45% penalty | 
-| > 30% time remaining | 30% penalty | 
-| > 15% time remaining | 20% penalty | 
-| < 15% time remaining | 10% penalty | 
-| Full lock period elapsed | 0% (no penalty) |
-*/
+
 /*
 Maximum and Minimum Limits
 | Limit | Value | Description | 
@@ -649,6 +636,15 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
             lockPeriod == LOCK_PERIOD_1 || lockPeriod == LOCK_PERIOD_2 || lockPeriod == LOCK_PERIOD_3,
             "Invalid lock period"
         );
+
+        // Limit the number of active stakes per user
+        uint256 activeStakes = 0;
+        for (uint256 i = 0; i < stakes[msg.sender].length; i++) {
+            if (stakes[msg.sender][i].isActive) {
+                activeStakes++;
+            }
+        }
+        require(activeStakes < 100, "Maximum number of active stakes reached");
         
         // Make the zero address handling explicit
         if (referrer == address(0)) {
@@ -682,6 +678,14 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
             lockPeriod == LOCK_PERIOD_1 || lockPeriod == LOCK_PERIOD_2 || lockPeriod == LOCK_PERIOD_3,
             "Invalid lock period"
         );
+        // Limit the number of active stakes per user
+        uint256 activeStakes = 0;
+        for (uint256 i = 0; i < stakes[msg.sender].length; i++) {
+            if (stakes[msg.sender][i].isActive) {
+                activeStakes++;
+            }
+        }
+        require(activeStakes < 100, "Maximum number of active stakes reached");
 
         _stakeTokenInternal(amount, lockPeriod, address(0));
         
