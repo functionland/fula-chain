@@ -15,6 +15,7 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "../governance/libraries/ProposalTypes.sol";
+import "hardhat/console.sol";
 
 /*
 Staking Periods and Rewards
@@ -143,9 +144,6 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
     IPool public rewardPoolContract;
 
     // Tracking variables for internal accounting
-    uint256 public totalStakedInPool;    // Total tokens staked by users
-    uint256 public totalRewardsInPool;   // Total tokens allocated for rewards
-
     uint256 public accRewardPerToken90Days;
     uint256 public accRewardPerToken180Days;
     uint256 public accRewardPerToken365Days;
@@ -249,8 +247,6 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
         rewardPoolContract = IPool(_rewardPool);
         
         // Initialize tracking variables
-        totalStakedInPool = 0;
-        totalRewardsInPool = 0;
         lastUpdateTime = block.timestamp;
     }
 
@@ -281,9 +277,6 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
         token.safeTransferFrom(msg.sender, rewardPool, amount);
         rewardPoolContract.receiveTokens(msg.sender, amount);
         
-        // Update tracking
-        totalRewardsInPool += amount;
-        
         emit RewardsAdded(amount);
     }
 
@@ -293,8 +286,9 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
      */
     function getExcessRewards() public view returns (uint256) {
         uint256 requiredRewards = calculateRequiredRewards();
-        if (totalRewardsInPool > requiredRewards) {
-            return totalRewardsInPool - requiredRewards;
+        uint256 poolBalance = token.balanceOf(rewardPool);
+        if (poolBalance > requiredRewards) {
+            return poolBalance - requiredRewards;
         }
         return 0;
     }
@@ -317,47 +311,20 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
      * @return totalPoolBalance Expected total balance in pool
      * @return stakedAmount Amount of staked tokens
      * @return rewardsAmount Amount of reward tokens
-     * @return actualBalance Actual token balance in pool
      */
     function getPoolStatus() external view returns (
         uint256 totalPoolBalance,
         uint256 stakedAmount,
-        uint256 rewardsAmount,
-        uint256 actualBalance
+        uint256 rewardsAmount
     ) {
-        totalPoolBalance = totalStakedInPool + totalRewardsInPool;
-        stakedAmount = totalStakedInPool;
-        rewardsAmount = totalRewardsInPool;
-        actualBalance = token.balanceOf(stakePool) + token.balanceOf(rewardPool);
+        totalPoolBalance = token.balanceOf(stakePool) + token.balanceOf(rewardPool);
+        stakedAmount = token.balanceOf(stakePool);
+        rewardsAmount = token.balanceOf(rewardPool);
         
-        return (totalPoolBalance, stakedAmount, rewardsAmount, actualBalance);
+        return (totalPoolBalance, stakedAmount, rewardsAmount);
     }
 
-    /**
-     * @notice Reconcile pool balance if accounting gets out of sync
-     */
-    function reconcilePoolBalance() external onlyRole(ProposalTypes.ADMIN_ROLE) {
-        uint256 expectedBalance = totalStakedInPool + totalRewardsInPool;
-        uint256 actualBalance = token.balanceOf(stakePool) + token.balanceOf(rewardPool);
-        
-        if (actualBalance > expectedBalance) {
-            // Excess tokens found, add to rewards
-            uint256 excess = actualBalance - expectedBalance;
-            totalRewardsInPool += excess;
-            emit PoolBalanceReconciled(excess, true);
-        } else if (actualBalance < expectedBalance) {
-            // Shortage found, reduce rewards (never reduce staked amount)
-            uint256 shortage = expectedBalance - actualBalance;
-            if (shortage <= totalRewardsInPool) {
-                totalRewardsInPool -= shortage;
-            } else {
-                // Critical situation - not enough rewards to cover shortage
-                totalRewardsInPool = 0;
-                emit EmergencyAction("Critical pool shortage detected", block.timestamp);
-            }
-            emit PoolBalanceReconciled(shortage, false);
-        }
-    }
+
 
     /**
      * @notice Get all stakes for a user
@@ -536,7 +503,6 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
         
         // Update total staked amounts
         totalStaked += amount;
-        totalStakedInPool += amount;
         
         if (lockPeriod == LOCK_PERIOD_1) {
             totalStaked90Days += amount;
@@ -604,9 +570,6 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
                 // Update rewards by period
                 referrerRewardsByPeriod[referrer][lockPeriod] += totalReferrerReward;
                 
-                // Update total rewards in pool to account for referrer rewards
-                totalRewardsInPool += totalReferrerReward;
-                
                 emit ReferrerRewardUpdated(referrer, msg.sender, stakes[msg.sender].length - 1, totalReferrerReward, lockPeriod);
             }
         }
@@ -667,9 +630,6 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
             if (availableForRewards < pendingRewards) {
                 emit UnableToDistributeRewards(msg.sender, availableForRewards, amount, pendingRewards, lockPeriod);
             } else {
-                // Update tracking before transfer
-                totalRewardsInPool -= pendingRewards;
-                
                 // Transfer rewards
                 rewardPoolContract.transferTokens(pendingRewards);
                 token.safeTransfer(msg.sender, pendingRewards);
@@ -792,7 +752,6 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
 
         // Update total staked amounts
         totalStaked -= stakedAmount;
-        totalStakedInPool -= stakedAmount;
         if (lockPeriod == LOCK_PERIOD_1) {
             totalStaked90Days -= stakedAmount;
         } else if (lockPeriod == LOCK_PERIOD_2) {
@@ -853,7 +812,6 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
         stake.rewardDebt = claimable;
         // Transfer rewards
         require(token.balanceOf(rewardPool) >= toClaim, "Insufficient rewards in pool");
-        totalRewardsInPool -= toClaim;
         rewardPoolContract.transferTokens(toClaim);
         token.safeTransfer(msg.sender, toClaim);
         emit RewardDistributionLog(msg.sender, stake.amount, toClaim, 0, token.balanceOf(rewardPool), stake.lockPeriod, timeElapsed);
@@ -875,7 +833,6 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
         uint256 toClaim = claimable - alreadyClaimed;
         info.claimedReward = claimable;
         require(token.balanceOf(rewardPool) >= toClaim, "Insufficient rewards in pool");
-        totalRewardsInPool -= toClaim;
         rewardPoolContract.transferTokens(toClaim);
         token.safeTransfer(msg.sender, toClaim);
         emit ReferrerRewardsClaimed(msg.sender, toClaim);
@@ -910,7 +867,7 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
         totalNeededRewards = (newTotalStaked * fixedAPY) / 100;
         
         // Get available rewards in the reward pool
-        uint256 availableRewards = totalRewardsInPool;
+        uint256 availableRewards = token.balanceOf(rewardPool);
         
         // Calculate projected APY based on available rewards
         if (availableRewards >= totalNeededRewards) {
@@ -948,7 +905,7 @@ contract StakingEngineLinear is ERC20, AccessControl, ReentrancyGuard, Pausable 
         uint256 totalNeededRewards = (totalStakedForPeriod * fixedAPY) / 100;
         
         // Get available rewards in the reward pool
-        uint256 availableRewards = totalRewardsInPool;
+        uint256 availableRewards = token.balanceOf(rewardPool);
         
         return availableRewards >= totalNeededRewards;
     }

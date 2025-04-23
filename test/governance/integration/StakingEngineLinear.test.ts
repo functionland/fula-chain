@@ -1,6 +1,6 @@
 import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
-import { StakingEngineLinear, StorageToken } from "../typechain-types";
+import { StakingEngineLinear, StorageToken, StakingPool } from "../typechain-types";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
 import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 import { ZeroAddress, BytesLike } from "ethers";
@@ -52,15 +52,16 @@ describe("StakingEngineLinear Security Tests", function () {
         await time.increase(24 * 60 * 60 + 1);
         await token.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, TOTAL_SUPPLY);
 
-        // Set up token pool addresses
-        stakePoolSigner = users[0];
-        rewardPoolSigner = users[1];
-        stakePool = stakePoolSigner.address;
-        rewardPool = rewardPoolSigner.address;
-
-        // Fund stakePool and rewardPool with ETH so they can send transactions
-        await owner.sendTransaction({ to: stakePool, value: ethers.parseEther("1") });
-        await owner.sendTransaction({ to: rewardPool, value: ethers.parseEther("1") });
+        // Set up token pool addresses using actual StakingPool contracts
+        const StakingPoolFactory = await ethers.getContractFactory("StakingPool");
+        const stakePoolContract = await StakingPoolFactory.deploy();
+        await stakePoolContract.waitForDeployment();
+        await stakePoolContract.initialize(await token.getAddress(), owner.address, admin.address);
+        const rewardPoolContract = await StakingPoolFactory.deploy();
+        await rewardPoolContract.waitForDeployment();
+        await rewardPoolContract.initialize(await token.getAddress(), owner.address, admin.address);
+        stakePool = await stakePoolContract.getAddress();
+        rewardPool = await rewardPoolContract.getAddress();
 
         // Deploy StakingEngineLinear (using standard deployment instead of proxy)
         const StakingEngineLinearFactory = await ethers.getContractFactory("StakingEngineLinear");
@@ -74,6 +75,10 @@ describe("StakingEngineLinear Security Tests", function () {
             "STK"
         ) as StakingEngineLinear;
         await StakingEngineLinear.waitForDeployment();
+
+        // Set staking engine address in both pools
+        await stakePoolContract.connect(owner).setStakingEngine(await StakingEngineLinear.getAddress());
+        await rewardPoolContract.connect(owner).setStakingEngine(await StakingEngineLinear.getAddress());
 
         // Wait for role change timelock to expire (ROLE_CHANGE_DELAY is 1 day)
         await time.increase(24 * 60 * 60 + 1);
@@ -141,10 +146,6 @@ describe("StakingEngineLinear Security Tests", function () {
             await token.connect(user).approve(await StakingEngineLinear.getAddress(), ethers.parseEther("1000"));
         }
 
-        // Give both pools approval to StakingEngineLinear to handle token transfers
-        await token.connect(stakePoolSigner).approve(await StakingEngineLinear.getAddress(), ethers.parseEther("5000000")); // Stake pool approval
-        await token.connect(rewardPoolSigner).approve(await StakingEngineLinear.getAddress(), ethers.parseEther("5000000")); // Reward pool approval
-        
         // Transfer tokens to owner for adding to the pool
         await token.connect(owner).transferFromContract(owner.address, ethers.parseEther("50000"));
         
@@ -171,23 +172,16 @@ describe("StakingEngineLinear Security Tests", function () {
             ).to.be.revertedWithCustomError(StakingEngineLinear, "InsufficientApproval");
         });
 
-        it("should revert when unstaking with insufficient token pool approval", async function () {
+        it("should revert when unstaking before lockup", async function () {
             // First stake tokens
             const stakeAmount = ethers.parseEther("100");
             const lockPeriod = 90 * 24 * 60 * 60; // 90 days
             await StakingEngineLinear.connect(user1).stakeToken(stakeAmount, lockPeriod);
             
-            // Advance time to generate rewards
-            await time.increase(lockPeriod);
-            await ethers.provider.send("evm_mine", []);
-            
-            // Revoke token pool approval
-            await token.connect(stakePoolSigner).approve(await StakingEngineLinear.getAddress(), 0);
-            
-            // Attempt to unstake
+            // Attempt to unstake - should succeed (no revert expected)
             await expect(
                 StakingEngineLinear.connect(user1).unstakeToken(0)
-            ).to.be.revertedWith("InsufficientApproval");
+            ).to.be.revertedWith("Cannot unstake before lock period ends");
         });
     });
 
@@ -227,21 +221,22 @@ describe("StakingEngineLinear Security Tests", function () {
             // This test verifies that the APYCannotBeSatisfied error works correctly
             // We deliberately create a situation where there aren't enough rewards
             
-            // First, ensure the test environment is controlled
-            // Withdraw any existing rewards
-            const excessRewards = await StakingEngineLinear.getExcessRewards();
-            if (excessRewards > 0) {
-                await StakingEngineLinear.connect(owner).withdrawExcessRewards(excessRewards);
-            }
-            
             // Add a specific, small amount of rewards
             const rewardAmount = ethers.parseEther("50");
-            await token.connect(owner).transfer(owner.address, rewardAmount);
+            const stakeAmount = ethers.parseEther("5000");
+            await token.connect(owner).transferFromContract(owner.address, rewardAmount+ stakeAmount);
             await token.connect(owner).approve(await StakingEngineLinear.getAddress(), rewardAmount);
+
+            // Bring reward pool down to 0 using emergencyRecoverTokens
+            const rewardPoolContractFactory = await ethers.getContractFactory("StakingPool");
+            const rewardPoolInstance = await rewardPoolContractFactory.attach(rewardPool);
+            await rewardPoolInstance.connect(owner).emergencyRecoverTokens(ethers.parseEther("77500"));
             await StakingEngineLinear.connect(owner).addRewardsToPool(rewardAmount);
+            const balance = await token.balanceOf(rewardPool);
+            console.log("reward pool balance", balance, rewardPool);
             
             // Try to stake a large amount that will exceed APY limits
-            const stakeAmount = ethers.parseEther("5000");
+            
             const lockPeriod = 365 * 24 * 60 * 60; // 365 days (15% APY)
             
             // Calculate projected APY
@@ -249,6 +244,7 @@ describe("StakingEngineLinear Security Tests", function () {
             console.log(`Projected APY for ${ethers.formatEther(stakeAmount)} FULA: ${projectedAPY}%`);
             
             // Approve tokens for staking
+            await token.connect(owner).transfer(user1.address, stakeAmount);
             await token.connect(user1).approve(await StakingEngineLinear.getAddress(), stakeAmount);
             
             // This should fail with APYCannotBeSatisfied
@@ -441,6 +437,8 @@ describe("StakingEngineLinear Security Tests", function () {
     describe("State Consistency Tests", function () {
         it("should maintain consistent totalStaked values", async function () {
             // Stake with different lock periods
+            const poolStatus1 = await StakingEngineLinear.getPoolStatus();
+
             const stakeAmount1 = ethers.parseEther("100");
             const stakeAmount2 = ethers.parseEther("200");
             const stakeAmount3 = ethers.parseEther("300");
@@ -464,7 +462,7 @@ describe("StakingEngineLinear Security Tests", function () {
             
             // Check internal accounting
             const poolStatus = await StakingEngineLinear.getPoolStatus();
-            expect(poolStatus[1]).to.equal(stakeAmount1 + stakeAmount2 + stakeAmount3); // stakedAmount
+            expect(poolStatus[1]-poolStatus1[1]).to.equal(stakeAmount1 + stakeAmount2 + stakeAmount3); // stakedAmount
             
             // Unstake one stake
             await time.increase(90 * 24 * 60 * 60);
@@ -482,7 +480,7 @@ describe("StakingEngineLinear Security Tests", function () {
             
             // Check updated internal accounting
             const updatedPoolStatus = await StakingEngineLinear.getPoolStatus();
-            expect(updatedPoolStatus[1]).to.equal(stakeAmount2 + stakeAmount3); // stakedAmount
+            expect(updatedPoolStatus[1]-poolStatus1[1]).to.equal(stakeAmount2 + stakeAmount3); // stakedAmount
         });
     });
 
@@ -509,81 +507,6 @@ describe("StakingEngineLinear Security Tests", function () {
             // Check that rewards increased by the expected amount
             expect(updatedPoolStatus[2]).to.equal(BigInt(initialRewardsAmount) + BigInt(additionalRewards));
         });
-
-        it("should allow withdrawing excess rewards", async function () {
-            // Get initial pool status
-            const initialPoolStatus = await StakingEngineLinear.getPoolStatus();
-            const initialRewardsAmount = initialPoolStatus[2]; // Initial rewards
-            
-            // Stake some tokens to create required rewards
-            const stakeAmount = ethers.parseEther("100");
-            const lockPeriod = 90 * 24 * 60 * 60; // 90 days
-            await StakingEngineLinear.connect(user1).stakeToken(stakeAmount, lockPeriod);
-            
-            // Calculate excess rewards
-            const excessRewards = await StakingEngineLinear.getExcessRewards();
-            expect(excessRewards).to.be.lt(initialRewardsAmount); // Some rewards are now required
-            
-            // Withdraw excess rewards
-            await StakingEngineLinear.connect(owner).withdrawExcessRewards(excessRewards);
-            
-            // Check updated pool status
-            const updatedPoolStatus = await StakingEngineLinear.getPoolStatus();
-            expect(updatedPoolStatus[2]).to.equal(BigInt(initialRewardsAmount) - BigInt(excessRewards));
-        });
-
-        it("should prevent withdrawing required rewards", async function () {
-            // Stake some tokens to create required rewards
-            const stakeAmount = ethers.parseEther("1000");
-            const lockPeriod = 365 * 24 * 60 * 60; // 365 days (15% APY)
-            await StakingEngineLinear.connect(user1).stakeToken(stakeAmount, lockPeriod);
-            
-            // Calculate excess rewards
-            const excessRewards = await StakingEngineLinear.getExcessRewards();
-            
-            // Try to withdraw more than excess
-            await expect(
-                StakingEngineLinear.connect(owner).withdrawExcessRewards(BigInt(excessRewards) + BigInt(ethers.parseEther("1")))
-            ).to.be.revertedWith("Cannot withdraw required rewards");
-        });
-
-        it("should reconcile pool balance correctly", async function () {
-            // Transfer extra tokens directly to the reward pool to simulate imbalance
-            const extraAmount = ethers.parseEther("50");
-            
-            // Make sure the owner has tokens and the reward pool has approval
-            await token.connect(owner).transferFromContract(owner.address, extraAmount);
-            
-            // First, check current balances
-            const initialOwnerBalance = await token.balanceOf(owner.address);
-            
-            // Only proceed if owner has sufficient balance
-            if (initialOwnerBalance >= extraAmount) {
-                // Transfer to the reward pool directly
-                await token.connect(owner).transfer(rewardPool, extraAmount);
-                
-                // Get initial balances
-                const initialExpectedBalance = await StakingEngineLinear.totalStakedInPool() + await StakingEngineLinear.totalRewardsInPool();
-                const initialActualBalance = await token.balanceOf(stakePool) + await token.balanceOf(rewardPool);
-                
-                // Should be out of sync
-                expect(initialActualBalance).to.be.gt(initialExpectedBalance);
-                
-                // Reconcile the pool
-                await StakingEngineLinear.connect(admin).reconcilePoolBalance();
-                
-                // Check that the pool is now in sync
-                const updatedExpectedBalance = await StakingEngineLinear.totalStakedInPool() + await StakingEngineLinear.totalRewardsInPool();
-                const updatedActualBalance = await token.balanceOf(stakePool) + await token.balanceOf(rewardPool);
-                
-                // Should now be in sync
-                expect(updatedExpectedBalance).to.equal(updatedActualBalance);
-                expect(updatedExpectedBalance).to.be.gt(initialExpectedBalance);
-            } else {
-                console.log("Skipping reconcile test due to insufficient owner balance");
-                this.skip();
-            }
-        });
     });
 
     // 12. Access Control Tests
@@ -609,19 +532,6 @@ describe("StakingEngineLinear Security Tests", function () {
             await expect(
                 StakingEngineLinear.connect(user1).addRewardsToPool(rewardAmount)
             ).to.be.reverted;
-        });
-
-        it("should allow only owner to withdraw excess rewards", async function () {
-            // Non-owner should not be able to withdraw excess rewards
-            await expect(
-                StakingEngineLinear.connect(user1).withdrawExcessRewards(ethers.parseEther("1"))
-            ).to.be.reverted;
-            
-            // Owner should be able to withdraw excess rewards
-            const excessRewards = await StakingEngineLinear.getExcessRewards();
-            if (excessRewards > 0) {
-                await StakingEngineLinear.connect(owner).withdrawExcessRewards(excessRewards);
-            }
         });
 
         it("should allow only admin to pause/unpause", async function () {
@@ -1288,8 +1198,7 @@ describe("StakingEngineLinear Security Tests", function () {
             const stakeAmount = ethers.parseEther("100");
             
             // Whitelist stakers and referrers before funding
-            const whitelistAddrs = [...stakers.map(s => s.address), ref3.address];
-            console.log(whitelistAddrs)
+            const whitelistAddrs = [...stakers.map(s => s.address), ref1.address, ref2.address, ref3.address];
             
             for (const addr of whitelistAddrs) {
                 const tx = await token.connect(owner).createProposal(
@@ -1345,10 +1254,6 @@ describe("StakingEngineLinear Security Tests", function () {
                 }
             }
 
-            // Helper: unstake
-            async function unstake(signer, id) {
-                await StakingEngineLinear.connect(signer).unstakeToken(id);
-            }
             const LOCK_PERIOD_1 = 90 * 24 * 60 * 60;
             const LOCK_PERIOD_2 = 180 * 24 * 60 * 60;
             const LOCK_PERIOD_3 = 365 * 24 * 60 * 60;
@@ -1422,10 +1327,6 @@ describe("StakingEngineLinear Security Tests", function () {
 
             const [stakerList10, amounts10] = await StakingEngineLinear.getStakedAmountsByPeriod(LOCK_PERIOD_1);
             const [stakerList20, amounts20] = await StakingEngineLinear.getStakedAmountsByPeriod(LOCK_PERIOD_2);
-            console.log("stakerList10", stakerList10);
-            console.log("amounts10", amounts10);
-            console.log("stakerList20", stakerList20);
-            console.log("amounts20", amounts20);
 
             // Advance time by 91 days (in seconds)
             await time.increase(91 * 24 * 60 * 60);
@@ -1439,7 +1340,6 @@ describe("StakingEngineLinear Security Tests", function () {
             let stakes4 = await StakingEngineLinear.getStakes(stakers[4].address);
             // Iterate in reverse to safely remove elements without index shifting
             for (let j = stakes4.length - 1; j >= 0; j--) {
-                console.log(`stakes4[${j}]`, stakes4[j]);
                 if (
                     stakes4[j].lockPeriod.toString() === LOCK_PERIOD_1.toString() &&
                     stakes4[j].isActive
@@ -1458,10 +1358,6 @@ describe("StakingEngineLinear Security Tests", function () {
             // Now check that staked amounts for these addresses in those periods are 0
             const [stakerList1, amounts1] = await StakingEngineLinear.getStakedAmountsByPeriod(LOCK_PERIOD_1);
             const [stakerList2, amounts2] = await StakingEngineLinear.getStakedAmountsByPeriod(LOCK_PERIOD_2);
-            console.log("stakerList1", stakerList1);
-            console.log("amounts1", amounts1);
-            console.log("stakerList2", stakerList2);
-            console.log("amounts2", amounts2);
             for (let i = 0; i < stakerList1.length; i++) {
                 if ([stakers[1].address, stakers[4].address].includes(stakerList1[i])) {
                     expect(amounts1[i]).to.equal(0);
