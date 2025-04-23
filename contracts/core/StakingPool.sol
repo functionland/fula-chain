@@ -20,8 +20,6 @@ contract StakingPool is
     // Events
     event TokensReceived(address indexed from, uint256 amount);
     event TokensTransferred(address indexed to, uint256 amount);
-    event AllowanceGranted(address indexed spender, uint256 amount);
-    event AllowanceRevoked(address indexed spender);
     event TokenAddressSet(address indexed tokenAddress);
     event StakingEngineAddressSet(address indexed stakingEngine);
 
