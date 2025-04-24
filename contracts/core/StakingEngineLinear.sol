@@ -67,7 +67,7 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
     uint256 public constant MAX_STAKES_TO_PROCESS = 100;
 
     // Referrer reward claim period
-    uint256 public constant REFERRER_CLAIM_PERIOD = 90 days;
+    uint256 public constant REFERRER_CLAIM_PERIOD = 1 days;
 
     struct StakeInfo {
         uint256 amount;

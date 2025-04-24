@@ -154,17 +154,93 @@ async function main() {
         console.log("Setting StakingEngineLinear address on reward pool...");
         await rewardPool.connect(deployer).setStakingEngine(stakingEngineAddress);
         console.log("Reward pool configured with StakingEngineLinear address");
-        
-        // 9. Get pool status
+
+        // 8. Set quorum and transaction limit for StorageToken using admin wallet
+        console.log("\nSetting quorum and transaction limit for StorageToken (admin wallet)...");
+        const storageTokenWithAdmin = storageToken.connect(admin);
+        await storageTokenWithAdmin.setRoleQuorum(ADMIN_ROLE, 2);
+        console.log("Quorum set for StorageToken");
+        await storageTokenWithAdmin.setRoleTransactionLimit(ADMIN_ROLE, approvalAmount);
+        console.log("Transaction limit set for StorageToken");
+
+        // 9. Whitelist rewardPoolAddress in StorageToken via proposal mechanism
+        console.log("\nWhitelisting rewardPoolAddress in StorageToken via proposal...");
+        const storageTokenWithOwner = storageToken.connect(deployer);
+        const ADD_WHITELIST_TYPE = 5;
+        const ZERO_HASH = ethers.ZeroHash;
+        const ZERO_ADDRESS = ethers.ZeroAddress;
+        const whitelistProposalTx = await storageTokenWithAdmin.createProposal(
+            ADD_WHITELIST_TYPE, 0, rewardPoolAddress, ZERO_HASH, 0, ZERO_ADDRESS
+        );
+        const whitelistReceipt = await whitelistProposalTx.wait();
+        const proposalCreatedLog = whitelistReceipt.logs.find(log => {
+            try {
+                const parsed = storageToken.interface.parseLog(log);
+                return parsed?.name === "ProposalCreated";
+            } catch {
+                return false;
+            }
+        });
+        const whitelistProposalId = proposalCreatedLog ? 
+            storageToken.interface.parseLog(proposalCreatedLog)?.args[0] : 
+            undefined;
+        console.log("Whitelist proposalID:", whitelistProposalId);
+        await storageTokenWithOwner.approveProposal(whitelistProposalId);
+        console.log("Proposal approved by second admin");
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine", []);
+        await storageTokenWithAdmin.executeProposal(whitelistProposalId);
+        console.log("Whitelist proposal executed");
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine", []);
+
+        // 10. Transfer tokens to rewardPoolAddress (no proposal)
+        console.log("\nTransferring tokens to rewardPoolAddress from StorageToken (admin wallet)...");
+        await storageTokenWithAdmin.transferFromContract(rewardPoolAddress, poolInitialAmount);
+        console.log("Tokens transferred to rewardPoolAddress");
+
+        // 11. Whitelist hardhat account in StorageToken via proposal mechanism
+        console.log("\nWhitelisting deployer account in StorageToken via proposal...");
+        const whitelistProposalTx2 = await storageTokenWithAdmin.createProposal(
+            ADD_WHITELIST_TYPE, 0, deployer, ZERO_HASH, 0, ZERO_ADDRESS
+        );
+        const whitelistReceipt2 = await whitelistProposalTx2.wait();
+        const proposalCreatedLog2 = whitelistReceipt2.logs.find(log => {
+            try {
+                const parsed = storageToken.interface.parseLog(log);
+                return parsed?.name === "ProposalCreated";
+            } catch {
+                return false;
+            }
+        });
+        const whitelistProposalId2 = proposalCreatedLog2 ? 
+            storageToken.interface.parseLog(proposalCreatedLog2)?.args[0] : 
+            undefined;
+        console.log("Whitelist proposalID2:", whitelistProposalId2);
+        await storageTokenWithOwner.approveProposal(whitelistProposalId2);
+        console.log("Proposal approved by second admin");
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine", []);
+        await storageTokenWithAdmin.executeProposal(whitelistProposalId2);
+        console.log("Whitelist proposal executed");
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine", []);
+
+        // 11-2. Transfer tokens to deployer (no proposal)
+        console.log("\nTransferring tokens to deployer from StorageToken (admin wallet)...");
+        await storageTokenWithAdmin.transferFromContract(deployer, approvalAmount);
+        console.log("Tokens transferred to deployer");
+
+        // 12. Get pool status
         console.log("\nFetching pool status...");
-        const [totalPoolBalance, stakedAmount, rewardsAmount, actualBalance] = await stakingEngine.getPoolStatus();
+        const [totalPoolBalance, stakedAmount, rewardsAmount] = await stakingEngine.getPoolStatus();
         console.log("Pool status:");
         console.log(`- Total Pool Balance: ${ethers.formatEther(totalPoolBalance)}`);
-        console.log(`- Staked Amount: ${ethers.formatEther(stakedAmount)}`);
-        console.log(`- Rewards Amount: ${ethers.formatEther(rewardsAmount)}`);
-        console.log(`- Actual Balance: ${ethers.formatEther(actualBalance)}`);
+        console.log(`- Staked Amount: ${ethers.formatEther(await storageToken.balanceOf(stakingEngineAddress))}`);
+        console.log(`- Rewards Amount: ${ethers.formatEther(await storageToken.balanceOf(rewardPoolAddress))}`);
+        console.log(`- Deployrer balance: ${ethers.formatEther(await storageToken.balanceOf(deployer))}`)
         
-        // 10. Summary
+        // 13. Summary
         console.log("\nDeployment completed successfully!");
         console.log("Summary:");
         console.log("- Storage Token:", tokenAddress);
@@ -172,6 +248,7 @@ async function main() {
         console.log("- Reward Pool:", rewardPoolAddress);
         console.log("- StakingEngineLinear:", stakingEngineAddress);
         console.log("\nFeel free to interact with these contracts in your tests.");
+        console.log("Deployer address:", deployer.address);
 
     } catch (error: any) {
         console.error("Deployment failed:", error.message);
