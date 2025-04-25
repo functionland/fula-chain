@@ -38,9 +38,15 @@ async function main() {
     const initialOwner = process.env.INITIAL_OWNER?.trim() || deployer.address;
     const initialAdmin = process.env.INITIAL_ADMIN?.trim() || deployer.address;
     const approvalAmount = process.env.APPROVAL_AMOUNT?.trim() || "100000000"; // 100M tokens by default
-    const deployPools = process.env.DEPLOY_POOLS === "true"; // Whether to deploy new pools or use existing ones
+    const deployPools = (process.env.DEPLOY_POOLS || "").trim().toLowerCase() === "true"; // Whether to deploy new pools or use existing ones
     const stakePoolAddressEnv = process.env.STAKE_POOL_ADDRESS?.trim();
     const rewardPoolAddressEnv = process.env.REWARD_POOL_ADDRESS?.trim();
+    console.log("Using parameters:");
+    console.log("- Token Address:", tokenAddress);
+    console.log("- Initial Owner:", initialOwner);
+    console.log("- Initial Admin:", initialAdmin);
+    console.log("- Approval Amount:", approvalAmount);
+    console.log("- Deploy New Pools:", deployPools, process.env.DEPLOY_POOLS);
     
     // Constants for governance roles
     const ADMIN_ROLE = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
@@ -64,7 +70,7 @@ async function main() {
     console.log("- Token Address:", tokenAddress);
     console.log("- Initial Owner:", initialOwner);
     console.log("- Initial Admin:", initialAdmin);
-    console.log("- Approval Amount:", ethers.parseEther(approvalAmount).toString());
+    console.log("- Approval Amount:", approvalAmount);
     console.log("- Deploy New Pools:", deployPools);
     
     if (!deployPools) {
@@ -148,37 +154,15 @@ async function main() {
             await rewardPoolProxy.waitForDeployment();
             rewardPoolAddress = await rewardPoolProxy.getAddress();
             console.log("Reward pool proxy deployed and initialized at:", rewardPoolAddress);
+            // Print the implementation address for reward pool (same as stake pool implementation)
+            console.log("Reward Pool implementation address:", stakingPoolImplAddress);
 
             // Get a reference to the reward pool through the proxy
             rewardPool = await ethers.getContractAt("StakingPool", rewardPoolAddress);
 
             // Set up governance parameters for the new pools
-            console.log("Setting up governance parameters for pools...");
-            
-            // Wait for timelock periods to expire for both pools
-            console.log("Waiting for governance timelock periods (you may need to manually complete this step in production)...");
-            await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]); // +1 day
-            await ethers.provider.send("evm_mine", []);
+            console.log("Set up governance parameters for pools...");
 
-            // Set quorum for both pools
-            await stakePool.connect(await ethers.getSigner(initialOwner)).setRoleQuorum(ADMIN_ROLE, 2);
-            await rewardPool.connect(await ethers.getSigner(initialOwner)).setRoleQuorum(ADMIN_ROLE, 2);
-            
-            // Wait for timelock periods again
-            await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]); // +1 day
-            await ethers.provider.send("evm_mine", []);
-            
-            // Set transaction limits
-            await stakePool.connect(await ethers.getSigner(initialOwner)).setRoleTransactionLimit(
-                ADMIN_ROLE, 
-                ethers.parseEther(approvalAmount)
-            );
-            await rewardPool.connect(await ethers.getSigner(initialOwner)).setRoleTransactionLimit(
-                ADMIN_ROLE, 
-                ethers.parseEther(approvalAmount)
-            );
-
-            console.log("Governance parameters set up for both pools");
         } else {
             // Use provided addresses and get references
             stakePoolAddress = stakePoolAddressEnv!;
@@ -204,8 +188,8 @@ async function main() {
 
         console.log("StakingEngineLinear deployed to:", contractAddress);
         console.log("Token address:", tokenAddress);
-        console.log("Stake Pool address:", stakePoolAddress);
-        console.log("Reward Pool address:", rewardPoolAddress);
+        console.log("Stake Pool proxy address:", stakePoolAddress);
+        console.log("Reward Pool proxy address:", rewardPoolAddress);
         console.log("Initial owner:", initialOwner);
         console.log("Initial admin:", initialAdmin);
 
@@ -228,52 +212,11 @@ async function main() {
             await setStakingEngineTx2.wait();
             console.log("Reward pool configured with StakingEngineLinear address!");
             
-            // Grant allowances from pools to StakingEngineLinear
-            console.log("Granting allowance from stake pool to StakingEngineLinear...");
-            const stakePoolAllowanceTx = await stakePool.connect(await ethers.getSigner(initialOwner)).grantAllowanceToStakingEngine(
-                ethers.parseEther(approvalAmount)
-            );
-            await stakePoolAllowanceTx.wait();
-            console.log("Stake pool allowance granted successfully!");
-            
-            console.log("Granting allowance from reward pool to StakingEngineLinear...");
-            const rewardPoolAllowanceTx = await rewardPool.connect(await ethers.getSigner(initialOwner)).grantAllowanceToStakingEngine(
-                ethers.parseEther(approvalAmount)
-            );
-            await rewardPoolAllowanceTx.wait();
-            console.log("Reward pool allowance granted successfully!");
-            
         } catch (error: any) {
             console.error("Failed to set up permissions automatically:", error.message);
             console.log("\nManual setup required:");
             console.log(`1. Call setStakingEngine(${contractAddress}) on both pool contracts`);
             console.log(`2. Call grantAllowanceToStakingEngine(${ethers.parseEther(approvalAmount)}) on both pool contracts`);
-        }
-        
-        // Reconcile pool balances
-        console.log("\nReconciling pool balances...");
-        await waitForUserConfirmation("Press Enter to reconcile pool balances or Ctrl+C to skip...");
-        
-        try {
-            console.log("Calling reconcilePoolBalance() on StakingEngineLinear...");
-            const reconcileTx = await stakingEngine.connect(await ethers.getSigner(initialOwner)).reconcilePoolBalance();
-            await reconcileTx.wait();
-            console.log("Pool balances reconciled successfully!");
-            
-            // Get pool status after reconciliation
-            console.log("\nFetching pool status after reconciliation...");
-            const [totalPoolBalance, stakedAmount, rewardsAmount, actualBalance] = await stakingEngine.getPoolStatus();
-            console.log("Pool status after reconciliation:");
-            console.log(`- Total Pool Balance: ${ethers.formatEther(totalPoolBalance)}`);
-            console.log(`- Staked Amount: ${ethers.formatEther(stakedAmount)}`);
-            console.log(`- Rewards Amount: ${ethers.formatEther(rewardsAmount)}`);
-            console.log(`- Actual Balance: ${ethers.formatEther(actualBalance)}`);
-            
-        } catch (error: any) {
-            console.error("Failed to reconcile pool balances:", error.message);
-            console.log("\nManual reconciliation required:");
-            console.log(`1. Connect to the contract with the owner address (${initialOwner})`);
-            console.log(`2. Call reconcilePoolBalance() on the StakingEngineLinear contract (${contractAddress})`);
         }
 
         // Verify contract if API key is available
