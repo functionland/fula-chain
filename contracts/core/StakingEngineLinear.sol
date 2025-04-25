@@ -461,12 +461,12 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
         for (uint256 i = 0; i < stakes[msg.sender].length; i++) {
             StakeInfo storage stake = stakes[msg.sender][i];
             if (stake.isActive) {
-                uint256 accRewardPerToken = getAccRewardPerTokenForLockPeriod(stake.lockPeriod);
-                uint256 pendingReward = (stake.amount * (accRewardPerToken - stake.rewardDebt)) / PRECISION_FACTOR;
+                uint256 accRewardPerToken1 = getAccRewardPerTokenForLockPeriod(stake.lockPeriod);
+                uint256 pendingReward = (stake.amount * (accRewardPerToken1 - stake.rewardDebt)) / PRECISION_FACTOR;
                 pendingRewards += pendingReward;
                 
                 // Update reward debt to current accumulated rewards
-                stake.rewardDebt = accRewardPerToken;
+                stake.rewardDebt = accRewardPerToken1;
             }
         }
         
@@ -940,6 +940,55 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
         }
         
         return 0;
+    }
+
+    /**
+     * @notice Get a single referrer reward by index
+     * @param referrer Address of the referrer
+     * @param index Index of the referrer reward
+     * @return ReferrerRewardInfo struct for the given index
+     */
+    function getReferrerRewardByIndex(address referrer, uint256 index) external view returns (ReferrerRewardInfo memory) {
+        require(index < referrerRewards[referrer].length, "Invalid reward index");
+        return referrerRewards[referrer][index];
+    }
+
+    /**
+     * @notice Get a single staker reward (stake info) by index
+     * @param staker Address of the staker
+     * @param index Index of the stake
+     * @return StakeInfo struct for the given index
+     */
+    function getStakerRewardByIndex(address staker, uint256 index) external view returns (StakeInfo memory) {
+        require(index < stakes[staker].length, "Invalid stake index");
+        return stakes[staker][index];
+    }
+
+    /**
+     * @notice View the claimable staker reward for a given stake index (does not transfer)
+     * @param staker Address of the staker
+     * @param stakeIndex Index of the stake to view rewards for
+     * @return toClaim Amount of claimable rewards for the given stake
+     */
+    function getClaimableStakerReward(address staker, uint256 stakeIndex) external view returns (uint256 toClaim) {
+        require(stakeIndex < stakes[staker].length, "Invalid stake index");
+        StakeInfo storage stake = stakes[staker][stakeIndex];
+        if (!stake.isActive) return 0;
+        uint256 lockEnd = stake.startTime + stake.lockPeriod;
+        uint256 nowOrEnd = block.timestamp < lockEnd ? block.timestamp : lockEnd;
+        uint256 timeElapsed = nowOrEnd - stake.startTime;
+        uint256 fixedAPY = 0;
+        if (stake.lockPeriod == LOCK_PERIOD_1) fixedAPY = FIXED_APY_90_DAYS;
+        else if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_180_DAYS;
+        else if (stake.lockPeriod == LOCK_PERIOD_3) fixedAPY = FIXED_APY_365_DAYS;
+        uint256 totalReward = (stake.amount * fixedAPY * stake.lockPeriod) / (100 * 365 days);
+        uint256 claimable = (totalReward * timeElapsed) / stake.lockPeriod;
+        uint256 alreadyClaimed = stake.rewardDebt;
+        if (claimable > alreadyClaimed) {
+            toClaim = claimable - alreadyClaimed;
+        } else {
+            toClaim = 0;
+        }
     }
 
     // --- View functions for global queries ---

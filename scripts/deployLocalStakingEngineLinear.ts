@@ -273,3 +273,9 @@ main()
 
     // npx hardhat node
 // npx hardhat run scripts/deployLocalStakingEngineLinear.ts --network localhost
+/*
+Advance the time fo rtesting:
+npx hardhat console --network localhost
+> await network.provider.send("evm_increaseTime", [86400]) // 1 day
+> await network.provider.send("evm_mine")
+ */
