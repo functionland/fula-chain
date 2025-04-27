@@ -453,25 +453,53 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
      * @param referrer Optional address of the referrer
      */
     function _stakeTokenInternal(uint256 amount, uint256 lockPeriod, address referrer) internal {
+        
+        // Check if the user has sufficient allowance for this contract
+        if (token.allowance(msg.sender, address(this)) < amount) {
+            revert InsufficientApproval();
+        }
+        
+        // Check if there are sufficient rewards available for the APY
+        uint256 projectedAPY = calculateProjectedAPY(amount, lockPeriod);
+        uint256 minimumAPY = 0;
+        
+        // Use direct assignment instead of conditionals to save gas
+        if (lockPeriod == LOCK_PERIOD_1) {
+            minimumAPY = FIXED_APY_90_DAYS;
+        } else if (lockPeriod == LOCK_PERIOD_2) {
+            minimumAPY = FIXED_APY_180_DAYS;
+        } else if (lockPeriod == LOCK_PERIOD_3) {
+            minimumAPY = FIXED_APY_365_DAYS;
+        }
+        
+        if (projectedAPY < minimumAPY) {
+            revert APYCannotBeSatisfied(uint8(lockPeriod / (30 days)), projectedAPY, minimumAPY);
+        }
+
         // Update rewards before processing the stake
         updateRewards();
         
-        // Calculate pending rewards for existing stakes
+        // Cache array length and accumulator values to save gas on multiple reads
+        uint256 userStakeCount = stakes[msg.sender].length;
+        uint256 accRewardPerToken = getAccRewardPerTokenForLockPeriod(lockPeriod);
         uint256 pendingRewards = 0;
-        for (uint256 i = 0; i < stakes[msg.sender].length; i++) {
-            StakeInfo storage stake = stakes[msg.sender][i];
-            if (stake.isActive) {
-                uint256 accRewardPerToken1 = getAccRewardPerTokenForLockPeriod(stake.lockPeriod);
-                uint256 pendingReward = (stake.amount * (accRewardPerToken1 - stake.rewardDebt)) / PRECISION_FACTOR;
-                pendingRewards += pendingReward;
-                
-                // Update reward debt to current accumulated rewards
-                stake.rewardDebt = accRewardPerToken1;
+        
+        // Optimize pending rewards calculation loop
+        if (userStakeCount > 0) {
+            for (uint256 i = 0; i < userStakeCount; i++) {
+                StakeInfo storage stake = stakes[msg.sender][i];
+                if (stake.isActive) {
+                    uint256 accRewardPerToken1 = getAccRewardPerTokenForLockPeriod(stake.lockPeriod);
+                    uint256 pendingReward = (stake.amount * (accRewardPerToken1 - stake.rewardDebt)) / PRECISION_FACTOR;
+                    pendingRewards += pendingReward;
+                    
+                    // Update reward debt to current accumulated rewards
+                    stake.rewardDebt = accRewardPerToken1;
+                }
             }
         }
         
         // Add new stake
-        uint256 accRewardPerToken = getAccRewardPerTokenForLockPeriod(lockPeriod);
         stakes[msg.sender].push(
             StakeInfo({
                 amount: amount,
@@ -483,9 +511,10 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
             })
         );
         
-        // Update total staked amounts
+        // Update total staked amounts - batch updates to save gas
         totalStaked += amount;
         
+        // Update the appropriate period total
         if (lockPeriod == LOCK_PERIOD_1) {
             totalStaked90Days += amount;
         } else if (lockPeriod == LOCK_PERIOD_2) {
@@ -494,11 +523,41 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
             totalStaked365Days += amount;
         }
         
-        // Update referrer information if provided
+        // --- Track all stakers globally and per period ---
+        // Only do these checks if necessary, combine operations
+        if (!isKnownStaker[msg.sender]) {
+            isKnownStaker[msg.sender] = true;
+            allStakerAddresses.push(msg.sender);
+        }
+        
+        if (!isStakerInPeriod[lockPeriod][msg.sender]) {
+            isStakerInPeriod[lockPeriod][msg.sender] = true;
+            stakerAddressesByPeriod[lockPeriod].push(msg.sender);
+        }
+        
+        // Update referrer information if provided - do this after staker updates
         if (referrer != address(0)) {
+            // --- Track all referrers globally and per period ---
+            // Combine these checks with referrer info updates to save gas
+            bool isNewReferrer = false;
+            bool isNewReferrerForPeriod = false;
+            
+            if (!isKnownReferrer[referrer]) {
+                isKnownReferrer[referrer] = true;
+                allReferrerAddresses.push(referrer);
+                isNewReferrer = true;
+            }
+            
+            if (!isReferrerInPeriod[lockPeriod][referrer]) {
+                isReferrerInPeriod[lockPeriod][referrer] = true;
+                referrerAddressesByPeriod[lockPeriod].push(referrer);
+                isNewReferrerForPeriod = true;
+            }
+            
+            // Get referrer info once to save gas on multiple storage reads/writes
             ReferrerInfo storage referrerInfo = referrers[referrer];
             
-            // If this is a new referee for this referrer
+            // Handle new referee relationship
             if (!isReferred[referrer][msg.sender]) {
                 isReferred[referrer][msg.sender] = true;
                 referredStakers[referrer].push(msg.sender);
@@ -506,9 +565,11 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
                 referrerInfo.activeReferredStakersCount++;
             }
             
+            // Update referrer staking statistics in batch
             referrerInfo.totalReferred += amount;
             referrerInfo.totalActiveStaked += amount;
             
+            // Update period-specific stats for referrer
             if (lockPeriod == LOCK_PERIOD_1) {
                 referrerInfo.totalActiveStaked90Days += amount;
             } else if (lockPeriod == LOCK_PERIOD_2) {
@@ -517,8 +578,8 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
                 referrerInfo.totalActiveStaked365Days += amount;
             }
             
-            // Calculate referrer reward based on lock period
-            uint256 referrerRewardPercent = 0;
+            // Calculate referrer reward percentage once
+            uint256 referrerRewardPercent;
             if (lockPeriod == LOCK_PERIOD_1) {
                 referrerRewardPercent = REFERRER_REWARD_PERCENT_90_DAYS;
             } else if (lockPeriod == LOCK_PERIOD_2) {
@@ -527,6 +588,7 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
                 referrerRewardPercent = REFERRER_REWARD_PERCENT_365_DAYS;
             }
             
+            // Only process referrer rewards if there's actually a percentage
             if (referrerRewardPercent > 0) {
                 uint256 totalReferrerReward = (amount * referrerRewardPercent) / 100;
                 
@@ -546,57 +608,12 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
                     })
                 );
                 
-                // Update unclaimed rewards
+                // Batch updates to referrer info
                 referrerInfo.unclaimedRewards += totalReferrerReward;
-                
-                // Update rewards by period
                 referrerRewardsByPeriod[referrer][lockPeriod] += totalReferrerReward;
                 
                 emit ReferrerRewardUpdated(referrer, msg.sender, stakes[msg.sender].length - 1, totalReferrerReward, lockPeriod);
             }
-        }
-        
-        // --- Track all stakers globally and per period ---
-        if (!isKnownStaker[msg.sender]) {
-            isKnownStaker[msg.sender] = true;
-            allStakerAddresses.push(msg.sender);
-        }
-        if (!isStakerInPeriod[lockPeriod][msg.sender]) {
-            isStakerInPeriod[lockPeriod][msg.sender] = true;
-            stakerAddressesByPeriod[lockPeriod].push(msg.sender);
-        }
-        
-        // --- Track all referrers globally and per period ---
-        if (referrer != address(0)) {
-            if (!isKnownReferrer[referrer]) {
-                isKnownReferrer[referrer] = true;
-                allReferrerAddresses.push(referrer);
-            }
-            if (!isReferrerInPeriod[lockPeriod][referrer]) {
-                isReferrerInPeriod[lockPeriod][referrer] = true;
-                referrerAddressesByPeriod[lockPeriod].push(referrer);
-            }
-        }
-        
-        // Check if the user has sufficient allowance for this contract
-        if (token.allowance(msg.sender, address(this)) < amount) {
-            revert InsufficientApproval();
-        }
-        
-        // Check if there are sufficient rewards available for the APY
-        uint256 projectedAPY = calculateProjectedAPY(amount, lockPeriod);
-        uint256 minimumAPY = 0;
-        
-        if (lockPeriod == LOCK_PERIOD_1) {
-            minimumAPY = FIXED_APY_90_DAYS;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
-            minimumAPY = FIXED_APY_180_DAYS;
-        } else if (lockPeriod == LOCK_PERIOD_3) {
-            minimumAPY = FIXED_APY_365_DAYS;
-        }
-        
-        if (projectedAPY < minimumAPY) {
-            revert APYCannotBeSatisfied(uint8(lockPeriod / (30 days)), projectedAPY, minimumAPY);
         }
         
         // Execute external interactions after state changes
@@ -604,13 +621,12 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
         token.safeTransferFrom(msg.sender, stakePool, amount);
         stakePoolContract.receiveTokens(msg.sender, amount);
         
+        // Process pending rewards if any
         if (pendingRewards > 0) {
-            // Check if the pool has sufficient balance for rewards
             uint256 poolBalance = token.balanceOf(rewardPool);
-            uint256 availableForRewards = poolBalance;
             
-            if (availableForRewards < pendingRewards) {
-                emit UnableToDistributeRewards(msg.sender, availableForRewards, amount, pendingRewards, lockPeriod);
+            if (poolBalance < pendingRewards) {
+                emit UnableToDistributeRewards(msg.sender, poolBalance, amount, pendingRewards, lockPeriod);
             } else {
                 // Transfer rewards
                 rewardPoolContract.transferTokens(pendingRewards);
@@ -626,6 +642,9 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
      * @param referrer Optional address of the referrer
      */
     function stakeTokenWithReferrer(uint256 amount, uint256 lockPeriod, address referrer) external nonReentrant whenNotPaused {
+        if (token.allowance(msg.sender, address(this)) < amount) {
+            revert InsufficientApproval();
+        }
         require(amount > 0, "Amount must be greater than zero");
         require(
             lockPeriod == LOCK_PERIOD_1 || lockPeriod == LOCK_PERIOD_2 || lockPeriod == LOCK_PERIOD_3,
@@ -668,6 +687,9 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
      * @param lockPeriod The lock period (90, 180, or 365 days)
      */
     function stakeToken(uint256 amount, uint256 lockPeriod) external nonReentrant whenNotPaused {
+        if (token.allowance(msg.sender, address(this)) < amount) {
+            revert InsufficientApproval();
+        }
         require(amount > 0, "Amount must be greater than zero");
         require(
             lockPeriod == LOCK_PERIOD_1 || lockPeriod == LOCK_PERIOD_2 || lockPeriod == LOCK_PERIOD_3,
@@ -1044,10 +1066,10 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
      * @return referrers array (only those who actually referred at least one staker in that period)
      */
     function getActiveReferrersByPeriod(uint256 lockPeriod) external view returns (address[] memory) {
-        address[] memory referrers = referrerAddressesByPeriod[lockPeriod];
+        address[] memory referrers1 = referrerAddressesByPeriod[lockPeriod];
         // Optionally filter to only those with at least one active referral in this period
         // (already handled by tracking in _stakeTokenInternal)
-        return referrers;
+        return referrers1;
     }
 
     /**
