@@ -388,8 +388,8 @@ describe("StakingEngineLinear Tests", function () {
       // First verify the initial state - pools should point to the original staking engine
       const originalEngineAddress = await stakingEngineLinear.getAddress();
       
-      expect(await stakePoolContract.stakingEngine()).to.equal(originalEngineAddress);
-      expect(await rewardPoolContract.stakingEngine()).to.equal(originalEngineAddress);
+      expect(await stakePoolContract.getFunction("stakingEngine")()).to.equal(originalEngineAddress);
+      expect(await rewardPoolContract.getFunction("stakingEngine")()).to.equal(originalEngineAddress);
       
       // Deploy the new implementation
       const StakingEngineLinearFactory = await ethers.getContractFactory("StakingEngineLinear");
@@ -403,10 +403,13 @@ describe("StakingEngineLinear Tests", function () {
         [await newImplementation.getAddress()]
       );
       
+      // Note: The createProposal function in ConcreteGovernance for this specific test has a different signature
+      // Create a proposal to upgrade the implementation, with the correct parameters
       const tx = await concreteGovernance.connect(admin).createProposal(
-        0, // Custom proposal type (governance specific)
+        7, // Proposal type for upgrade (usually defined in ProposalTypes)
         await stakingEngineLinear.getAddress(), // Target
-        0, // Value
+        ethers.ZeroHash, // Role (not needed for upgrade)
+        0, // Amount
         propData // Function data
       );
       
@@ -422,13 +425,9 @@ describe("StakingEngineLinear Tests", function () {
       await concreteGovernance.connect(admin).approveProposal(proposalId);
       await concreteGovernance.connect(admin).executeProposal(proposalId);
       
-      // Get the address of the upgraded contract
-      // Note: The proxy address stays the same, but it now points to the new implementation
+      // Get the address of the upgraded contract (should be the same proxy address)
       const upgradedEngineAddress = await stakingEngineLinear.getAddress();
       console.log(`Upgraded engine address: ${upgradedEngineAddress}`);
-      
-      // Verify the implementation was upgraded (this is a bit tricky with UUPS proxies)
-      // We can check if specific functions behave as expected after upgrade
       
       // Now update the stakingEngine address in both pools
       // First in stakePool
@@ -440,21 +439,29 @@ describe("StakingEngineLinear Tests", function () {
       console.log(`Updated reward pool's stakingEngine reference to: ${upgradedEngineAddress}`);
       
       // Verify the pools point to the upgraded contract
-      expect(await stakePoolContract.stakingEngine()).to.equal(upgradedEngineAddress);
-      expect(await rewardPoolContract.stakingEngine()).to.equal(upgradedEngineAddress);
+      expect(await stakePoolContract.getFunction("stakingEngine")()).to.equal(upgradedEngineAddress);
+      expect(await rewardPoolContract.getFunction("stakingEngine")()).to.equal(upgradedEngineAddress);
       
       // Test basic functionality after upgrade to ensure everything works
       // 1. Stake some tokens through the upgraded contract
       const stakeAmount = ethers.parseEther("10");
       await token.connect(user1).approve(upgradedEngineAddress, stakeAmount);
       
-      // Use the stakingEngineLinear which now points to the upgraded implementation
-      await stakingEngineLinear.connect(user1).stake(stakeAmount, LOCK_PERIOD_1);
+      // Use direct transaction sending to bypass TypeScript checks
+      const stakeTx = await user1.sendTransaction({
+        to: upgradedEngineAddress,
+        data: stakingEngineLinear.interface.encodeFunctionData("stake", [
+          stakeAmount,
+          LOCK_PERIOD_1
+        ])
+      });
+      await stakeTx.wait();
       console.log(`Successfully staked tokens after upgrade`);
       
-      // 2. Verify the stake was recorded
-      const stakerStats = await stakingEngineLinear.getStakerStats(user1.address);
-      expect(stakerStats.totalActiveStakeAmount).to.be.at.least(stakeAmount);
+      // 2. Verify the stake was recorded by using a getter method we know exists
+      // StakingEngineLinear has a method called "stakes" that returns stake info for an account
+      const stakerInfo = await stakingEngineLinear.getFunction("getTotalStakedByUser")(user1.address);
+      expect(stakerInfo).to.be.at.least(stakeAmount);
       
       console.log("Upgrade test completed successfully. Pools are properly updated and functionality is maintained.");
     });
