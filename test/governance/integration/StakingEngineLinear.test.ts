@@ -63,14 +63,18 @@ describe("StakingEngineLinear Security Tests", function () {
         stakePool = await stakePoolContract.getAddress();
         rewardPool = await rewardPoolContract.getAddress();
 
-        // Deploy StakingEngineLinear (using standard deployment instead of proxy)
+        // Deploy StakingEngineLinear (using upgradeable proxy instead of direct deployment)
         const StakingEngineLinearFactory = await ethers.getContractFactory("StakingEngineLinear");
-        StakingEngineLinear = await StakingEngineLinearFactory.deploy(
-            await token.getAddress(),
-            stakePool,
-            rewardPool,
-            owner.address,
-            admin.address
+        StakingEngineLinear = await upgrades.deployProxy(
+            StakingEngineLinearFactory,
+            [
+                await token.getAddress(),
+                stakePool,
+                rewardPool,
+                owner.address,
+                admin.address
+            ],
+            { kind: 'uups', initializer: 'initialize' }
         ) as StakingEngineLinear;
         await StakingEngineLinear.waitForDeployment();
 
@@ -88,6 +92,7 @@ describe("StakingEngineLinear Security Tests", function () {
             stakePool,
             rewardPool,
             owner.address, // Add owner address to whitelist
+            admin.address, // Add admin address to whitelist
             user1.address,
             user2.address,
             user3.address,
@@ -144,14 +149,14 @@ describe("StakingEngineLinear Security Tests", function () {
             await token.connect(user).approve(await StakingEngineLinear.getAddress(), ethers.parseEther("1000"));
         }
 
-        // Transfer tokens to owner for adding to the pool
-        await token.connect(owner).transferFromContract(owner.address, ethers.parseEther("50000"));
+        // Transfer tokens to admin for adding to the pool
+        await token.connect(owner).transferFromContract(admin.address, ethers.parseEther("50000"));
         
-        // Approve StakingEngineLinear to spend owner's tokens
-        await token.connect(owner).approve(await StakingEngineLinear.getAddress(), ethers.parseEther("50000"));
+        // Approve StakingEngineLinear to spend admin's tokens
+        await token.connect(admin).approve(await StakingEngineLinear.getAddress(), ethers.parseEther("50000"));
         
         // Add rewards to the pool - this one works in the main setup
-        await StakingEngineLinear.connect(owner).addRewardsToPool(ethers.parseEther("50000"));
+        await StakingEngineLinear.connect(admin).addRewardsToPool(ethers.parseEther("50000"));
     });
 
     // 1. Token Approval Tests
@@ -222,14 +227,14 @@ describe("StakingEngineLinear Security Tests", function () {
             // Add a specific, small amount of rewards
             const rewardAmount = ethers.parseEther("50");
             const stakeAmount = ethers.parseEther("5000");
-            await token.connect(owner).transferFromContract(owner.address, rewardAmount+ stakeAmount);
-            await token.connect(owner).approve(await StakingEngineLinear.getAddress(), rewardAmount);
+            await token.connect(owner).transferFromContract(admin.address, rewardAmount+ stakeAmount);
+            await token.connect(admin).approve(await StakingEngineLinear.getAddress(), rewardAmount);
 
             // Bring reward pool down to 0 using emergencyRecoverTokens
             const rewardPoolContractFactory = await ethers.getContractFactory("StakingPool");
             const rewardPoolInstance = await rewardPoolContractFactory.attach(rewardPool);
             await rewardPoolInstance.connect(owner).emergencyRecoverTokens(ethers.parseEther("77500"));
-            await StakingEngineLinear.connect(owner).addRewardsToPool(rewardAmount);
+            await StakingEngineLinear.connect(admin).addRewardsToPool(rewardAmount);
             const balance = await token.balanceOf(rewardPool);
             console.log("reward pool balance", balance, rewardPool);
             
@@ -242,7 +247,7 @@ describe("StakingEngineLinear Security Tests", function () {
             console.log(`Projected APY for ${ethers.formatEther(stakeAmount)} FULA: ${projectedAPY}%`);
             
             // Approve tokens for staking
-            await token.connect(owner).transfer(user1.address, stakeAmount);
+            await token.connect(admin).transfer(user1.address, stakeAmount);
             await token.connect(user1).approve(await StakingEngineLinear.getAddress(), stakeAmount);
             
             // This should fail with APYCannotBeSatisfied
@@ -267,11 +272,11 @@ describe("StakingEngineLinear Security Tests", function () {
             
             // Ensure the owner has enough tokens and approvals for adding to reward pool
             const rewardAmount = ethers.parseEther("1000");
-            await token.connect(owner).transferFromContract(owner.address, rewardAmount);
-            await token.connect(owner).approve(await StakingEngineLinear.getAddress(), rewardAmount);
+            await token.connect(owner).transferFromContract(admin.address, rewardAmount);
+            await token.connect(admin).approve(await StakingEngineLinear.getAddress(), rewardAmount);
             
             // Add rewards to the pool
-            await StakingEngineLinear.connect(owner).addRewardsToPool(rewardAmount);
+            await StakingEngineLinear.connect(admin).addRewardsToPool(rewardAmount);
             
             // Stake the tokens
             const lockPeriod = 180 * 24 * 60 * 60; // 180 days
@@ -357,11 +362,11 @@ describe("StakingEngineLinear Security Tests", function () {
             await token.connect(user1).approve(await StakingEngineLinear.getAddress(), stakeAmount);
             
             // Ensure the owner has enough tokens and approvals for adding to reward pool
-            await token.connect(owner).transferFromContract(owner.address, stakeAmount * 2n);
-            await token.connect(owner).approve(await StakingEngineLinear.getAddress(), stakeAmount);
+            await token.connect(owner).transferFromContract(admin.address, stakeAmount * 2n);
+            await token.connect(admin).approve(await StakingEngineLinear.getAddress(), stakeAmount);
             
             // Add rewards to the pool
-            await StakingEngineLinear.connect(owner).addRewardsToPool(stakeAmount);
+            await StakingEngineLinear.connect(admin).addRewardsToPool(stakeAmount);
             
             // Stake with referrer
             await StakingEngineLinear.connect(user1).stakeTokenWithReferrer(stakeAmount, lockPeriod, user2.address);
@@ -493,11 +498,11 @@ describe("StakingEngineLinear Security Tests", function () {
             const additionalRewards = ethers.parseEther("1000");
             
             // Make sure the owner has tokens
-            await token.connect(owner).transferFromContract(owner.address, additionalRewards);
+            await token.connect(owner).transferFromContract(admin.address, additionalRewards);
             // Approve StakingEngineLinear to spend owner's tokens
-            await token.connect(owner).approve(await StakingEngineLinear.getAddress(), additionalRewards);
+            await token.connect(admin).approve(await StakingEngineLinear.getAddress(), additionalRewards);
             
-            await StakingEngineLinear.connect(owner).addRewardsToPool(additionalRewards);
+            await StakingEngineLinear.connect(admin).addRewardsToPool(additionalRewards);
             
             // Check updated pool status
             const updatedPoolStatus = await StakingEngineLinear.getPoolStatus();
@@ -514,16 +519,16 @@ describe("StakingEngineLinear Security Tests", function () {
             const rewardAmount = ethers.parseEther("1000");
             
             // Reset balances to ensure test consistency
-            await token.connect(owner).transferFromContract(owner.address, rewardAmount);
+            await token.connect(owner).transferFromContract(admin.address, rewardAmount);
             await token.connect(owner).transferFromContract(user1.address, rewardAmount);
             
             // Approvals
-            await token.connect(owner).approve(await StakingEngineLinear.getAddress(), rewardAmount);
+            await token.connect(admin).approve(await StakingEngineLinear.getAddress(), rewardAmount);
             await token.connect(user1).approve(await StakingEngineLinear.getAddress(), rewardAmount);
             
             // Should allow owner to add rewards
             await expect(
-                StakingEngineLinear.connect(owner).addRewardsToPool(rewardAmount)
+                StakingEngineLinear.connect(admin).addRewardsToPool(rewardAmount)
             ).to.not.be.reverted;
             
             // Should revert when non-owner tries to add rewards
@@ -626,11 +631,11 @@ describe("StakingEngineLinear Security Tests", function () {
                 await token.connect(user1).approve(await StakingEngineLinear.getAddress(), hugeStakeAmount);
                 
                 // Ensure the owner has enough tokens and approvals for adding to reward pool
-                await token.connect(owner).transferFromContract(owner.address, hugeStakeAmount * 2n);
-                await token.connect(owner).approve(await StakingEngineLinear.getAddress(), hugeStakeAmount);
+                await token.connect(owner).transferFromContract(admin.address, hugeStakeAmount * 2n);
+                await token.connect(admin).approve(await StakingEngineLinear.getAddress(), hugeStakeAmount);
                 
                 // Add rewards to the pool
-                await StakingEngineLinear.connect(owner).addRewardsToPool(hugeStakeAmount);
+                await StakingEngineLinear.connect(admin).addRewardsToPool(hugeStakeAmount);
                 
                 // Make the large stake
                 await StakingEngineLinear.connect(user1).stakeToken(hugeStakeAmount, lockPeriod);
@@ -690,11 +695,11 @@ describe("StakingEngineLinear Security Tests", function () {
             
             // Ensure the owner has enough tokens and approvals for adding to reward pool
             const rewardAmount = ethers.parseEther("10000");
-            await token.connect(owner).transferFromContract(owner.address, rewardAmount);
-            await token.connect(owner).approve(await StakingEngineLinear.getAddress(), rewardAmount);
+            await token.connect(owner).transferFromContract(admin.address, rewardAmount);
+            await token.connect(admin).approve(await StakingEngineLinear.getAddress(), rewardAmount);
             
             // Add rewards to the pool
-            await StakingEngineLinear.connect(owner).addRewardsToPool(rewardAmount);
+            await StakingEngineLinear.connect(admin).addRewardsToPool(rewardAmount);
             
             // Stake with referrer
             await StakingEngineLinear.connect(user1).stakeTokenWithReferrer(stakeAmount, lockPeriod, referrer.address);
@@ -746,11 +751,11 @@ describe("StakingEngineLinear Security Tests", function () {
             
             // Ensure the owner has enough tokens and approvals for adding to reward pool
             const rewardAmount = ethers.parseEther("10000");
-            await token.connect(owner).transferFromContract(owner.address, rewardAmount);
-            await token.connect(owner).approve(await StakingEngineLinear.getAddress(), rewardAmount);
+            await token.connect(owner).transferFromContract(admin.address, rewardAmount);
+            await token.connect(admin).approve(await StakingEngineLinear.getAddress(), rewardAmount);
             
             // Add rewards to the pool
-            await StakingEngineLinear.connect(owner).addRewardsToPool(rewardAmount);
+            await StakingEngineLinear.connect(admin).addRewardsToPool(rewardAmount);
             
             // User1 stakes with user3 as referrer
             await StakingEngineLinear.connect(user1).stakeTokenWithReferrer(stakeAmount, lockPeriod, user3.address);
@@ -837,11 +842,11 @@ describe("StakingEngineLinear Security Tests", function () {
             
             // Ensure the owner has enough tokens and approvals for adding to reward pool
             const rewardAmount = ethers.parseEther("10000");
-            await token.connect(owner).transferFromContract(owner.address, rewardAmount);
-            await token.connect(owner).approve(await StakingEngineLinear.getAddress(), rewardAmount);
+            await token.connect(owner).transferFromContract(admin.address, rewardAmount);
+            await token.connect(admin).approve(await StakingEngineLinear.getAddress(), rewardAmount);
             
             // Add rewards to the pool
-            await StakingEngineLinear.connect(owner).addRewardsToPool(rewardAmount);
+            await StakingEngineLinear.connect(admin).addRewardsToPool(rewardAmount);
             
             // Stake with referrer
             await StakingEngineLinear.connect(user1).stakeTokenWithReferrer(stakeAmount, lockPeriod, referrer.address);
@@ -930,9 +935,9 @@ describe("StakingEngineLinear Security Tests", function () {
             
             // 2. Add a large amount to reward pool
             const rewardAmount = ethers.parseEther("100000"); // Large enough for all rewards
-            await token.connect(owner).transferFromContract(owner.address, rewardAmount);
-            await token.connect(owner).approve(await StakingEngineLinear.getAddress(), rewardAmount);
-            await StakingEngineLinear.connect(owner).addRewardsToPool(rewardAmount);
+            await token.connect(owner).transferFromContract(admin.address, rewardAmount);
+            await token.connect(admin).approve(await StakingEngineLinear.getAddress(), rewardAmount);
+            await StakingEngineLinear.connect(admin).addRewardsToPool(rewardAmount);
             
             // 3. Transfer and approve tokens for all users
             for (const user of [referrer, referredUser1, referredUser2, nonReferredUser]) {
@@ -1372,6 +1377,180 @@ describe("StakingEngineLinear Security Tests", function () {
             // All staker addresses should still include all original stakers (append-only)
             const allStakersAfter = await StakingEngineLinear.getAllStakerAddresses();
             for (const s of stakers) expect(allStakersAfter).to.include(s.address);
+        });
+    });
+
+    // Upgrade Functionality Tests
+    describe("Upgrade Functionality Tests", function () {
+        let StakingEngineLinearV2Factory: any;
+        let mockImplementation: any;
+
+        beforeEach(async function() {
+            // Get the factory for a mock V2 implementation
+            StakingEngineLinearV2Factory = await ethers.getContractFactory("StakingEngineLinear");
+            
+            // Deploy a single mock implementation that will be used in all tests
+            // Note: For implementation contracts, we don't pass constructor parameters
+            // since the constructor is disabled and initializer will be used
+            mockImplementation = await StakingEngineLinearV2Factory.deploy();
+            await mockImplementation.waitForDeployment();
+        });
+
+        it("should allow admin to propose an upgrade", async function() {
+            // Admin proposes an upgrade
+            await expect(
+                StakingEngineLinear.connect(admin).proposeUpgrade(await mockImplementation.getAddress())
+            )
+                .to.emit(StakingEngineLinear, "UpgradeProposed")
+                .withArgs(admin.address, await mockImplementation.getAddress(), await time.latest()+1);
+
+            // Verify proposal state
+            expect(await StakingEngineLinear.pendingImplementation()).to.equal(
+                await mockImplementation.getAddress()
+            );
+            expect(await StakingEngineLinear.upgradeProposer()).to.equal(admin.address);
+        });
+
+        it("should not allow non-admin to propose an upgrade", async function() {
+            // Non-admin tries to propose an upgrade
+            await expect(
+                StakingEngineLinear.connect(user1).proposeUpgrade(await mockImplementation.getAddress())
+            ).to.be.reverted;
+        });
+
+        it("should not allow approval before the timelock period", async function() {
+            // Admin proposes an upgrade
+            await StakingEngineLinear.connect(admin).proposeUpgrade(await mockImplementation.getAddress());
+
+            // Owner tries to approve immediately (should be rejected due to timelock)
+            await expect(
+                StakingEngineLinear.connect(owner).approveUpgrade(await mockImplementation.getAddress())
+            ).to.be.revertedWithCustomError(StakingEngineLinear, "UpgradeTimelockNotExpired");
+        });
+
+        it("should allow owner to approve an upgrade after timelock", async function() {
+            // Admin proposes an upgrade
+            await StakingEngineLinear.connect(admin).proposeUpgrade(await mockImplementation.getAddress());
+
+            // Time passes (fast forward by 2 days + 1 second)
+            await time.increase(2 * 24 * 60 * 60 + 1);
+
+            // Owner approves the upgrade
+            await expect(
+                StakingEngineLinear.connect(owner).approveUpgrade(await mockImplementation.getAddress())
+            )
+                .to.emit(StakingEngineLinear, "UpgradeApproved")
+                .withArgs(owner.address, await mockImplementation.getAddress());
+
+            // Verify proposal state was cleared
+            expect(await StakingEngineLinear.pendingImplementation()).to.equal(ZeroAddress);
+            expect(await StakingEngineLinear.upgradeProposer()).to.equal(ZeroAddress);
+            expect(await StakingEngineLinear.upgradeProposalTime()).to.equal(0);
+        });
+
+        it("should not allow non-owner to approve an upgrade", async function() {
+            // Admin proposes an upgrade
+            await StakingEngineLinear.connect(admin).proposeUpgrade(await mockImplementation.getAddress());
+
+            // Time passes (fast forward by 2 days + 1 second)
+            await time.increase(2 * 24 * 60 * 60 + 1);
+
+            // Non-owner tries to approve
+            await expect(
+                StakingEngineLinear.connect(user1).approveUpgrade(await mockImplementation.getAddress())
+            ).to.be.reverted;
+        });
+
+        it("should allow admin to cancel their own upgrade proposal", async function() {
+            // Admin proposes an upgrade
+            await StakingEngineLinear.connect(admin).proposeUpgrade(await mockImplementation.getAddress());
+
+            // Admin cancels the proposal
+            await expect(
+                StakingEngineLinear.connect(admin).cancelUpgrade()
+            )
+                .to.emit(StakingEngineLinear, "UpgradeCancelled")
+                .withArgs(admin.address, await mockImplementation.getAddress());
+
+            // Verify proposal state was cleared
+            expect(await StakingEngineLinear.pendingImplementation()).to.equal(ZeroAddress);
+            expect(await StakingEngineLinear.upgradeProposer()).to.equal(ZeroAddress);
+            expect(await StakingEngineLinear.upgradeProposalTime()).to.equal(0);
+        });
+
+        it("should allow owner to cancel any upgrade proposal", async function() {
+            // Admin proposes an upgrade
+            await StakingEngineLinear.connect(admin).proposeUpgrade(await mockImplementation.getAddress());
+
+            // Owner cancels the proposal
+            await expect(
+                StakingEngineLinear.connect(owner).cancelUpgrade()
+            )
+                .to.emit(StakingEngineLinear, "UpgradeCancelled")
+                .withArgs(owner.address, await mockImplementation.getAddress());
+
+            // Verify proposal state was cleared
+            expect(await StakingEngineLinear.pendingImplementation()).to.equal(ZeroAddress);
+            expect(await StakingEngineLinear.upgradeProposer()).to.equal(ZeroAddress);
+            expect(await StakingEngineLinear.upgradeProposalTime()).to.equal(0);
+        });
+
+        it("should not allow non-admin and non-owner to cancel an upgrade proposal", async function() {
+            // Admin proposes an upgrade
+            await StakingEngineLinear.connect(admin).proposeUpgrade(await mockImplementation.getAddress());
+
+            // Non-admin, non-owner tries to cancel
+            await expect(
+                StakingEngineLinear.connect(user1).cancelUpgrade()
+            ).to.be.revertedWithCustomError(StakingEngineLinear, "NotAuthorizedForUpgradeProposal");
+        });
+
+        it("should validate the implementation address when proposing", async function() {
+            // Try to propose with zero address
+            await expect(
+                StakingEngineLinear.connect(admin).proposeUpgrade(ZeroAddress)
+            ).to.be.revertedWithCustomError(StakingEngineLinear, "InvalidImplementationAddress");
+        });
+
+        it("should validate the implementation address when approving", async function() {
+            // Deploy another implementation with different address
+            const otherImplementation = await StakingEngineLinearV2Factory.deploy();
+            await otherImplementation.waitForDeployment();
+
+            // Admin proposes an upgrade
+            await StakingEngineLinear.connect(admin).proposeUpgrade(await mockImplementation.getAddress());
+
+            // Time passes (fast forward by 2 days + 1 second)
+            await time.increase(2 * 24 * 60 * 60 + 1);
+
+            // Owner tries to approve a different implementation
+            await expect(
+                StakingEngineLinear.connect(owner).approveUpgrade(await otherImplementation.getAddress())
+            ).to.be.revertedWithCustomError(StakingEngineLinear, "InvalidImplementationAddress");
+        });
+
+        it("should revert when trying to approve without an active proposal", async function() {
+            // Reset state by cancelling any pending proposals
+            if ((await StakingEngineLinear.pendingImplementation()) !== ZeroAddress) {
+                await StakingEngineLinear.connect(owner).cancelUpgrade();
+            }
+
+            // Owner tries to approve without a proposal
+            await expect(
+                StakingEngineLinear.connect(owner).approveUpgrade(await mockImplementation.getAddress())
+            ).to.be.revertedWithCustomError(StakingEngineLinear, "NoUpgradeProposalPending");
+        });
+
+        it("should revert when trying to cancel without an active proposal", async function() {
+            // Reset state by cancelling any pending proposals
+            if ((await StakingEngineLinear.pendingImplementation()) !== ZeroAddress) {
+                await StakingEngineLinear.connect(owner).cancelUpgrade();
+            }
+
+            // Try to cancel without an active proposal
+            await expect(
+                StakingEngineLinear.connect(owner).cancelUpgrade()
+            ).to.be.revertedWithCustomError(StakingEngineLinear, "NoUpgradeProposalPending");
         });
     });
 });

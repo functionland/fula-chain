@@ -10,9 +10,11 @@ interface IPool {
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "../governance/libraries/ProposalTypes.sol";
 import "hardhat/console.sol";
 
@@ -37,13 +39,19 @@ Maximum and Minimum Limits
 
 /// @title StakingEngine
 /// @notice Handles token staking with different lock periods and rewards
-/// @dev Non-upgradeable version of the staking contract with separate stake and reward pool addresses
-contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
+/// @dev Upgradeable version of the staking contract with separate stake and reward pool addresses
+contract StakingEngineLinear is 
+    Initializable, 
+    AccessControlUpgradeable, 
+    ReentrancyGuardUpgradeable, 
+    PausableUpgradeable,
+    UUPSUpgradeable 
+{
     using SafeERC20 for IERC20;
 
     // Define roles for access control
     // bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    bytes32 public constant OWNER_ROLE = keccak256("OWNER_ROLE");
+
 
     // Lock periods in seconds
     uint32 public constant LOCK_PERIOD_1 = 90 days;
@@ -110,7 +118,7 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
     
     // Mapping from referrer to mapping of staker to whether they are referred
     mapping(address => mapping(address => bool)) public isReferred;
-
+    
     // Mapping from referrer to array of referrer reward info
     mapping(address => ReferrerRewardInfo[]) public referrerRewards;
 
@@ -133,7 +141,7 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
     uint256 public accRewardPerToken90Days;
     uint256 public accRewardPerToken180Days;
     uint256 public accRewardPerToken365Days;
-
+    
     uint256 public totalStaked90Days;
     uint256 public totalStaked180Days;
     uint256 public totalStaked365Days;
@@ -151,6 +159,12 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
     // For each lock period, a list of referrer addresses (unique, append-only)
     mapping(uint256 => address[]) private referrerAddressesByPeriod;
     mapping(uint256 => mapping(address => bool)) private isReferrerInPeriod;
+
+    // Added state variables for upgrade management
+    address public pendingImplementation;
+    address public upgradeProposer;
+    uint256 public upgradeProposalTime;
+    uint256 public constant UPGRADE_TIMELOCK = 2 days;
 
     event RewardsAdded(uint256 amount);
     event RewardsWithdrawn(uint256 amount);
@@ -174,6 +188,10 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
     event EmergencyAction(string action, uint256 timestamp);
     event PoolBalanceReconciled(uint256 amount, bool isExcess);
 
+    event UpgradeProposed(address indexed proposer, address indexed implementation, uint256 proposalTime);
+    event UpgradeApproved(address indexed approver, address indexed implementation);
+    event UpgradeCancelled(address indexed canceller, address indexed implementation);
+
     error OperationFailed(uint256 code);
     error TotalStakedTooLow(uint256 totalStaked, uint256 required);
     error APYCannotBeSatisfied(uint8 stakingPeriod, uint256 projectedAPY, uint256 minimumAPY);
@@ -184,44 +202,50 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
     error InsufficientApproval();
     error NoClaimableRewards();
     error ClaimPeriodNotReached();
+    error NotAuthorizedForUpgradeProposal();
+    error NotAuthorizedForUpgradeApproval();
+    error NoUpgradeProposalPending();
+    error UpgradeTimelockNotExpired();
+    error InvalidImplementationAddress();
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
 
     /**
-     * @notice Constructor for the non-upgradeable contract
+     * @notice Initializer for the upgradeable contract
      * @param _token Address of the StorageToken
      * @param _stakePool Address of the stake pool
      * @param _rewardPool Address of the reward pool
      * @param initialOwner Address of the initial owner
      * @param initialAdmin Address of the initial admin
      */
-    constructor(
+    function initialize(
         address _token,
         address _stakePool,
         address _rewardPool,
         address initialOwner,
         address initialAdmin
-    ) {
+    ) external initializer {
         require(
             _token != address(0) && 
             _stakePool != address(0) && 
             _rewardPool != address(0) && 
             initialOwner != address(0) && 
             initialAdmin != address(0), 
-            "Invalid address"
+            "Zero address not allowed"
         );
 
-        // Validate that the token address is a valid ERC20 token
-        try IERC20(_token).totalSupply() returns (uint256) {
-            // Token implements totalSupply, likely a valid ERC20
-        } catch {
-            revert InvalidTokenAddress();
-        }
+        __AccessControl_init();
+        __ReentrancyGuard_init();
+        __Pausable_init();
+        __UUPSUpgradeable_init();
 
-        // Initialize roles
-        _grantRole(OWNER_ROLE, initialOwner);
-        _grantRole(ProposalTypes.ADMIN_ROLE, initialOwner); // Grant ADMIN_ROLE to owner as well
+        _grantRole(ProposalTypes.OWNER_ROLE, initialOwner);
         _grantRole(ProposalTypes.ADMIN_ROLE, initialAdmin);
-        _setRoleAdmin(ProposalTypes.ADMIN_ROLE, OWNER_ROLE);
-        
+
+
         token = IERC20(_token);
         stakePool = _stakePool;
         rewardPool = _rewardPool;
@@ -305,8 +329,6 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
         
         return (totalPoolBalance, stakedAmount, rewardsAmount);
     }
-
-
 
     /**
      * @notice Get all stakes for a user
@@ -1077,5 +1099,73 @@ contract StakingEngineLinear is AccessControl, ReentrancyGuard, Pausable {
      */
     function getStakes(address user) external view returns (StakeInfo[] memory) {
         return stakes[user];
+    }
+
+    /**
+     * @notice Proposes a new implementation address for upgrade
+     * @dev Can only be called by admin
+     * @param newImplementation Address of the new implementation contract
+     */
+    function proposeUpgrade(address newImplementation) external onlyRole(ProposalTypes.ADMIN_ROLE) {
+        if (newImplementation == address(0)) revert InvalidImplementationAddress();
+
+        // Set the pending implementation and record proposer and time
+        pendingImplementation = newImplementation;
+        upgradeProposer = msg.sender;
+        upgradeProposalTime = block.timestamp;
+
+        emit UpgradeProposed(msg.sender, newImplementation, block.timestamp);
+    }
+
+    /**
+     * @notice Approves and executes a pending implementation upgrade
+     * @dev Can only be called by owner
+     */
+    function approveUpgrade(address newImplementation) external onlyRole(ProposalTypes.OWNER_ROLE) {
+        if (pendingImplementation == address(0)) revert NoUpgradeProposalPending();
+        if (pendingImplementation != newImplementation) revert InvalidImplementationAddress();
+        if (block.timestamp < upgradeProposalTime + UPGRADE_TIMELOCK) revert UpgradeTimelockNotExpired();
+
+        emit UpgradeApproved(msg.sender, newImplementation);
+
+        // Clear the upgrade proposal data after approval
+        address implementation = pendingImplementation;
+        pendingImplementation = address(0);
+        upgradeProposer = address(0);
+        upgradeProposalTime = 0;
+
+        // Perform the upgrade
+        _authorizeUpgrade(implementation);
+    }
+
+    /**
+     * @notice Cancels a pending implementation upgrade
+     * @dev Can be called by owner or the admin who proposed the upgrade
+     */
+    function cancelUpgrade() external {
+        // Only the original proposer (admin) or any owner can cancel
+        if (msg.sender != upgradeProposer && !hasRole(ProposalTypes.OWNER_ROLE, msg.sender)) {
+            revert NotAuthorizedForUpgradeProposal();
+        }
+        
+        if (pendingImplementation == address(0)) revert NoUpgradeProposalPending();
+
+        address implementation = pendingImplementation;
+        
+        // Clear the upgrade proposal data
+        pendingImplementation = address(0);
+        upgradeProposer = address(0);
+        upgradeProposalTime = 0;
+
+        emit UpgradeCancelled(msg.sender, implementation);
+    }
+
+    /**
+     * @notice Authorizes an upgrade to a new implementation
+     * @dev Internal function that's part of the UUPS pattern
+     */
+    function _authorizeUpgrade(address newImplementation) internal override {
+        // The authorization is handled by the approveUpgrade function
+        // This internal function is called automatically during the upgrade process
     }
 }
