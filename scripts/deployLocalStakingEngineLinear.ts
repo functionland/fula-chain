@@ -1,4 +1,4 @@
-import { ethers } from "hardhat";
+import { ethers, upgrades } from "hardhat";
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 import { parseUnits } from "ethers";
 
@@ -129,19 +129,23 @@ async function main() {
         await rewardPool.connect(deployer).setRoleTransactionLimit(ADMIN_ROLE, tokenSupply);
         console.log("Governance parameters set up for both pools");
 
-        // 6. Deploy StakingEngineLinear
+        // 6. Deploy StakingEngineLinear using UUPS proxy pattern
         console.log("\nDeploying StakingEngineLinear...");
-        const stakingEngine = await StakingEngineLinear.deploy(
-            tokenAddress,
-            stakePoolAddress,
-            rewardPoolAddress,
-            initialOwner,
-            initialAdmin
+        const stakingEngine = await upgrades.deployProxy(
+            StakingEngineLinear,
+            [
+                tokenAddress,
+                stakePoolAddress,
+                rewardPoolAddress,
+                initialOwner,
+                initialAdmin
+            ],
+            { kind: 'uups', initializer: 'initialize' }
         );
         
         await stakingEngine.waitForDeployment();
         const stakingEngineAddress = await stakingEngine.getAddress();
-        console.log("StakingEngineLinear deployed to:", stakingEngineAddress);
+        console.log("StakingEngineLinear proxy deployed to:", stakingEngineAddress);
 
         // 7. Set up permissions for StakingEngineLinear
         console.log("\nSetting up permissions...");

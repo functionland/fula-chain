@@ -402,35 +402,16 @@ contract StakingEngineLinear is
         ReferrerRewardInfo[] memory rewards = referrerRewards[referrer];
         
         for (uint256 i = 0; i < rewards.length; i++) {
-            if (rewards[i].isActive && block.timestamp >= rewards[i].nextClaimTime) {
-                // Calculate how many claim periods have passed since last claim
-                uint256 timeSinceLastClaim = block.timestamp - (rewards[i].nextClaimTime - REFERRER_CLAIM_PERIOD);
-                uint256 claimPeriodsPassed = timeSinceLastClaim / REFERRER_CLAIM_PERIOD;
+            if (rewards[i].isActive) {
+                // Use the exact same calculation as claimReferrerReward
+                uint256 lockEnd = rewards[i].startTime + rewards[i].lockPeriod;
+                uint256 nowOrEnd = block.timestamp < lockEnd ? block.timestamp : lockEnd;
+                uint256 timeElapsed = nowOrEnd - rewards[i].startTime;
+                uint256 totalClaimable = (rewards[i].totalReward * timeElapsed) / rewards[i].lockPeriod;
+                uint256 alreadyClaimed = rewards[i].claimedReward;
                 
-                // Only proceed if at least one period has passed
-                if (claimPeriodsPassed > 0) {
-                    // Calculate total time from start to now
-                    uint256 totalTimeElapsed = block.timestamp - rewards[i].startTime;
-                    
-                    // Calculate total reward per day
-                    uint256 rewardPerDay = rewards[i].totalReward / (rewards[i].lockPeriod / 1 days);
-                    
-                    // Calculate reward for the claim periods
-                    uint256 daysToReward = claimPeriodsPassed * (REFERRER_CLAIM_PERIOD / 1 days);
-                    
-                    // Ensure we don't exceed the lock period
-                    if (totalTimeElapsed > rewards[i].lockPeriod) {
-                        daysToReward = (rewards[i].lockPeriod / 1 days) - (rewards[i].claimedReward / rewardPerDay);
-                    }
-                    
-                    uint256 periodReward = rewardPerDay * daysToReward;
-                    
-                    // Ensure we don't exceed the total reward
-                    if (rewards[i].claimedReward + periodReward > rewards[i].totalReward) {
-                        periodReward = rewards[i].totalReward - rewards[i].claimedReward;
-                    }
-                    
-                    claimable += periodReward;
+                if (totalClaimable > alreadyClaimed) {
+                    claimable += totalClaimable - alreadyClaimed;
                 }
             }
         }

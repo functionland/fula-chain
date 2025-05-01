@@ -1,4 +1,4 @@
-import { ethers } from "hardhat";
+import { ethers, upgrades } from "hardhat";
 import * as readline from "readline";
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 
@@ -171,22 +171,30 @@ async function main() {
             rewardPool = await ethers.getContractAt("StakingPool", rewardPoolAddress);
         }
 
-        // Deploy StakingEngineLinear
-        console.log("\nDeploying StakingEngineLinear...");
-        const stakingEngine = await StakingEngineLinear.deploy(
-            tokenAddress,
-            stakePoolAddress,
-            rewardPoolAddress,
-            initialOwner,
-            initialAdmin
+        // Deploy StakingEngineLinear as a UUPS proxy
+        console.log("\nDeploying StakingEngineLinear as a UUPS proxy...");
+        const stakingEngine = await upgrades.deployProxy(
+            StakingEngineLinear,
+            [
+                tokenAddress,
+                stakePoolAddress,
+                rewardPoolAddress,
+                initialOwner,
+                initialAdmin
+            ],
+            { kind: 'uups', initializer: 'initialize' }
         );
 
         console.log("StakingEngineLinear deployment transaction:", stakingEngine.deploymentTransaction ? stakingEngine.deploymentTransaction.hash : "Transaction hash not available");
         
         await stakingEngine.waitForDeployment();
         const contractAddress = await stakingEngine.getAddress();
+        
+        // Get the implementation address
+        const implementationAddress = await upgrades.erc1967.getImplementationAddress(contractAddress);
+        console.log("StakingEngineLinear implementation address:", implementationAddress);
 
-        console.log("StakingEngineLinear deployed to:", contractAddress);
+        console.log("StakingEngineLinear proxy deployed to:", contractAddress);
         console.log("Token address:", tokenAddress);
         console.log("Stake Pool proxy address:", stakePoolAddress);
         console.log("Reward Pool proxy address:", rewardPoolAddress);
@@ -229,22 +237,16 @@ async function main() {
                 await new Promise(resolve => setTimeout(resolve, 15000)); // Wait 15 seconds per block
             }
             
-            // Verify the deployed StakingEngineLinear
-            console.log("Verifying StakingEngineLinear contract on Etherscan...");
+            // Verify the deployed StakingEngineLinear implementation
+            console.log("Verifying StakingEngineLinear implementation contract on Etherscan...");
             try {
                 await hre.run("verify:verify", {
-                    address: contractAddress,
-                    constructorArguments: [
-                        tokenAddress,
-                        stakePoolAddress,
-                        rewardPoolAddress,
-                        initialOwner,
-                        initialAdmin
-                    ],
+                    address: implementationAddress,
+                    constructorArguments: [],
                 });
-                console.log("StakingEngineLinear contract verified!");
+                console.log("StakingEngineLinear implementation contract verified!");
             } catch (error: any) {
-                console.error("Verification failed:", error.message);
+                console.error("Implementation verification failed:", error.message);
             }
             
             // If new pools were deployed, verify those too
