@@ -39,6 +39,7 @@
     "@types/eslint": "^8",
     "@types/mocha": ">=9.1.0",
     "@types/node": "^22.10.2",
+    "@types/yargs": "^17.0.33",
     "chai": "^4.2.0",
     "eslint": "^8",
     "ethereum-waffle": "^4.0.10",

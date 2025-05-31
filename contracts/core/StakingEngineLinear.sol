@@ -1145,7 +1145,12 @@ contract StakingEngineLinear is
      * @notice Authorizes an upgrade to a new implementation
      * @dev Internal function that's part of the UUPS pattern
      */
-    function _authorizeUpgrade(address newImplementation) internal override {
+    function _authorizeUpgrade(address newImplementation) 
+        internal
+        whenNotPaused
+        onlyRole(ProposalTypes.OWNER_ROLE)
+        override 
+    {
         // The authorization is handled by the approveUpgrade function
         // This internal function is called automatically during the upgrade process
     }
