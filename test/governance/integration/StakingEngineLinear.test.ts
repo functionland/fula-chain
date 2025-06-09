@@ -909,6 +909,175 @@ describe("StakingEngineLinear Security Tests", function () {
         });
     });
 
+    // 16. Underflow Fix Tests - Testing the specific issue reported
+    describe("Underflow Fix Tests", function () {
+        it("should handle checkPendingRewards without underflow for existing stakes", async function () {
+            // This test simulates the exact scenario that was causing underflow
+            const stakeAmount1 = ethers.parseEther("10"); // 10 tokens
+            const stakeAmount2 = ethers.parseEther("100000"); // 100,000 tokens
+            const lockPeriod = 365 * 24 * 60 * 60; // 365 days
+
+            // Add sufficient rewards to the pool
+            const rewardAmount = ethers.parseEther("50000");
+            await token.connect(owner).transferFromContract(admin.address, rewardAmount);
+            await token.connect(admin).approve(await StakingEngineLinear.getAddress(), rewardAmount);
+            await StakingEngineLinear.connect(admin).addRewardsToPool(rewardAmount);
+
+            // Transfer tokens to user1 for staking
+            await token.connect(owner).transferFromContract(user1.address, stakeAmount1 + stakeAmount2);
+            await token.connect(user1).approve(await StakingEngineLinear.getAddress(), stakeAmount1 + stakeAmount2);
+
+            // First stake - smaller amount
+            await StakingEngineLinear.connect(user1).stakeToken(stakeAmount1, lockPeriod);
+
+            // Advance time to generate some rewards
+            await time.increase(30 * 24 * 60 * 60); // 30 days
+
+            // Claim some rewards to set rewardDebt
+            await StakingEngineLinear.connect(user1).claimStakerReward(0);
+
+            // Advance more time
+            await time.increase(30 * 24 * 60 * 60); // Another 30 days
+
+            // Second stake - larger amount (this should trigger the pending rewards calculation)
+            await StakingEngineLinear.connect(user1).stakeToken(stakeAmount2, lockPeriod);
+
+            // The critical test: checkPendingRewards should not underflow
+            const pendingRewards = await StakingEngineLinear.checkPendingRewards(user1.address);
+
+            // Should return a valid number (not revert with underflow)
+            expect(pendingRewards).to.be.gte(0);
+
+            // Verify we can stake again without issues
+            const smallStake = ethers.parseEther("1");
+            await token.connect(owner).transferFromContract(user1.address, smallStake);
+            await token.connect(user1).approve(await StakingEngineLinear.getAddress(), smallStake);
+
+            // This should not revert
+            await expect(
+                StakingEngineLinear.connect(user1).stakeToken(smallStake, lockPeriod)
+            ).to.not.be.reverted;
+        });
+
+        it("should calculate pending rewards correctly using linear system", async function () {
+            const stakeAmount = ethers.parseEther("1000");
+            const lockPeriod = 365 * 24 * 60 * 60; // 365 days
+            const fixedAPY = 15; // 15% for 365 days
+
+            // Add rewards to pool
+            const rewardAmount = ethers.parseEther("10000");
+            await token.connect(owner).transferFromContract(admin.address, rewardAmount);
+            await token.connect(admin).approve(await StakingEngineLinear.getAddress(), rewardAmount);
+            await StakingEngineLinear.connect(admin).addRewardsToPool(rewardAmount);
+
+            // Transfer and approve tokens
+            await token.connect(owner).transferFromContract(user1.address, stakeAmount);
+            await token.connect(user1).approve(await StakingEngineLinear.getAddress(), stakeAmount);
+
+            // Stake tokens
+            await StakingEngineLinear.connect(user1).stakeToken(stakeAmount, lockPeriod);
+
+            // Advance time by half the lock period
+            const halfPeriod = lockPeriod / 2;
+            await time.increase(halfPeriod);
+
+            // Calculate expected pending rewards using the same formula as the contract
+            const totalReward = (stakeAmount * BigInt(fixedAPY) * BigInt(lockPeriod)) / (100n * BigInt(365 * 24 * 60 * 60));
+            const expectedPendingReward = (totalReward * BigInt(halfPeriod)) / BigInt(lockPeriod);
+
+            // Check pending rewards
+            const pendingRewards = await StakingEngineLinear.checkPendingRewards(user1.address);
+
+            // Should be close to expected (within 1% tolerance)
+            const tolerance = expectedPendingReward / 100n;
+            expect(pendingRewards).to.be.closeTo(expectedPendingReward, tolerance);
+        });
+
+        it("should handle multiple stakes with different reward debts correctly", async function () {
+            const stakeAmount = ethers.parseEther("1000");
+            const lockPeriod = 180 * 24 * 60 * 60; // 180 days
+
+            // Add rewards to pool
+            const rewardAmount = ethers.parseEther("10000");
+            await token.connect(owner).transferFromContract(admin.address, rewardAmount);
+            await token.connect(admin).approve(await StakingEngineLinear.getAddress(), rewardAmount);
+            await StakingEngineLinear.connect(admin).addRewardsToPool(rewardAmount);
+
+            // Transfer and approve tokens
+            await token.connect(owner).transferFromContract(user1.address, stakeAmount * 3n);
+            await token.connect(user1).approve(await StakingEngineLinear.getAddress(), stakeAmount * 3n);
+
+            // First stake
+            await StakingEngineLinear.connect(user1).stakeToken(stakeAmount, lockPeriod);
+
+            // Advance time and claim some rewards
+            await time.increase(30 * 24 * 60 * 60); // 30 days
+            await StakingEngineLinear.connect(user1).claimStakerReward(0);
+
+            // Second stake (should handle existing stake with rewardDebt > 0)
+            await StakingEngineLinear.connect(user1).stakeToken(stakeAmount, lockPeriod);
+
+            // Advance time more
+            await time.increase(30 * 24 * 60 * 60); // Another 30 days
+
+            // Third stake (should handle multiple existing stakes)
+            await StakingEngineLinear.connect(user1).stakeToken(stakeAmount, lockPeriod);
+
+            // Check pending rewards - should not underflow
+            const pendingRewards = await StakingEngineLinear.checkPendingRewards(user1.address);
+            expect(pendingRewards).to.be.gte(0);
+
+            // Verify all stakes are tracked correctly
+            const userStakes = await StakingEngineLinear.getUserStakes(user1.address);
+            expect(userStakes.length).to.equal(3);
+
+            // All stakes should be active
+            for (let i = 0; i < userStakes.length; i++) {
+                expect(userStakes[i].isActive).to.be.true;
+                expect(userStakes[i].amount).to.equal(stakeAmount);
+            }
+        });
+
+        it("should maintain consistency between checkPendingRewards and getClaimableStakerReward", async function () {
+            const stakeAmount = ethers.parseEther("1000");
+            const lockPeriod = 90 * 24 * 60 * 60; // 90 days
+
+            // Add rewards to pool
+            const rewardAmount = ethers.parseEther("5000");
+            await token.connect(owner).transferFromContract(admin.address, rewardAmount);
+            await token.connect(admin).approve(await StakingEngineLinear.getAddress(), rewardAmount);
+            await StakingEngineLinear.connect(admin).addRewardsToPool(rewardAmount);
+
+            // Transfer and approve tokens
+            await token.connect(owner).transferFromContract(user1.address, stakeAmount);
+            await token.connect(user1).approve(await StakingEngineLinear.getAddress(), stakeAmount);
+
+            // Stake tokens
+            await StakingEngineLinear.connect(user1).stakeToken(stakeAmount, lockPeriod);
+
+            // Advance time
+            await time.increase(45 * 24 * 60 * 60); // 45 days (half the lock period)
+
+            // Get pending rewards from both functions
+            const pendingRewards = await StakingEngineLinear.checkPendingRewards(user1.address);
+            const claimableReward = await StakingEngineLinear.getClaimableStakerReward(user1.address, 0);
+
+            // They should be very close (allow for small rounding differences)
+            const tolerance = ethers.parseEther("0.001"); // 0.001 token tolerance
+            expect(pendingRewards).to.be.closeTo(claimableReward, tolerance);
+
+            // Claim the rewards using the claimableReward value
+            const balanceBefore = await token.balanceOf(user1.address);
+            await StakingEngineLinear.connect(user1).claimStakerReward(0);
+            const balanceAfter = await token.balanceOf(user1.address);
+
+            const actualClaimed = balanceAfter - balanceBefore;
+
+            // The actual claimed amount should match what was reported as claimable (within tolerance)
+            expect(actualClaimed).to.be.closeTo(claimableReward, tolerance);
+        });
+    });
+
     // Add a comprehensive test for multiple users, referrals, and daily claiming
     describe("Comprehensive Daily Claiming Scenario", function () {
         it("should handle multiple users, referrals, and daily claiming correctly", async function () {

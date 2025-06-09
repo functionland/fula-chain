@@ -481,32 +481,45 @@ contract StakingEngineLinear is
 
         // Update rewards before processing the stake
         updateRewards();
-        
-        // Cache array length and accumulator values to save gas on multiple reads
+
+        // Cache array length to save gas on multiple reads
         uint256 userStakeCount = stakes[msg.sender].length;
-        uint256 accRewardPerToken = getAccRewardPerTokenForLockPeriod(lockPeriod);
         uint256 pendingRewards = 0;
         
-        // Optimize pending rewards calculation loop
+        // Calculate pending rewards for existing stakes using shared calculation function
         if (userStakeCount > 0) {
             for (uint256 i = 0; i < userStakeCount; i++) {
                 StakeInfo storage stake = stakes[msg.sender][i];
                 if (stake.isActive) {
-                    uint256 accRewardPerToken1 = getAccRewardPerTokenForLockPeriod(stake.lockPeriod);
-                    uint256 pendingReward = (stake.amount * (accRewardPerToken1 - stake.rewardDebt)) / PRECISION_FACTOR;
-                    pendingRewards += pendingReward;
-                    
-                    // Update reward debt to current accumulated rewards
-                    stake.rewardDebt = accRewardPerToken1;
+                    uint256 pendingReward = _calculateClaimableReward(stake);
+                    if (pendingReward > 0) {
+                        pendingRewards += pendingReward;
+
+                        // Update reward debt to current claimable amount
+                        // Calculate the new rewardDebt value
+                        uint256 lockEnd = stake.startTime + stake.lockPeriod;
+                        uint256 nowOrEnd = block.timestamp < lockEnd ? block.timestamp : lockEnd;
+                        uint256 timeElapsed = nowOrEnd - stake.startTime;
+
+                        uint256 fixedAPY = 0;
+                        if (stake.lockPeriod == LOCK_PERIOD_1) fixedAPY = FIXED_APY_90_DAYS;
+                        else if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_180_DAYS;
+                        else if (stake.lockPeriod == LOCK_PERIOD_3) fixedAPY = FIXED_APY_365_DAYS;
+
+                        uint256 totalReward = (stake.amount * fixedAPY * stake.lockPeriod) / (100 * 365 days);
+                        uint256 claimable = (totalReward * timeElapsed) / stake.lockPeriod;
+
+                        stake.rewardDebt = claimable;
+                    }
                 }
             }
         }
-        
-        // Add new stake
+
+        // Add new stake with rewardDebt initialized to 0 (no rewards claimed yet)
         stakes[msg.sender].push(
             StakeInfo({
                 amount: amount,
-                rewardDebt: accRewardPerToken,
+                rewardDebt: 0, // Initialize to 0 for linear reward system
                 lockPeriod: lockPeriod,
                 startTime: block.timestamp,
                 referrer: referrer,
@@ -756,6 +769,34 @@ contract StakingEngineLinear is
     }
 
     /**
+     * @notice Calculate claimable rewards for a specific stake using linear reward system
+     * @param stake The stake information
+     * @return claimableReward Amount of claimable rewards for the stake
+     */
+    function _calculateClaimableReward(StakeInfo storage stake) internal view returns (uint256 claimableReward) {
+        if (!stake.isActive) return 0;
+
+        uint256 lockEnd = stake.startTime + stake.lockPeriod;
+        uint256 nowOrEnd = block.timestamp < lockEnd ? block.timestamp : lockEnd;
+        uint256 timeElapsed = nowOrEnd - stake.startTime;
+
+        uint256 fixedAPY = 0;
+        if (stake.lockPeriod == LOCK_PERIOD_1) fixedAPY = FIXED_APY_90_DAYS;
+        else if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_180_DAYS;
+        else if (stake.lockPeriod == LOCK_PERIOD_3) fixedAPY = FIXED_APY_365_DAYS;
+
+        uint256 totalReward = (stake.amount * fixedAPY * stake.lockPeriod) / (100 * 365 days);
+        uint256 claimable = (totalReward * timeElapsed) / stake.lockPeriod;
+        uint256 alreadyClaimed = stake.rewardDebt;
+
+        if (claimable > alreadyClaimed) {
+            claimableReward = claimable - alreadyClaimed;
+        } else {
+            claimableReward = 0;
+        }
+    }
+
+    /**
      * @notice Unstake tokens and claim rewards
      * @param index Index of the stake to unstake
      */
@@ -941,29 +982,27 @@ contract StakingEngineLinear is
      */
     function checkPendingRewards(address user) external view returns (uint256) {
         uint256 totalPendingRewards = 0;
-        
-        // Calculate pending rewards for each stake
+
+        // Calculate pending rewards for each stake using shared calculation function
         for (uint256 i = 0; i < stakes[user].length; i++) {
             StakeInfo storage stake = stakes[user][i];
             if (stake.isActive) {
-                uint256 accRewardPerToken = getAccRewardPerTokenForLockPeriod(stake.lockPeriod);
-                uint256 pendingReward = (stake.amount * (accRewardPerToken - stake.rewardDebt)) / PRECISION_FACTOR;
-                totalPendingRewards += pendingReward;
+                totalPendingRewards += _calculateClaimableReward(stake);
             }
         }
-        
+
         if (totalPendingRewards > 0) {
             // Check if pool has sufficient balance for rewards
             uint256 poolBalance = token.balanceOf(rewardPool);
             uint256 availableForRewards = poolBalance;
-            
+
             if (availableForRewards < totalPendingRewards) {
                 return 0;
             } else {
                 return totalPendingRewards;
             }
         }
-        
+
         return 0;
     }
 
@@ -998,22 +1037,7 @@ contract StakingEngineLinear is
     function getClaimableStakerReward(address staker, uint256 stakeIndex) external view returns (uint256 toClaim) {
         require(stakeIndex < stakes[staker].length, "Invalid stake index");
         StakeInfo storage stake = stakes[staker][stakeIndex];
-        if (!stake.isActive) return 0;
-        uint256 lockEnd = stake.startTime + stake.lockPeriod;
-        uint256 nowOrEnd = block.timestamp < lockEnd ? block.timestamp : lockEnd;
-        uint256 timeElapsed = nowOrEnd - stake.startTime;
-        uint256 fixedAPY = 0;
-        if (stake.lockPeriod == LOCK_PERIOD_1) fixedAPY = FIXED_APY_90_DAYS;
-        else if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_180_DAYS;
-        else if (stake.lockPeriod == LOCK_PERIOD_3) fixedAPY = FIXED_APY_365_DAYS;
-        uint256 totalReward = (stake.amount * fixedAPY * stake.lockPeriod) / (100 * 365 days);
-        uint256 claimable = (totalReward * timeElapsed) / stake.lockPeriod;
-        uint256 alreadyClaimed = stake.rewardDebt;
-        if (claimable > alreadyClaimed) {
-            toClaim = claimable - alreadyClaimed;
-        } else {
-            toClaim = 0;
-        }
+        return _calculateClaimableReward(stake);
     }
 
     // --- View functions for global queries ---
