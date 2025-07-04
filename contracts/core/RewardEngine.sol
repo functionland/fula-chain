@@ -3,9 +3,9 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "./StorageToken.sol";
-import "./interfaces/IRewardEngine.sol";
-import "./interfaces/IStorageProof.sol";
-import "./interfaces/IStoragePool.sol";
+import "../governance/interfaces/IRewardEngine.sol";
+import "../governance/interfaces/IStorageProof.sol";
+import "../governance/interfaces/IStoragePool.sol";
 
 abstract contract RewardEngine is OwnableUpgradeable, IRewardEngine, IStorageProof, IStoragePool {
     StorageToken public token;
@@ -87,32 +87,22 @@ abstract contract RewardEngine is OwnableUpgradeable, IRewardEngine, IStoragePro
     function _calculateMiningReward(
         address storer
     ) internal view returns (uint256) {
-        // Verify provider is active
-        require(storagePool.isProviderActive(storer), "Not an active provider");
-        
+        // Verify storer is a member of any pool
+        require(storagePool.isMemberOfAnyPool(storer), "Not a pool member");
+
         // Check if halving should occur
         uint256 currentPeriod = (block.timestamp - lastHalvingTime) / HALVING_PERIOD;
         uint256 effectiveYearlyReward = miningRewardsPerYear >> currentPeriod;
-        
-        // Get provider type from storage pool
-        bool isLargeProvider = storagePool.isLargeProviderActive(storer);
-        
-        // Get total providers in each category
-        (uint256 totalSmallProviders, uint256 totalLargeProviders) = storagePool.getProviderCounts();
-        require(totalSmallProviders + totalLargeProviders > 0, "No active providers");
-        
-        // Calculate weighted total providers
-        uint256 weightedTotalProviders = totalSmallProviders + 
-            (totalLargeProviders * LARGE_PROVIDER_MULTIPLIER);
-        
-        // Calculate daily reward per provider
+
+        // Get total members across all pools
+        uint256 totalMembers = storagePool.getTotalMembers();
+        require(totalMembers > 0, "No active members");
+
+        // Calculate daily reward per member
         uint256 dailyReward = effectiveYearlyReward / 365;
-        uint256 rewardPerProvider = dailyReward / weightedTotalProviders;
-        
-        // Apply provider multiplier based on pool status
-        return isLargeProvider ? 
-            rewardPerProvider * LARGE_PROVIDER_MULTIPLIER : 
-            rewardPerProvider;
+        uint256 rewardPerMember = dailyReward / totalMembers;
+
+        return rewardPerMember;
     }
 
     function _calculateStorageReward(

@@ -6,10 +6,10 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import "./interfaces/IStorageProof.sol";
+import "../governance/interfaces/IStorageProof.sol";
 import "./StorageToken.sol";
-import "./interfaces/IRewardEngine.sol";
-import "./interfaces/IStoragePool.sol";
+import "../governance/interfaces/IRewardEngine.sol";
+import "../governance/interfaces/IStoragePool.sol";
 
 abstract contract StorageProof is IStorageProof, IStoragePool, OwnableUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable, AccessControlUpgradeable {
     uint256 public constant IMPLEMENTATION_VERSION = 1;
@@ -151,7 +151,7 @@ abstract contract StorageProof is IStorageProof, IStoragePool, OwnableUpgradeabl
         uint256[] memory actualSizes, // Actual sizes of each CID in bytes
         uint256 totalStoredSize
     ) external nonReentrant whenNotPaused validateCIDs(cids) {
-        require(storagePool.isProviderActive(msg.sender), "Not an active provider");
+        require(storagePool.isMemberOfAnyPool(msg.sender), "Not a pool member");
         uint256 totalClaimedSize = 0;
         require(cids.length > 0, "No CIDs provided");
         require(cids.length == actualSizes.length, "Mismatched CIDs and sizes");
