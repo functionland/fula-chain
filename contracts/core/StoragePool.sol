@@ -70,33 +70,9 @@ contract StoragePool is IStoragePool, GovernanceModule {
         nonReentrant
         onlyRole(ProposalTypes.ADMIN_ROLE)
     {
-        // Enhanced validation
-        require(_amount > 0, "Amount must be positive");
-        require(_amount <= MAX_REQUIRED_TOKENS, "Amount exceeds maximum limit");
-
         uint256 oldAmount = dataPoolCreationTokens;
-        dataPoolCreationTokens = _amount;
+        dataPoolCreationTokens = StoragePoolLib.setDataPoolCreationTokensFull(oldAmount, _amount, msg.sender);
         _updateActivityTimestamp();
-
-        // Enhanced monitoring events
-        emit AdminActionExecuted(
-            msg.sender,
-            "SET_POOL_CREATION_TOKENS",
-            0, // no specific target ID
-            address(0), // no specific target address
-            _amount,
-            string(abi.encodePacked("Changed from ", _uint2str(oldAmount), " to ", _uint2str(_amount))),
-            block.timestamp
-        );
-
-        emit SecurityParameterChanged(
-            msg.sender,
-            "dataPoolCreationTokens",
-            oldAmount,
-            _amount,
-            "Admin updated pool creation token requirement",
-            block.timestamp
-        );
     }
 
     // Calculate the required number of locked tokens for a user address
@@ -372,12 +348,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
      * @return true if the address is a member of any pool
      */
     function isMemberOfAnyPool(address member) external view override returns (bool) {
-        for (uint32 i = 1; i <= poolCounter; i++) {
-            if (pools[i].creator != address(0) && pools[i].members[member].joinDate > 0) {
-                return true;
-            }
-        }
-        return false;
+        return StoragePoolLib.isMemberOfAnyPool(pools, poolCounter, member);
     }
 
     /**
@@ -385,22 +356,12 @@ contract StoragePool is IStoragePool, GovernanceModule {
      * @return Total number of unique members across all pools
      */
     function getTotalMembers() external view override returns (uint256) {
-        uint256 totalMembers = 0;
-        for (uint32 i = 1; i <= poolCounter; i++) {
-            if (pools[i].creator != address(0)) {
-                totalMembers += pools[i].memberList.length;
-            }
-        }
-        return totalMembers;
+        return StoragePoolLib.getTotalMembers(pools, poolCounter);
     }
 
     // Function to set the storage cost per pool
     function setStorageCost(uint32 poolId, uint256 costPerTBYear) external nonReentrant whenNotPaused onlyRole(POOL_CREATOR_ROLE) {
-        require(costPerTBYear > 0, "Invalid cost");
-        require(costPerTBYear <= type(uint256).max / (365 days), "Overflow risk"); // Prevent overflow
-        Pool storage pool = pools[poolId];
-        require(msg.sender == pool.creator, "Not Authorized");
-        storageCostPerTBYear[poolId] = costPerTBYear; // Set the cost for the specified pool
+        StoragePoolLib.setStorageCost(pools[poolId], storageCostPerTBYear, msg.sender, poolId, costPerTBYear);
         emit StorageCostSet(poolId, costPerTBYear); // Emit event with poolId
     }
 
@@ -510,52 +471,16 @@ contract StoragePool is IStoragePool, GovernanceModule {
      * @custom:security This function implements comprehensive validation and secure token handling.
      */
     function leavePool(uint32 poolId) external nonReentrant whenNotPaused validatePoolId(poolId) {
-        Pool storage pool = pools[poolId];
-
-        // Ensure the caller is a member of the pool
-        require(pool.members[msg.sender].joinDate > 0, "Not a member");
-
-        // Prevent the pool creator from leaving their own pool
-        require(msg.sender != pool.creator, "Pool creator cannot leave their own pool");
-
-        // Calculate refund amount based on actual locked tokens
-        uint256 lockedAmount = lockedTokens[msg.sender];
-        uint256 refundAmount = 0;
-
-        // Only refund if user has tokens locked for this pool
-        if (lockedAmount >= pool.requiredTokens && userTotalRequiredLockedTokens[msg.sender] >= pool.requiredTokens) {
-            refundAmount = pool.requiredTokens;
-
-            // Update state before external calls to prevent reentrancy
-            lockedTokens[msg.sender] -= refundAmount;
-            userTotalRequiredLockedTokens[msg.sender] -= refundAmount;
-        } else {
-            // User joined without locking tokens (e.g., added by admin), no refund
-            if (userTotalRequiredLockedTokens[msg.sender] >= pool.requiredTokens) {
-                userTotalRequiredLockedTokens[msg.sender] -= pool.requiredTokens;
-            }
-        }
-
-        // Remove the user from the member list efficiently (handles poolMemberIndices)
-        _removeMemberFromList(pool.memberList, msg.sender, poolId);
-
-        // Delete the user's membership data from storage
-        delete pool.members[msg.sender];
-
-        // External call after state updates - only if there's a refund amount
-        if (refundAmount > 0) {
-            bool transferSuccess = _safeTokenTransfer(msg.sender, refundAmount);
-            if (transferSuccess) {
-                emit TokensUnlocked(msg.sender, refundAmount);
-            } else {
-                // If transfer fails after validation, mark as claimable as last resort
-                claimableTokens[msg.sender] += refundAmount;
-                emit TokensMarkedClaimable(msg.sender, refundAmount);
-            }
-        }
-
-        // Emit an event to log that the user has left the pool
-        emit MemberLeft(poolId, msg.sender);
+        StoragePoolLib.leavePoolFull(
+            pools[poolId],
+            lockedTokens,
+            userTotalRequiredLockedTokens,
+            claimableTokens,
+            poolMemberIndices[poolId],
+            token,
+            msg.sender,
+            poolId
+        );
     }
 
     // This method allows the pool creator or contract owner to remove a member from the pool.
@@ -725,17 +650,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
     // Internal function to efficiently remove a member from the member list.
     // This function swaps the target member with the last member in the list and then pops it.
     function _removeMemberFromList(address[] storage memberList, address member, uint32 poolId) internal {
-        uint256 index = poolMemberIndices[poolId][member];
-        uint256 lastIndex = memberList.length - 1;
-        
-        if (index != lastIndex) {
-            address lastMember = memberList[lastIndex];
-            memberList[index] = lastMember;
-            poolMemberIndices[poolId][lastMember] = index;
-        }
-        
-        memberList.pop();
-        delete poolMemberIndices[poolId][member];
+        StoragePoolLib.removeMemberFromList(memberList, poolMemberIndices[poolId], member);
     }
 
     function _addMember(
@@ -743,28 +658,15 @@ contract StoragePool is IStoragePool, GovernanceModule {
         string memory peerId,
         address accountId
     ) internal {
-        require(accountId != address(0), "Invalid account ID");
-        Pool storage pool = pools[poolId];
-        require(pool.memberList.length < MAX_MEMBERS, "Pool is full");
-
-        // Update member data
-        Member storage newMember = pool.members[accountId];
-        newMember.joinDate = block.timestamp;
-        newMember.peerId = peerId;
-        newMember.accountId = accountId;
-        newMember.reputationScore = 400;
-
-        // Update member list and indices
-        poolMemberIndices[poolId][accountId] = pool.memberList.length;
-        pool.memberList.push(accountId);
-
-        // Only update userTotalRequiredLockedTokens if user actually has tokens locked
-        // This is for the voting mechanism where tokens are already locked during join request
-        if (lockedTokens[accountId] >= pool.requiredTokens) {
-            userTotalRequiredLockedTokens[accountId] += pool.requiredTokens;
-        }
-
-        emit MemberJoined(poolId, accountId);
+        StoragePoolLib.addMemberInternal(
+            pools[poolId],
+            poolMemberIndices[poolId],
+            lockedTokens,
+            userTotalRequiredLockedTokens,
+            poolId,
+            peerId,
+            accountId
+        );
     }
 
 
@@ -851,11 +753,95 @@ contract StoragePool is IStoragePool, GovernanceModule {
         address member,
         uint8 score
     ) external nonReentrant whenNotPaused onlyRole(POOL_CREATOR_ROLE) validatePoolId(poolId) {
-        require(score <= 1000, "Score exceeds maximum");
-        Pool storage pool = pools[poolId];
-        require(msg.sender == pool.creator, "Not authorized - only pool creator can set reputation");
-        require(pool.members[member].joinDate > 0, "Not a member");
-        pool.members[member].reputationScore = score;
+        StoragePoolLib.setReputation(pools[poolId], msg.sender, member, score);
+    }
+
+    // === GETTER FUNCTIONS FOR REQUIRED FEATURES ===
+
+    /**
+     * @dev Get all pools with their details and creators
+     */
+    function getAllPools() external view returns (
+        uint256[] memory poolIds,
+        string[] memory names,
+        string[] memory regions,
+        address[] memory creators,
+        uint256[] memory requiredTokens
+    ) {
+        return StoragePoolLib.getAllPools(pools, poolCounter);
+    }
+
+    /**
+     * @dev Get number of members in a specific pool
+     */
+    function getPoolMemberCount(uint32 poolId) external view validatePoolId(poolId) returns (uint256) {
+        return StoragePoolLib.getPoolMemberCount(pools[poolId]);
+    }
+
+    /**
+     * @dev Get paginated list of pool members
+     */
+    function getPoolMembersPaginated(
+        uint32 poolId,
+        uint256 offset,
+        uint256 limit
+    ) external view validatePoolId(poolId) returns (
+        address[] memory members,
+        string[] memory peerIds,
+        uint256[] memory joinDates,
+        uint16[] memory reputationScores,
+        bool hasMore
+    ) {
+        return StoragePoolLib.getPoolMembersPaginated(pools[poolId], offset, limit);
+    }
+
+    /**
+     * @dev Get join requests for a specific user
+     */
+    function getUserJoinRequests(address user) external view returns (
+        uint32[] memory poolIds,
+        string[] memory peerIds,
+        uint32[] memory timestamps,
+        uint8[] memory statuses
+    ) {
+        return StoragePoolLib.getUserJoinRequests(joinRequests, requestIndex, user, poolCounter);
+    }
+
+    /**
+     * @dev Get vote status and counts for a join request
+     */
+    function getJoinRequestVoteStatus(string memory peerId) external view returns (
+        bool exists,
+        uint32 poolId,
+        address accountId,
+        uint128 approvals,
+        uint128 rejections,
+        uint8 status
+    ) {
+        return StoragePoolLib.getJoinRequestVoteStatus(usersActiveJoinRequestByPeerID, peerId);
+    }
+
+    /**
+     * @dev Get reputation of a pool member
+     */
+    function getMemberReputation(uint32 poolId, address member) external view validatePoolId(poolId) returns (
+        bool exists,
+        uint16 reputationScore,
+        uint256 joinDate,
+        string memory peerId
+    ) {
+        return StoragePoolLib.getMemberReputation(pools[poolId], member);
+    }
+
+    /**
+     * @dev Get locked tokens for any wallet
+     */
+    function getUserLockedTokens(address wallet) external view returns (
+        uint256 lockedAmount,
+        uint256 totalRequired,
+        uint256 claimableAmount
+    ) {
+        return StoragePoolLib.getUserLockedTokens(lockedTokens, userTotalRequiredLockedTokens, claimableTokens, wallet);
     }
 
 
@@ -914,22 +900,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
      * @return The string representation of the value
      */
     function _uint2str(uint256 value) internal pure returns (string memory) {
-        if (value == 0) {
-            return "0";
-        }
-        uint256 temp = value;
-        uint256 digits;
-        while (temp != 0) {
-            digits++;
-            temp /= 10;
-        }
-        bytes memory buffer = new bytes(digits);
-        while (value != 0) {
-            digits -= 1;
-            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
-            value /= 10;
-        }
-        return string(buffer);
+        return StoragePoolLib.uint2str(value);
     }
 
     uint256[50] private __gap;

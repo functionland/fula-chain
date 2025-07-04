@@ -1450,4 +1450,555 @@ library StoragePoolLib {
             joinRequests.pop();
         }
     }
+
+    // === GETTER FUNCTIONS FOR REQUIRED FEATURES ===
+
+    /**
+     * @dev Get all pools with their details and creators
+     * @param pools Storage mapping of all pools
+     * @param poolCounter Current pool counter
+     * @return poolIds Array of pool IDs
+     * @return names Array of pool names
+     * @return regions Array of pool regions
+     * @return creators Array of pool creators
+     * @return requiredTokens Array of required tokens for each pool
+     */
+    function getAllPools(
+        mapping(uint256 => IStoragePool.Pool) storage pools,
+        uint256 poolCounter
+    ) external view returns (
+        uint256[] memory poolIds,
+        string[] memory names,
+        string[] memory regions,
+        address[] memory creators,
+        uint256[] memory requiredTokens
+    ) {
+        // Count valid pools first
+        uint256 validPoolCount = 0;
+        for (uint256 i = 1; i <= poolCounter; i++) {
+            if (pools[i].creator != address(0)) {
+                validPoolCount++;
+            }
+        }
+
+        // Initialize arrays
+        poolIds = new uint256[](validPoolCount);
+        names = new string[](validPoolCount);
+        regions = new string[](validPoolCount);
+        creators = new address[](validPoolCount);
+        requiredTokens = new uint256[](validPoolCount);
+
+        // Fill arrays
+        uint256 index = 0;
+        for (uint256 i = 1; i <= poolCounter; i++) {
+            if (pools[i].creator != address(0)) {
+                poolIds[index] = pools[i].id;
+                names[index] = pools[i].name;
+                regions[index] = pools[i].region;
+                creators[index] = pools[i].creator;
+                requiredTokens[index] = pools[i].requiredTokens;
+                index++;
+            }
+        }
+    }
+
+    /**
+     * @dev Get number of members in a specific pool
+     * @param pool The pool storage reference
+     * @return memberCount Number of members in the pool
+     */
+    function getPoolMemberCount(
+        IStoragePool.Pool storage pool
+    ) external view returns (uint256 memberCount) {
+        return pool.memberList.length;
+    }
+
+    /**
+     * @dev Get paginated list of pool members
+     * @param pool The pool storage reference
+     * @param offset Starting index for pagination
+     * @param limit Maximum number of members to return
+     * @return members Array of member addresses
+     * @return peerIds Array of member peer IDs
+     * @return joinDates Array of member join dates
+     * @return reputationScores Array of member reputation scores
+     * @return hasMore Whether there are more members beyond this page
+     */
+    function getPoolMembersPaginated(
+        IStoragePool.Pool storage pool,
+        uint256 offset,
+        uint256 limit
+    ) external view returns (
+        address[] memory members,
+        string[] memory peerIds,
+        uint256[] memory joinDates,
+        uint16[] memory reputationScores,
+        bool hasMore
+    ) {
+        uint256 totalMembers = pool.memberList.length;
+        require(offset < totalMembers, "Offset exceeds member count");
+
+        uint256 end = offset + limit;
+        if (end > totalMembers) {
+            end = totalMembers;
+        }
+
+        uint256 resultLength = end - offset;
+        members = new address[](resultLength);
+        peerIds = new string[](resultLength);
+        joinDates = new uint256[](resultLength);
+        reputationScores = new uint16[](resultLength);
+
+        for (uint256 i = 0; i < resultLength; i++) {
+            address memberAddr = pool.memberList[offset + i];
+            members[i] = memberAddr;
+            peerIds[i] = pool.members[memberAddr].peerId;
+            joinDates[i] = pool.members[memberAddr].joinDate;
+            reputationScores[i] = pool.members[memberAddr].reputationScore;
+        }
+
+        hasMore = end < totalMembers;
+    }
+
+    /**
+     * @dev Get join requests for a specific user
+     * @param joinRequests Storage mapping of join requests by pool ID
+     * @param user Address of the user
+     * @param poolCounter Current pool counter to iterate through pools
+     * @return poolIds Array of pool IDs where user has join requests
+     * @return peerIds Array of peer IDs for each request
+     * @return timestamps Array of request timestamps
+     * @return statuses Array of request statuses
+     */
+    function getUserJoinRequests(
+        mapping(uint32 => IStoragePool.JoinRequest[]) storage joinRequests,
+        mapping(address => uint256) storage /* requestIndex */,
+        address user,
+        uint256 poolCounter
+    ) external view returns (
+        uint32[] memory poolIds,
+        string[] memory peerIds,
+        uint32[] memory timestamps,
+        uint8[] memory statuses
+    ) {
+        // Count user's requests first
+        uint256 requestCount = 0;
+        for (uint32 i = 1; i <= poolCounter; i++) {
+            IStoragePool.JoinRequest[] storage requests = joinRequests[i];
+            for (uint256 j = 0; j < requests.length; j++) {
+                if (requests[j].accountId == user) {
+                    requestCount++;
+                }
+            }
+        }
+
+        // Initialize arrays
+        poolIds = new uint32[](requestCount);
+        peerIds = new string[](requestCount);
+        timestamps = new uint32[](requestCount);
+        statuses = new uint8[](requestCount);
+
+        // Fill arrays
+        uint256 index = 0;
+        for (uint32 i = 1; i <= poolCounter; i++) {
+            IStoragePool.JoinRequest[] storage requests = joinRequests[i];
+            for (uint256 j = 0; j < requests.length; j++) {
+                if (requests[j].accountId == user) {
+                    poolIds[index] = requests[j].poolId;
+                    peerIds[index] = requests[j].peerId;
+                    timestamps[index] = requests[j].timestamp;
+                    statuses[index] = requests[j].status;
+                    index++;
+                }
+            }
+        }
+    }
+
+    /**
+     * @dev Get vote status and counts for a join request
+     * @param usersActiveJoinRequestByPeerID Storage mapping of active requests by peer ID
+     * @param peerId Peer ID of the join request
+     * @return exists Whether the request exists
+     * @return poolId Pool ID of the request
+     * @return accountId Account ID of the requester
+     * @return approvals Number of approval votes
+     * @return rejections Number of rejection votes
+     * @return status Request status (0=pending, 1=approved, 2=rejected)
+     */
+    function getJoinRequestVoteStatus(
+        mapping(string => IStoragePool.JoinRequest) storage usersActiveJoinRequestByPeerID,
+        string memory peerId
+    ) external view returns (
+        bool exists,
+        uint32 poolId,
+        address accountId,
+        uint128 approvals,
+        uint128 rejections,
+        uint8 status
+    ) {
+        IStoragePool.JoinRequest storage request = usersActiveJoinRequestByPeerID[peerId];
+        exists = request.accountId != address(0);
+        if (exists) {
+            poolId = request.poolId;
+            accountId = request.accountId;
+            approvals = request.approvals;
+            rejections = request.rejections;
+            status = request.status;
+        }
+    }
+
+    /**
+     * @dev Get reputation of a pool member
+     * @param pool The pool storage reference
+     * @param member Address of the member
+     * @return exists Whether the member exists in the pool
+     * @return reputationScore Reputation score of the member
+     * @return joinDate When the member joined the pool
+     * @return peerId Peer ID of the member
+     */
+    function getMemberReputation(
+        IStoragePool.Pool storage pool,
+        address member
+    ) external view returns (
+        bool exists,
+        uint16 reputationScore,
+        uint256 joinDate,
+        string memory peerId
+    ) {
+        exists = pool.members[member].joinDate > 0;
+        if (exists) {
+            reputationScore = pool.members[member].reputationScore;
+            joinDate = pool.members[member].joinDate;
+            peerId = pool.members[member].peerId;
+        }
+    }
+
+    /**
+     * @dev Get locked tokens for any wallet
+     * @param lockedTokens Storage mapping of locked tokens
+     * @param userTotalRequiredLockedTokens Storage mapping of total required locked tokens
+     * @param claimableTokens Storage mapping of claimable tokens
+     * @param wallet Address to check
+     * @return lockedAmount Amount of tokens currently locked
+     * @return totalRequired Total amount of tokens required to be locked
+     * @return claimableAmount Amount of tokens that can be claimed
+     */
+    function getUserLockedTokens(
+        mapping(address => uint256) storage lockedTokens,
+        mapping(address => uint256) storage userTotalRequiredLockedTokens,
+        mapping(address => uint256) storage claimableTokens,
+        address wallet
+    ) external view returns (
+        uint256 lockedAmount,
+        uint256 totalRequired,
+        uint256 claimableAmount
+    ) {
+        lockedAmount = lockedTokens[wallet];
+        totalRequired = userTotalRequiredLockedTokens[wallet];
+        claimableAmount = claimableTokens[wallet];
+    }
+
+    /**
+     * @dev Set reputation for a pool member
+     * @param pool The pool storage reference
+     * @param caller Address of the caller
+     * @param member Address of the member
+     * @param score Reputation score to set
+     */
+    function setReputation(
+        IStoragePool.Pool storage pool,
+        address caller,
+        address member,
+        uint8 score
+    ) external {
+        require(score <= 1000, "Score exceeds maximum");
+        require(caller == pool.creator, "Not authorized - only pool creator can set reputation");
+        require(pool.members[member].joinDate > 0, "Not a member");
+        pool.members[member].reputationScore = score;
+    }
+
+    /**
+     * @dev Set storage cost for a pool
+     * @param pool The pool storage reference
+     * @param storageCostPerTBYear Storage mapping for costs
+     * @param caller Address of the caller
+     * @param poolId Pool ID
+     * @param costPerTBYear Cost per TB per year
+     */
+    function setStorageCost(
+        IStoragePool.Pool storage pool,
+        mapping(uint32 => uint256) storage storageCostPerTBYear,
+        address caller,
+        uint32 poolId,
+        uint256 costPerTBYear
+    ) external {
+        require(costPerTBYear > 0, "Invalid cost");
+        require(costPerTBYear <= type(uint256).max / (365 days), "Overflow risk"); // Prevent overflow
+        require(caller == pool.creator, "Not Authorized");
+        storageCostPerTBYear[poolId] = costPerTBYear; // Set the cost for the specified pool
+    }
+
+    /**
+     * @dev Allows a pool member to voluntarily leave a storage pool with token refund
+     * @param pool The pool storage reference
+     * @param lockedTokens Mapping of locked tokens per user
+     * @param userTotalRequiredLockedTokens Mapping of total required locked tokens per user
+     * @param claimableTokens Mapping of claimable tokens per user
+     * @param poolMemberIndices Mapping of member indices in the pool
+     * @param token The storage token contract
+     * @param caller The address leaving the pool
+     * @param poolId The pool ID
+     */
+    function leavePoolFull(
+        IStoragePool.Pool storage pool,
+        mapping(address => uint256) storage lockedTokens,
+        mapping(address => uint256) storage userTotalRequiredLockedTokens,
+        mapping(address => uint256) storage claimableTokens,
+        mapping(address => uint256) storage poolMemberIndices,
+        StorageToken token,
+        address caller,
+        uint32 poolId
+    ) external {
+        // Ensure the caller is a member of the pool
+        require(pool.members[caller].joinDate > 0, "Not a member");
+
+        // Prevent the pool creator from leaving their own pool
+        require(caller != pool.creator, "Pool creator cannot leave their own pool");
+
+        // Calculate refund amount based on actual locked tokens
+        uint256 lockedAmount = lockedTokens[caller];
+        uint256 refundAmount = 0;
+
+        // Only refund if user has tokens locked for this pool
+        if (lockedAmount >= pool.requiredTokens && userTotalRequiredLockedTokens[caller] >= pool.requiredTokens) {
+            refundAmount = pool.requiredTokens;
+
+            // Update state before external calls to prevent reentrancy
+            lockedTokens[caller] -= refundAmount;
+            userTotalRequiredLockedTokens[caller] -= refundAmount;
+        } else {
+            // User joined without locking tokens (e.g., added by admin), no refund
+            if (userTotalRequiredLockedTokens[caller] >= pool.requiredTokens) {
+                userTotalRequiredLockedTokens[caller] -= pool.requiredTokens;
+            }
+        }
+
+        // Remove the user from the member list efficiently
+        removeMemberFromList(pool.memberList, poolMemberIndices, caller);
+
+        // Delete the user's membership data from storage
+        delete pool.members[caller];
+
+        // External call after state updates - only if there's a refund amount
+        if (refundAmount > 0) {
+            bool transferSuccess = safeTokenTransfer(token, caller, refundAmount);
+            if (transferSuccess) {
+                emit TokensUnlocked(caller, refundAmount);
+            } else {
+                // If transfer fails after validation, mark as claimable as last resort
+                claimableTokens[caller] += refundAmount;
+                emit TokensMarkedClaimable(caller, refundAmount);
+            }
+        }
+
+        // Emit an event to log that the user has left the pool
+        emit MemberLeft(poolId, caller);
+    }
+
+    /**
+     * @dev Internal function to efficiently remove a member from the member list
+     * @param memberList The member list array
+     * @param poolMemberIndices Mapping of member indices
+     * @param member The member to remove
+     */
+    function removeMemberFromList(
+        address[] storage memberList,
+        mapping(address => uint256) storage poolMemberIndices,
+        address member
+    ) internal {
+        uint256 index = poolMemberIndices[member];
+        uint256 lastIndex = memberList.length - 1;
+
+        if (index != lastIndex) {
+            address lastMember = memberList[lastIndex];
+            memberList[index] = lastMember;
+            poolMemberIndices[lastMember] = index;
+        }
+
+        memberList.pop();
+        delete poolMemberIndices[member];
+    }
+
+    /**
+     * @dev Check if an address is a member of any pool
+     * @param pools Mapping of all pools
+     * @param poolCounter Total number of pools
+     * @param member The address to check
+     * @return true if the address is a member of any pool
+     */
+    function isMemberOfAnyPool(
+        mapping(uint256 => IStoragePool.Pool) storage pools,
+        uint256 poolCounter,
+        address member
+    ) external view returns (bool) {
+        for (uint32 i = 1; i <= poolCounter; i++) {
+            if (pools[i].creator != address(0) && pools[i].members[member].joinDate > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @dev Get total number of members across all pools
+     * @param pools Mapping of all pools
+     * @param poolCounter Total number of pools
+     * @return Total number of unique members across all pools
+     */
+    function getTotalMembers(
+        mapping(uint256 => IStoragePool.Pool) storage pools,
+        uint256 poolCounter
+    ) external view returns (uint256) {
+        uint256 totalMembers = 0;
+        for (uint32 i = 1; i <= poolCounter; i++) {
+            if (pools[i].creator != address(0)) {
+                totalMembers += pools[i].memberList.length;
+            }
+        }
+        return totalMembers;
+    }
+
+    /**
+     * @dev Helper function to convert uint256 to string for event logging
+     * @param value The uint256 value to convert
+     * @return The string representation of the value
+     */
+    function uint2str(uint256 value) external pure returns (string memory) {
+        return _uint2str(value);
+    }
+
+    /**
+     * @dev Internal helper function to convert uint256 to string
+     * @param value The uint256 value to convert
+     * @return The string representation of the value
+     */
+    function _uint2str(uint256 value) internal pure returns (string memory) {
+        if (value == 0) {
+            return "0";
+        }
+        uint256 temp = value;
+        uint256 digits;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        bytes memory buffer = new bytes(digits);
+        while (value != 0) {
+            digits -= 1;
+            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+            value /= 10;
+        }
+        return string(buffer);
+    }
+
+    /**
+     * @dev Internal function to add a member to a pool
+     * @param pool The pool storage reference
+     * @param poolMemberIndices Mapping of member indices
+     * @param lockedTokens Mapping of locked tokens per user
+     * @param userTotalRequiredLockedTokens Mapping of total required locked tokens per user
+     * @param poolId The pool ID
+     * @param peerId The peer ID of the new member
+     * @param accountId The account ID of the new member
+     */
+    function addMemberInternal(
+        IStoragePool.Pool storage pool,
+        mapping(address => uint256) storage poolMemberIndices,
+        mapping(address => uint256) storage lockedTokens,
+        mapping(address => uint256) storage userTotalRequiredLockedTokens,
+        uint32 poolId,
+        string memory peerId,
+        address accountId
+    ) external {
+        require(accountId != address(0), "Invalid account ID");
+        require(pool.memberList.length < 1000, "Pool is full"); // MAX_MEMBERS = 1000
+
+        // Update member data
+        IStoragePool.Member storage newMember = pool.members[accountId];
+        newMember.joinDate = block.timestamp;
+        newMember.peerId = peerId;
+        newMember.accountId = accountId;
+        newMember.reputationScore = 400;
+
+        // Update member list and indices
+        poolMemberIndices[accountId] = pool.memberList.length;
+        pool.memberList.push(accountId);
+
+        // Only update userTotalRequiredLockedTokens if user actually has tokens locked
+        // This is for the voting mechanism where tokens are already locked during join request
+        if (lockedTokens[accountId] >= pool.requiredTokens) {
+            userTotalRequiredLockedTokens[accountId] += pool.requiredTokens;
+        }
+
+        emit MemberJoined(poolId, accountId);
+    }
+
+    // Events for setDataPoolCreationTokensFull
+    event AdminActionExecuted(
+        address indexed admin,
+        string action,
+        uint256 targetId,
+        address targetAddress,
+        uint256 amount,
+        string details,
+        uint256 timestamp
+    );
+
+    event SecurityParameterChanged(
+        address indexed admin,
+        string parameterName,
+        uint256 oldValue,
+        uint256 newValue,
+        string description,
+        uint256 timestamp
+    );
+
+    /**
+     * @dev Sets the number of tokens needed to be locked to create a data pool
+     * @param oldAmount The current amount of tokens required
+     * @param _amount The new amount of tokens required for pool creation
+     * @param caller The address calling this function
+     * @return newAmount The new amount that was set
+     */
+    function setDataPoolCreationTokensFull(
+        uint256 oldAmount,
+        uint256 _amount,
+        address caller
+    ) external returns (uint256 newAmount) {
+        // Enhanced validation
+        require(_amount > 0, "Amount must be positive");
+        require(_amount <= 10_000_000 * 10**18, "Amount exceeds maximum limit"); // MAX_REQUIRED_TOKENS
+
+        // Enhanced monitoring events
+        emit AdminActionExecuted(
+            caller,
+            "SET_POOL_CREATION_TOKENS",
+            0, // no specific target ID
+            address(0), // no specific target address
+            _amount,
+            string(abi.encodePacked("Changed from ", _uint2str(oldAmount), " to ", _uint2str(_amount))),
+            block.timestamp
+        );
+
+        emit SecurityParameterChanged(
+            caller,
+            "dataPoolCreationTokens",
+            oldAmount,
+            _amount,
+            "Admin updated pool creation token requirement",
+            block.timestamp
+        );
+
+        return _amount;
+    }
 }
