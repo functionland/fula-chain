@@ -35,18 +35,23 @@ contract StoragePool is IStoragePool, GovernanceModule {
     // New mapping to track claimable tokens for users when direct transfers fail
     mapping(address => uint256) public claimableTokens;
 
-    function initialize(address _token, address initialOwner) public reinitializer(1) {
-        require(_token != address(0), "Invalid token address");
+    function initialize(
+        address _storageToken,
+        address initialOwner,
+        address initialAdmin
+    ) public reinitializer(1) {
+        require(_storageToken != address(0), "Invalid token address");
         require(initialOwner != address(0), "Invalid owner address");
+        require(initialAdmin != address(0), "Invalid admin address");
 
         // Initialize governance module (handles UUPSUpgradeable, Ownable, ReentrancyGuard,
         // Pausable, AccessControlEnumerable, role grants, and timelocks)
-        __GovernanceModule_init(initialOwner, initialOwner);
+        __GovernanceModule_init(initialOwner, initialAdmin);
 
         // Grant pool-specific roles
         _grantRole(POOL_CREATOR_ROLE, initialOwner);
 
-        token = StorageToken(_token);
+        token = StorageToken(_storageToken);
         dataPoolCreationTokens = 500_000 * 10**18; // 500K tokens with 18 decimals
     }
 

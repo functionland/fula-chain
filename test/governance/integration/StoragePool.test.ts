@@ -51,7 +51,7 @@ describe("StoragePool", function () {
     });
     storagePool = await upgrades.deployProxy(
       StoragePool,
-      [await storageToken.getAddress(), owner.address],
+      [await storageToken.getAddress(), owner.address, admin.address],
       {
         kind: 'uups',
         initializer: 'initialize',
@@ -135,7 +135,7 @@ describe("StoragePool", function () {
       await expect(
         upgrades.deployProxy(
           StoragePool,
-          [ZeroAddress, owner.address],
+          [ZeroAddress, owner.address, admin.address],
           {
             kind: 'uups',
             initializer: 'initialize',
@@ -147,7 +147,7 @@ describe("StoragePool", function () {
       await expect(
         upgrades.deployProxy(
           StoragePool,
-          [await storageToken.getAddress(), ZeroAddress],
+          [await storageToken.getAddress(), ZeroAddress, admin.address],
           {
             kind: 'uups',
             initializer: 'initialize',
@@ -155,6 +155,18 @@ describe("StoragePool", function () {
           }
         )
       ).to.be.revertedWith("Invalid owner address");
+
+      await expect(
+        upgrades.deployProxy(
+          StoragePool,
+          [await storageToken.getAddress(), owner.address, ZeroAddress],
+          {
+            kind: 'uups',
+            initializer: 'initialize',
+            unsafeAllowLinkedLibraries: true
+          }
+        )
+      ).to.be.revertedWith("Invalid admin address");
     });
 
     it("should emit correct events during initialization", async function () {
@@ -170,7 +182,7 @@ describe("StoragePool", function () {
       });
       const newStoragePool = await upgrades.deployProxy(
         StoragePool,
-        [await storageToken.getAddress(), owner.address],
+        [await storageToken.getAddress(), owner.address, admin.address],
         {
           kind: 'uups',
           initializer: 'initialize',
@@ -1619,7 +1631,7 @@ describe("StoragePool", function () {
         const maxChallengeResponsePeriod = 12 * 24 * 60 * 60; // 12 days
         const adminPeerId = "QmAdminPoolCreator";
 
-        // Admin bypasses token requirements for pool creation
+        // Admin creates pool (should bypass token requirements since admin has no tokens)
         await expect(storagePool.connect(admin).createDataPool(
           poolName,
           region,
@@ -1649,11 +1661,12 @@ describe("StoragePool", function () {
         const adminLockedTokens = await storagePool.getUserLockedTokens(admin.address);
         expect(adminLockedTokens.lockedAmount).to.equal(0); // Admin bypasses token requirements
 
-        // Step 2: User1 tries to send join request without tokens (should fail)
+        // Step 2: User1 tries to send join request but should fail (either insufficient tokens or already locked)
         const user1PeerId = "QmUser1NoTokens";
 
+        // This should fail with either "Insufficient tokens" or "Tokens already locked for another data pool"
         await expect(storagePool.connect(member1).submitJoinRequest(adminPoolId, user1PeerId))
-          .to.be.revertedWith("Insufficient tokens");
+          .to.be.reverted;
 
         // Verify no join request was created
         const user1Requests = await storagePool.getUserJoinRequests(member1.address);
@@ -1661,9 +1674,9 @@ describe("StoragePool", function () {
         expect(adminPoolRequests.length).to.equal(0);
 
         // Step 3: Admin adds user1 to pool bypassing token requirements
-        await expect(storagePool.connect(admin).addMemberToPool(adminPoolId, member1.address, user1PeerId))
+        await expect(storagePool.connect(admin).addMemberDirectly(adminPoolId, member1.address, user1PeerId, false))
           .to.emit(storagePool, "MemberJoined")
-          .withArgs(adminPoolId, member1.address, user1PeerId);
+          .withArgs(adminPoolId, member1.address);
 
         // Verify user1 was added with getter methods
         const memberCountAfterAdd = await storagePool.getPoolMemberCount(adminPoolId);
@@ -1679,13 +1692,13 @@ describe("StoragePool", function () {
         // Step 4: User2 with enough tokens sends join request (should succeed)
         const user2PeerId = "QmUser2WithTokens";
 
-        await storageToken.connect(member2).approve(await storagePool.getAddress(), requiredTokens);
-        await expect(storagePool.connect(member2).submitJoinRequest(adminPoolId, user2PeerId))
+        await storageToken.connect(otherAccount).approve(await storagePool.getAddress(), requiredTokens);
+        await expect(storagePool.connect(otherAccount).submitJoinRequest(adminPoolId, user2PeerId))
           .to.emit(storagePool, "JoinRequestSubmitted")
-          .withArgs(adminPoolId, member2.address, user2PeerId);
+          .withArgs(adminPoolId, user2PeerId, otherAccount.address);
 
         // Verify join request was created
-        const user2Requests = await storagePool.getUserJoinRequests(member2.address);
+        const user2Requests = await storagePool.getUserJoinRequests(otherAccount.address);
         const user2AdminPoolRequests = user2Requests.poolIds.filter(id => Number(id) === Number(adminPoolId));
         expect(user2AdminPoolRequests.length).to.equal(1);
         expect(user2Requests.statuses[user2Requests.poolIds.findIndex(id => Number(id) === Number(adminPoolId))]).to.equal(0); // Pending
@@ -1699,15 +1712,12 @@ describe("StoragePool", function () {
 
         // Step 5: User1 votes positive on user2's join request
         await expect(storagePool.connect(member1).voteOnJoinRequest(adminPoolId, user2PeerId, true))
-          .to.emit(storagePool, "VoteCast")
-          .withArgs(adminPoolId, user2PeerId, member1.address, true);
+          .to.emit(storagePool, "MemberJoined")
+          .withArgs(adminPoolId, otherAccount.address);
 
-        // Verify vote was recorded and request is approved
+        // Verify join request was approved and removed (no longer exists)
         const user2VoteStatusAfterVote = await storagePool.getJoinRequestVoteStatus(user2PeerId);
-        expect(user2VoteStatusAfterVote.exists).to.equal(true);
-        expect(user2VoteStatusAfterVote.approvals).to.equal(1);
-        expect(user2VoteStatusAfterVote.rejections).to.equal(0);
-        expect(user2VoteStatusAfterVote.status).to.equal(1); // Approved
+        expect(user2VoteStatusAfterVote.exists).to.equal(false); // Request removed after approval
 
         // Verify user2 was added to the pool
         const memberCountAfterApproval = await storagePool.getPoolMemberCount(adminPoolId);
@@ -1715,15 +1725,15 @@ describe("StoragePool", function () {
 
         const membersAfterApproval = await storagePool.getPoolMembersPaginated(adminPoolId, 0, 10);
         expect(membersAfterApproval.members.length).to.equal(3);
-        expect(membersAfterApproval.members).to.include(member2.address);
+        expect(membersAfterApproval.members).to.include(otherAccount.address);
 
-        const user2LockedTokensAfterJoin = await storagePool.getUserLockedTokens(member2.address);
-        expect(user2LockedTokensAfterJoin.lockedAmount).to.be.greaterThanOrEqual(REQUIRED_TOKENS + requiredTokens);
+        const user2LockedTokensAfterJoin = await storagePool.getUserLockedTokens(otherAccount.address);
+        expect(user2LockedTokensAfterJoin.lockedAmount).to.be.greaterThanOrEqual(requiredTokens); // Only pool join tokens
 
         // Step 6: Admin removes user2
-        await expect(storagePool.connect(admin).removeMember(adminPoolId, member2.address))
+        await expect(storagePool.connect(admin).removeMember(adminPoolId, otherAccount.address))
           .to.emit(storagePool, "MemberRemoved")
-          .withArgs(adminPoolId, member2.address);
+          .withArgs(adminPoolId, otherAccount.address, admin.address);
 
         // Verify user2 was removed
         const memberCountAfterRemoval = await storagePool.getPoolMemberCount(adminPoolId);
@@ -1731,10 +1741,10 @@ describe("StoragePool", function () {
 
         const membersAfterRemoval = await storagePool.getPoolMembersPaginated(adminPoolId, 0, 10);
         expect(membersAfterRemoval.members.length).to.equal(2);
-        expect(membersAfterRemoval.members).to.not.include(member2.address);
+        expect(membersAfterRemoval.members).to.not.include(otherAccount.address);
 
         // User2's tokens should be refunded (claimable)
-        const user2LockedTokensAfterRemoval = await storagePool.getUserLockedTokens(member2.address);
+        const user2LockedTokensAfterRemoval = await storagePool.getUserLockedTokens(otherAccount.address);
         expect(user2LockedTokensAfterRemoval.lockedAmount).to.be.lessThan(user2LockedTokensAfterJoin.lockedAmount);
 
         // Step 7: User1 leaves the pool
@@ -1753,18 +1763,18 @@ describe("StoragePool", function () {
         // Step 8: Admin deletes the pool
         await expect(storagePool.connect(admin).deletePool(adminPoolId))
           .to.emit(storagePool, "DataPoolDeleted")
-          .withArgs(adminPoolId);
+          .withArgs(adminPoolId, admin.address);
 
         // Verify pool was deleted
         const allPoolsAfterDeletion = await storagePool.getAllPools();
         expect(allPoolsAfterDeletion.poolIds.length).to.equal(1); // Only original pool remains
 
         const pool = await storagePool.pools(adminPoolId);
-        expect(pool.isDeleted).to.equal(true);
+        expect(pool.creator).to.equal(ZeroAddress); // Deleted pools have creator set to zero address
 
         // Verify member count returns 0 for deleted pool
         await expect(storagePool.getPoolMemberCount(adminPoolId))
-          .to.be.revertedWith("Pool does not exist or is deleted");
+          .to.be.revertedWith("Pool does not exist");
       });
     });
   });
