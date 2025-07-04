@@ -253,7 +253,8 @@ describe("StoragePool", function () {
         .to.emit(storagePool, "DataPoolCreated")
         .to.emit(storagePool, "TokensLocked")
         .withArgs(poolCreator.address, POOL_CREATION_TOKENS)
-        .to.emit(storagePool, "MemberJoined");
+        .to.emit(storagePool, "MemberJoined")
+        .withArgs(1, poolCreator.address, creatorPeerId);
 
       // Check pool was created
       expect(await storagePool.poolCounter()).to.equal(1);
@@ -521,7 +522,7 @@ describe("StoragePool", function () {
 
       await expect(storagePool.connect(member1).leavePool(poolId))
         .to.emit(storagePool, "MemberLeft")
-        .withArgs(poolId, member1.address)
+        .withArgs(poolId, member1.address, "QmMember1PeerId")
         .to.emit(storagePool, "TokensUnlocked")
         .withArgs(member1.address, lockedTokens);
 
@@ -701,7 +702,7 @@ describe("StoragePool", function () {
 
       await expect(storagePool.connect(poolCreator).removeMember(poolId, member1.address))
         .to.emit(storagePool, "MemberRemoved")
-        .withArgs(poolId, member1.address, poolCreator.address)
+        .withArgs(poolId, member1.address, poolCreator.address, "QmMember1PeerId")
         .to.emit(storagePool, "TokensUnlocked")
         .withArgs(member1.address, lockedTokens);
 
@@ -993,6 +994,7 @@ describe("StoragePool", function () {
       ))
         .to.emit(storagePool, "DataPoolCreated")
         .to.emit(storagePool, "MemberJoined")
+        .withArgs(1, poolCreator.address, "QmLifecycleCreatorPeerId")
         .to.emit(storagePool, "TokensLocked");
 
       const poolId = 1;
@@ -1043,6 +1045,7 @@ describe("StoragePool", function () {
       // Step 5: Remove a member
       await expect(storagePool.connect(poolCreator).removeMember(poolId, member1.address))
         .to.emit(storagePool, "MemberRemoved")
+        .withArgs(poolId, member1.address, poolCreator.address, "QmLifecycleMember1PeerId")
         .to.emit(storagePool, "TokensUnlocked");
 
       // Member removal verified through token unlock
@@ -1051,6 +1054,7 @@ describe("StoragePool", function () {
       // Step 6: Remaining member leaves
       await expect(storagePool.connect(member2).leavePool(poolId))
         .to.emit(storagePool, "MemberLeft")
+        .withArgs(poolId, member2.address, "QmLifecycleMember2PeerId")
         .to.emit(storagePool, "TokensUnlocked");
 
       // Step 7: Creator deletes pool
@@ -1282,7 +1286,8 @@ describe("StoragePool", function () {
         ))
           .to.emit(storagePool, "DataPoolCreated")
           .to.emit(storagePool, "TokensLocked")
-          .to.emit(storagePool, "MemberJoined");
+          .to.emit(storagePool, "MemberJoined")
+          .withArgs(2, otherAccount.address, creatorPeerId);
 
         // Verify pool properties
         const newPoolId = await storagePool.poolCounter();
@@ -1641,7 +1646,8 @@ describe("StoragePool", function () {
           adminPeerId
         ))
           .to.emit(storagePool, "DataPoolCreated")
-          .to.emit(storagePool, "MemberJoined");
+          .to.emit(storagePool, "MemberJoined")
+          .withArgs(2, admin.address, adminPeerId);
 
         const adminPoolId = await storagePool.poolCounter();
 
@@ -1676,7 +1682,7 @@ describe("StoragePool", function () {
         // Step 3: Admin adds user1 to pool bypassing token requirements
         await expect(storagePool.connect(admin).addMemberDirectly(adminPoolId, member1.address, user1PeerId, false))
           .to.emit(storagePool, "MemberJoined")
-          .withArgs(adminPoolId, member1.address);
+          .withArgs(adminPoolId, member1.address, user1PeerId);
 
         // Verify user1 was added with getter methods
         const memberCountAfterAdd = await storagePool.getPoolMemberCount(adminPoolId);
@@ -1713,7 +1719,7 @@ describe("StoragePool", function () {
         // Step 5: User1 votes positive on user2's join request
         await expect(storagePool.connect(member1).voteOnJoinRequest(adminPoolId, user2PeerId, true))
           .to.emit(storagePool, "MemberJoined")
-          .withArgs(adminPoolId, otherAccount.address);
+          .withArgs(adminPoolId, otherAccount.address, user2PeerId);
 
         // Verify join request was approved and removed (no longer exists)
         const user2VoteStatusAfterVote = await storagePool.getJoinRequestVoteStatus(user2PeerId);
@@ -1733,7 +1739,7 @@ describe("StoragePool", function () {
         // Step 6: Admin removes user2
         await expect(storagePool.connect(admin).removeMember(adminPoolId, otherAccount.address))
           .to.emit(storagePool, "MemberRemoved")
-          .withArgs(adminPoolId, otherAccount.address, admin.address);
+          .withArgs(adminPoolId, otherAccount.address, admin.address, user2PeerId);
 
         // Verify user2 was removed
         const memberCountAfterRemoval = await storagePool.getPoolMemberCount(adminPoolId);
@@ -1750,7 +1756,7 @@ describe("StoragePool", function () {
         // Step 7: User1 leaves the pool
         await expect(storagePool.connect(member1).leavePool(adminPoolId))
           .to.emit(storagePool, "MemberLeft")
-          .withArgs(adminPoolId, member1.address);
+          .withArgs(adminPoolId, member1.address, user1PeerId);
 
         // Verify user1 left
         const memberCountAfterLeave = await storagePool.getPoolMemberCount(adminPoolId);

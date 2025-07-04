@@ -24,12 +24,12 @@ library StoragePoolLib {
     // Events
     event DataPoolCreated(uint256 indexed poolId, string name, address creator);
     event DataPoolDeleted(uint256 indexed poolId, address creator);
-    event MemberJoined(uint256 indexed poolId, address member);
-    event MemberLeft(uint256 indexed poolId, address member);
-    event MemberRemoved(uint32 indexed poolId, address member, address removedBy);
+    event MemberJoined(uint256 indexed poolId, address member, string peerId);
+    event MemberLeft(uint256 indexed poolId, address member, string peerId);
+    event MemberRemoved(uint32 indexed poolId, address member, address removedBy, string peerId);
     event JoinRequestSubmitted(uint256 indexed poolId, string peerId, address member);
-    event JoinRequestCanceled(uint256 indexed poolId, address requester);
-    event JoinRequestRejected(uint32 poolId, address indexed accountId);
+    event JoinRequestCanceled(uint256 indexed poolId, address requester, string peerId);
+    event JoinRequestRejected(uint32 poolId, address indexed accountId, string peerId);
     event TokensLocked(address user, uint256 amount);
     event TokensUnlocked(address user, uint256 amount);
     event TokensMarkedClaimable(address user, uint256 amount);
@@ -293,7 +293,7 @@ library StoragePoolLib {
         });
 
         pool.memberList.push(member);
-        emit MemberJoined(pool.id, member);
+        emit MemberJoined(pool.id, member, peerId);
     }
 
     /**
@@ -353,29 +353,10 @@ library StoragePoolLib {
         });
 
         pool.memberList.push(member);
-        emit MemberJoined(pool.id, member);
+        emit MemberJoined(pool.id, member, peerId);
     }
 
-    /**
-     * @dev Removes a member from the pool's member list
-     */
-    function removeMemberFromList(
-        address[] storage memberList,
-        address member,
-        uint256 poolId
-    ) external {
-        uint256 length = memberList.length;
-        for (uint256 i = 0; i < length; i++) {
-            if (memberList[i] == member) {
-                // Move the last element to the position of the element to remove
-                memberList[i] = memberList[length - 1];
-                // Remove the last element
-                memberList.pop();
-                emit MemberLeft(poolId, member);
-                break;
-            }
-        }
-    }
+
 
     /**
      * @dev Validates pool deletion requirements
@@ -700,13 +681,16 @@ library StoragePoolLib {
                     isAdmin
                 );
 
+                // Get peerId before deleting member data
+                string memory memberPeerId = pool.members[member].peerId;
+
                 // Remove from member list and update indices
                 _removeMemberFromListWithIndices(pool.memberList, member, poolMemberIndices);
                 delete pool.members[member];
 
                 removedCount++;
 
-                emit MemberRemoved(poolId, member, caller);
+                emit MemberRemoved(poolId, member, caller, memberPeerId);
                 // Don't increment i since we removed an element
             } else {
                 i++;
@@ -1086,10 +1070,13 @@ library StoragePoolLib {
                     }
                 }
 
+                // Get peerId before removing the request
+                string memory requestPeerId = request.peerId;
+
                 // Remove the join request from storage
                 removeJoinRequest(joinRequests, usersActiveJoinRequestByPeerID, requestIndex, poolId, request.accountId);
 
-                emit JoinRequestRejected(poolId, request.accountId);
+                emit JoinRequestRejected(poolId, request.accountId, requestPeerId);
             }
         }
     }
@@ -1145,7 +1132,7 @@ library StoragePoolLib {
             userTotalRequiredLockedTokens[accountId] += pool.requiredTokens;
         }
 
-        emit MemberJoined(poolId, accountId);
+        emit MemberJoined(poolId, accountId, peerId);
     }
 
     /**
@@ -1276,6 +1263,10 @@ library StoragePoolLib {
         require(index < joinRequests[poolId].length, "Invalid request");
         IStoragePool.Pool storage pool = pools[poolId];
 
+        // Get peerId from the join request before removing it
+        IStoragePool.JoinRequest storage request = joinRequests[poolId][index - 1]; // index is 1-based
+        string memory requestPeerId = request.peerId;
+
         // Update state before external calls to prevent reentrancy
         uint256 lockedAmount = lockedTokens[requester];
         uint256 refundAmount = 0;
@@ -1306,7 +1297,7 @@ library StoragePoolLib {
             }
         }
 
-        emit JoinRequestCanceled(poolId, requester);
+        emit JoinRequestCanceled(poolId, requester, requestPeerId);
     }
 
     /**
@@ -1783,6 +1774,9 @@ library StoragePoolLib {
             }
         }
 
+        // Get peerId before deleting member data
+        string memory memberPeerId = pool.members[caller].peerId;
+
         // Remove the user from the member list efficiently
         removeMemberFromList(pool.memberList, poolMemberIndices, caller);
 
@@ -1802,7 +1796,7 @@ library StoragePoolLib {
         }
 
         // Emit an event to log that the user has left the pool
-        emit MemberLeft(poolId, caller);
+        emit MemberLeft(poolId, caller, memberPeerId);
     }
 
     /**
@@ -1940,7 +1934,7 @@ library StoragePoolLib {
             userTotalRequiredLockedTokens[accountId] += pool.requiredTokens;
         }
 
-        emit MemberJoined(poolId, accountId);
+        emit MemberJoined(poolId, accountId, peerId);
     }
 
     // Events for setDataPoolCreationTokensFull

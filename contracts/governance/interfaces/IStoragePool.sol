@@ -76,15 +76,15 @@ interface IStoragePool {
     event DataPoolDeleted(uint256 indexed poolId, address creator);
 
     // === Member Management Events ===
-    event MemberJoined(uint256 indexed poolId, address member);
-    event MemberLeft(uint256 indexed poolId, address member);
-    event MemberRemoved(uint32 indexed poolId, address member, address removedBy);
+    event MemberJoined(uint256 indexed poolId, address member, string peerId);
+    event MemberLeft(uint256 indexed poolId, address member, string peerId);
+    event MemberRemoved(uint32 indexed poolId, address member, address removedBy, string peerId);
     event MembersBatchRemoved(uint32 indexed poolId, uint256 count);
 
     // === Join Request Events ===
     event JoinRequestSubmitted(uint256 indexed poolId, string peerId, address member);
-    event JoinRequestCanceled(uint256 indexed poolId, address requester);
-    event JoinRequestRejected(uint32 poolId, address indexed accountId);
+    event JoinRequestCanceled(uint256 indexed poolId, address requester, string peerId);
+    event JoinRequestRejected(uint32 poolId, address indexed accountId, string peerId);
 
     // === Token Management Events ===
     event TokensLocked(address user, uint256 amount);

@@ -496,7 +496,8 @@ contract StoragePool is IStoragePool, GovernanceModule {
         // Validate member removal using library
         StoragePoolLib.validateMemberRemoval(pool, member, msg.sender, isAdmin);
 
-        // Get locked tokens before removal for event emission
+        // Get peerId and locked tokens before removal for event emission
+        string memory memberPeerId = pool.members[member].peerId;
         uint256 refundAmount = pool.requiredTokens;
 
         // Remove the member from the member list first (handles poolMemberIndices)
@@ -512,7 +513,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
             member
         );
 
-        emit MemberRemoved(poolId, member, msg.sender);
+        emit MemberRemoved(poolId, member, msg.sender, memberPeerId);
         emit TokensUnlocked(member, refundAmount);
     }
 
