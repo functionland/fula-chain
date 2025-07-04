@@ -252,7 +252,7 @@ describe("StoragePool", function () {
       expect(pool.region).to.equal(region);
       expect(pool.creator).to.equal(poolCreator.address);
       expect(pool.requiredTokens).to.equal(REQUIRED_TOKENS);
-      expect(pool.criteria.minPingTime).to.equal(minPingTime);
+      expect(pool.minPingTime).to.equal(minPingTime);
 
       // Check tokens were locked
       expect(await storagePool.lockedTokens(poolCreator.address)).to.equal(POOL_CREATION_TOKENS);
