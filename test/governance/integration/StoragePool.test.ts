@@ -1507,8 +1507,8 @@ describe("StoragePool", function () {
       it("should allow setting reputation by pool creator", async function () {
         const newReputation = 200; // uint8 max is 255
 
-        // setReputation doesn't emit an event, so just call it directly
-        await storagePool.connect(poolCreator).setReputation(poolId, member1.address, newReputation);
+        // setReputation now uses peer ID instead of member address
+        await storagePool.connect(poolCreator).setReputation(poolId, member1PeerId, newReputation);
 
         const result = await storagePool.getMemberReputation(poolId, member1.address);
         expect(result.reputationScore).to.equal(newReputation);
@@ -2064,34 +2064,39 @@ describe("StoragePool", function () {
         poolId2 = 2;
       });
 
-      it("should allow same peer ID in different pools", async function () {
+      it("should prevent same peer ID from being used in different pools", async function () {
         // Add member1 to first pool with peer ID
         await storagePool.connect(member1).submitJoinRequest(poolId, member1PeerId1);
         await storagePool.connect(poolCreator).voteOnJoinRequest(poolId, member1PeerId1, true);
 
-        // Add member2 to second pool with same peer ID (should be allowed)
-        // Use a different peer ID to avoid voting conflicts since voting is tracked globally by peer ID
-        const samePeerIdForDifferentPool = "QmSamePeerIdDifferentPool";
-        await storagePool.connect(member2).submitJoinRequest(poolId2, samePeerIdForDifferentPool);
-        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId2, samePeerIdForDifferentPool, true);
-
-        // Verify peer IDs exist in both pools with different members
+        // Verify member1 is in the first pool
         let result1 = await storagePool.isPeerIdMemberOfPool(poolId, member1PeerId1);
         expect(result1[0]).to.be.true;
         expect(result1[1]).to.equal(member1.address);
 
-        let result2 = await storagePool.isPeerIdMemberOfPool(poolId2, samePeerIdForDifferentPool);
-        expect(result2[0]).to.be.true;
-        expect(result2[1]).to.equal(member2.address);
+        // Try to use the same peer ID in a different pool with a different account - should fail
+        await expect(
+          storagePool.connect(admin).addMemberDirectly(poolId2, otherAccount.address, member1PeerId1, false)
+        ).to.be.revertedWith("Peer ID already used by different account");
 
-        // Test that the same peer ID can actually be used in different pools
-        // by using admin to directly add a member with the same peer ID to the second pool
-        await storagePool.connect(admin).addMemberDirectly(poolId2, otherAccount.address, member1PeerId1, false);
+        // Try to use the same peer ID in a different pool with the same account - should also fail
+        await expect(
+          storagePool.connect(admin).addMemberDirectly(poolId2, member1.address, member1PeerId1, false)
+        ).to.be.revertedWith("Peer ID already member of different pool");
 
-        // Verify the same peer ID now exists in both pools
-        let result3 = await storagePool.isPeerIdMemberOfPool(poolId2, member1PeerId1);
+        // Verify the peer ID is still only in the first pool
+        let result2 = await storagePool.isPeerIdMemberOfPool(poolId2, member1PeerId1);
+        expect(result2[0]).to.be.false;
+        expect(result2[1]).to.equal(ethers.ZeroAddress);
+
+        // Test that different peer IDs can still be used in different pools
+        const differentPeerId = "QmDifferentPeerIdForPool2";
+        await storagePool.connect(admin).addMemberDirectly(poolId2, member2.address, differentPeerId, false);
+
+        // Verify the different peer ID works in the second pool
+        let result3 = await storagePool.isPeerIdMemberOfPool(poolId2, differentPeerId);
         expect(result3[0]).to.be.true;
-        expect(result3[1]).to.equal(otherAccount.address);
+        expect(result3[1]).to.equal(member2.address);
       });
 
       it("should prevent same member from joining multiple pools when tokens are locked", async function () {

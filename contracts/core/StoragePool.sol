@@ -32,8 +32,16 @@ contract StoragePool is IStoragePool, GovernanceModule {
     mapping(string => JoinRequest) private usersActiveJoinRequestByPeerID;
     mapping(uint256 => mapping(address => uint256)) private poolMemberIndices;
 
+    // Global peer ID tracking to ensure uniqueness across pools
+    mapping(string => address) private globalPeerIdToAccount;  // Maps peer ID to owning account
+    mapping(string => uint32) private globalPeerIdToPool;      // Maps peer ID to pool it belongs to
+
     // New mapping to track claimable tokens for users when direct transfers fail
     mapping(address => uint256) public claimableTokens;
+
+    // Additional state variables for enhanced security
+    mapping(address => uint256) private lastClaimTimestamp;
+    mapping(address => bool) private transferLocks;
 
     function initialize(
         address _storageToken,
@@ -135,6 +143,8 @@ contract StoragePool is IStoragePool, GovernanceModule {
             lockedTokens,
             userTotalRequiredLockedTokens,
             poolActionTimeLocks,
+            globalPeerIdToAccount,
+            globalPeerIdToPool,
             token,
             poolCounter,
             dataPoolCreationTokens,
@@ -164,6 +174,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
             lockedTokens,
             userTotalRequiredLockedTokens,
             claimableTokens,
+            transferLocks,
             poolMemberIndices[poolId],
             token,
             msg.sender,
@@ -223,6 +234,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
             lockedTokens,
             userTotalRequiredLockedTokens,
             claimableTokens,
+            transferLocks,
             poolMemberIndices[poolId],
             joinRequests[poolId],
             token,
@@ -318,6 +330,8 @@ contract StoragePool is IStoragePool, GovernanceModule {
             requestIndex,
             lockedTokens,
             userTotalRequiredLockedTokens,
+            globalPeerIdToAccount,
+            globalPeerIdToPool,
             token,
             poolId,
             peerId,
@@ -413,6 +427,9 @@ contract StoragePool is IStoragePool, GovernanceModule {
             lockedTokens,
             userTotalRequiredLockedTokens,
             claimableTokens,
+            transferLocks,
+            globalPeerIdToAccount,
+            globalPeerIdToPool,
             token,
             poolId,
             msg.sender
@@ -467,7 +484,10 @@ contract StoragePool is IStoragePool, GovernanceModule {
             lockedTokens,
             userTotalRequiredLockedTokens,
             claimableTokens,
+            transferLocks,
             poolMemberIndices[poolId],
+            globalPeerIdToAccount,
+            globalPeerIdToPool,
             token,
             msg.sender,
             poolId
@@ -485,6 +505,9 @@ contract StoragePool is IStoragePool, GovernanceModule {
             lockedTokens,
             userTotalRequiredLockedTokens,
             claimableTokens,
+            transferLocks,
+            globalPeerIdToAccount,
+            globalPeerIdToPool,
             token,
             poolId,
             member,
@@ -497,7 +520,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
      * @dev Allows users to claim tokens that were marked as claimable when direct transfers failed
      */
     function claimTokens() external nonReentrant whenNotPaused {
-        StoragePoolLib.claimTokens(claimableTokens, token, msg.sender);
+        StoragePoolLib.claimTokens(claimableTokens, lastClaimTimestamp, transferLocks, token, msg.sender);
     }
 
     /**
@@ -516,12 +539,15 @@ contract StoragePool is IStoragePool, GovernanceModule {
             pool,
             lockedTokens,
             userTotalRequiredLockedTokens,
+            globalPeerIdToAccount,
+            globalPeerIdToPool,
             token,
             peerId,
             member,
             msg.sender,
             isAdmin,
-            requireTokenLock
+            requireTokenLock,
+            poolId
         );
 
         poolMemberIndices[poolId][member] = pool.memberList.length - 1;
@@ -598,7 +624,10 @@ contract StoragePool is IStoragePool, GovernanceModule {
             lockedTokens,
             userTotalRequiredLockedTokens,
             claimableTokens,
+            transferLocks,
             poolMemberIndices,
+            globalPeerIdToAccount,
+            globalPeerIdToPool,
             token,
             poolId,
             peerIdToVote,
@@ -610,10 +639,10 @@ contract StoragePool is IStoragePool, GovernanceModule {
     // Set reputation implementation
     function setReputation(
         uint32 poolId,
-        address member,
+        string memory peerId,
         uint8 score
-    ) external nonReentrant whenNotPaused onlyRole(POOL_CREATOR_ROLE) validatePoolId(poolId) {
-        StoragePoolLib.setReputation(pools[poolId], msg.sender, member, score);
+    ) external nonReentrant whenNotPaused validatePoolId(poolId) {
+        StoragePoolLib.setReputation(pools[poolId], msg.sender, peerId, score);
     }
 
     // === GETTER FUNCTIONS FOR REQUIRED FEATURES ===
@@ -751,7 +780,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
      * @return success Whether the transfer was successful
      */
     function _safeTokenTransfer(address to, uint256 amount) internal returns (bool success) {
-        return StoragePoolLib.safeTokenTransfer(token, to, amount);
+        return StoragePoolLib.safeTokenTransfer(transferLocks, token, to, amount);
     }
 
     /**
