@@ -130,29 +130,15 @@ contract StoragePool is IStoragePool, GovernanceModule {
         uint256 maxChallengeResponsePeriod,
         string memory creatorPeerId
     ) external nonReentrant whenNotPaused {
-        bytes32 actionHash = keccak256(abi.encodePacked("CREATE_POOL", msg.sender));
-        require(block.timestamp >= poolActionTimeLocks[actionHash], "Timelock active");
-
-        // Validate inputs
-        require(bytes(name).length > 0, "Pool name cannot be empty");
-        require(bytes(region).length > 0, "Region cannot be empty");
-        require(minPingTime > 0, "Minimum ping time must be greater than zero");
-
-        if (maxChallengeResponsePeriod == 0) {
-            maxChallengeResponsePeriod = 7 days;
-        }
-
-        // Check if caller is admin or has pool creator role
-        bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
-
-        // Use library to create the pool
-        uint256 newPoolId = StoragePoolLib.createPool(
+        uint256 newPoolId = StoragePoolLib.createPoolFull(
             pools,
             lockedTokens,
             userTotalRequiredLockedTokens,
+            poolActionTimeLocks,
             token,
             poolCounter,
             dataPoolCreationTokens,
+            POOL_ACTION_DELAY,
             name,
             region,
             requiredTokens,
@@ -160,12 +146,11 @@ contract StoragePool is IStoragePool, GovernanceModule {
             maxChallengeResponsePeriod,
             creatorPeerId,
             msg.sender,
-            isAdmin
+            hasRole(ProposalTypes.ADMIN_ROLE, msg.sender)
         );
 
         poolCounter = newPoolId;
         _grantRole(POOL_CREATOR_ROLE, msg.sender);
-        poolActionTimeLocks[actionHash] = block.timestamp + POOL_ACTION_DELAY;
     }
 
     /**
@@ -322,7 +307,8 @@ contract StoragePool is IStoragePool, GovernanceModule {
             requestIndex,
             token,
             msg.sender,
-            poolId
+            poolId,
+            peerId
         );
 
         // Create join request using library
@@ -493,74 +479,22 @@ contract StoragePool is IStoragePool, GovernanceModule {
         Pool storage pool = pools[poolId];
         bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
 
-        // Validate member removal using library
-        StoragePoolLib.validateMemberRemoval(pool, member, msg.sender, isAdmin);
-
-        // Get peerId and locked tokens before removal for event emission
-        string memory memberPeerId = pool.members[member].peerId;
-        uint256 refundAmount = pool.requiredTokens;
-
-        // Remove the member from the member list first (handles poolMemberIndices)
-        _removeMemberFromList(pool.memberList, member, poolId);
-
-        // Process member removal with refund using library (handles tokens and pool.members)
-        StoragePoolLib.removeMemberWithRefund(
+        StoragePoolLib.removeMemberFull(
             pool,
+            poolMemberIndices,
             lockedTokens,
             userTotalRequiredLockedTokens,
             claimableTokens,
             token,
-            member
+            poolId,
+            member,
+            msg.sender,
+            isAdmin
         );
-
-        emit MemberRemoved(poolId, member, msg.sender, memberPeerId);
-        emit TokensUnlocked(member, refundAmount);
     }
 
     /**
      * @dev Allows users to claim tokens that were marked as claimable when direct transfers failed
-     *
-     * @notice This function provides a secure fallback mechanism for token recovery with the following features:
-     * - Enables users to claim tokens when direct transfers fail
-     * - Protects against malicious token contract manipulation
-     * - Implements secure transfer validation with retry mechanism
-     * - Clears claimable amounts to prevent double-claiming
-     * - Emits monitoring events for tracking
-     *
-     * @notice Claimable Token Mechanism:
-     * - Tokens become claimable when direct transfers fail during refunds
-     * - Prevents loss of user funds due to token contract issues
-     * - Maintains user ownership of tokens even with transfer failures
-     * - Provides alternative recovery path for stuck tokens
-     *
-     * @notice Security Features:
-     * - Validates claimable amount before processing
-     * - Clears claimable balance before transfer (prevents reentrancy)
-     * - Uses secure transfer validation to ensure success
-     * - Reentrancy protection via nonReentrant modifier
-     * - Comprehensive error handling for edge cases
-     *
-     * @notice Transfer Validation:
-     * - Checks token contract balance before and after transfer
-     * - Validates exact transfer amount was processed
-     * - Prevents manipulation by malicious token contracts
-     * - Ensures atomic claim operations
-     *
-     * @notice Use Cases:
-     * - Recovery from failed refund transfers
-     * - Claiming tokens after pool deletion
-     * - Retrieving tokens after rejected join requests
-     * - Emergency token recovery scenarios
-     *
-     * Requirements:
-     * - Caller must have claimable tokens (amount > 0)
-     * - Token contract must be functional for transfers
-     * - Contract must not be paused
-     *
-     * Emits:
-     * - TokensClaimed(user, amount) for successful claims
-     *
-     * @custom:security This function implements secure token claiming with comprehensive validation.
      */
     function claimTokens() external nonReentrant whenNotPaused {
         StoragePoolLib.claimTokens(claimableTokens, token, msg.sender);
@@ -568,64 +502,6 @@ contract StoragePool is IStoragePool, GovernanceModule {
 
     /**
      * @dev Allows authorized users to directly add members to pools, bypassing the voting process
-     *
-     * @notice This function provides administrative control for pool membership with the following features:
-     * - Admin and pool creator can add members without voting
-     * - Flexible token lock requirements based on caller privileges
-     * - Comprehensive validation of member eligibility
-     * - Automatic member data structure updates
-     * - Monitoring events for audit trails
-     *
-     * @notice Access Control Logic:
-     * - Admin: Can bypass all token lock requirements if requireTokenLock=false
-     * - Pool Creator: Must enforce token lock requirements (cannot bypass)
-     * - Other users: Not authorized to use this function
-     * - Prevents unauthorized member additions
-     *
-     * @notice Token Lock Management:
-     * - requireTokenLock=true: Enforces standard token locking for all callers
-     * - requireTokenLock=false: Only admins can bypass token requirements
-     * - Pool creators cannot bypass token locks (prevents abuse)
-     * - Maintains economic incentives for pool participation
-     *
-     * @notice Member Addition Process:
-     * - Validates member is not already in pool
-     * - Checks token balance and lock requirements
-     * - Creates optimized Member struct with gas-efficient packing
-     * - Updates pool.members mapping and memberList array
-     * - Maintains poolMemberIndices for efficient lookups
-     *
-     * @notice Security Features:
-     * - Role-based access control prevents unauthorized additions
-     * - Duplicate member prevention via membership checks
-     * - Token balance validation when locks are required
-     * - Comprehensive input validation for all parameters
-     * - Reentrancy protection via nonReentrant modifier
-     *
-     * @notice Use Cases:
-     * - Emergency member addition by admin
-     * - Pool creator adding trusted members
-     * - Bulk member onboarding with proper authorization
-     * - Recovery from failed voting processes
-     *
-     * @param poolId Unique identifier of the target pool
-     * @param member Ethereum address of the user to add as a member
-     * @param peerId IPFS peer identifier for the new member
-     * @param requireTokenLock Whether to enforce token locking (admin can bypass, creator cannot)
-     *
-     * Requirements:
-     * - Caller must be admin or pool creator
-     * - Pool must exist and be in valid state
-     * - Member must not already be in the pool
-     * - If requireTokenLock=true, member must have sufficient token balance
-     * - Peer ID must be valid and not already in use
-     * - Contract must not be paused
-     *
-     * Emits:
-     * - MemberAddedDirectly(poolId, member, addedBy) for direct addition tracking
-     * - TokensLocked(member, amount) if tokens are locked
-     *
-     * @custom:security This function implements role-based access control with flexible token requirements.
      */
     function addMemberDirectly(
         uint32 poolId,
@@ -636,7 +512,6 @@ contract StoragePool is IStoragePool, GovernanceModule {
         Pool storage pool = pools[poolId];
         bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
 
-        // Use library function with proper access control and token management
         StoragePoolLib.addMemberToPoolWithTokens(
             pool,
             lockedTokens,
@@ -649,31 +524,10 @@ contract StoragePool is IStoragePool, GovernanceModule {
             requireTokenLock
         );
 
-        // Update member indices
         poolMemberIndices[poolId][member] = pool.memberList.length - 1;
     }
 
-    // Internal function to efficiently remove a member from the member list.
-    // This function swaps the target member with the last member in the list and then pops it.
-    function _removeMemberFromList(address[] storage memberList, address member, uint32 poolId) internal {
-        StoragePoolLib.removeMemberFromList(memberList, poolMemberIndices[poolId], member);
-    }
 
-    function _addMember(
-        uint32 poolId,
-        string memory peerId,
-        address accountId
-    ) internal {
-        StoragePoolLib.addMemberInternal(
-            pools[poolId],
-            poolMemberIndices[poolId],
-            lockedTokens,
-            userTotalRequiredLockedTokens,
-            poolId,
-            peerId,
-            accountId
-        );
-    }
 
 
 
@@ -907,6 +761,48 @@ contract StoragePool is IStoragePool, GovernanceModule {
      */
     function _uint2str(uint256 value) internal pure returns (string memory) {
         return StoragePoolLib.uint2str(value);
+    }
+
+    /**
+     * @dev Check if a peer ID is a member of a specific pool
+     */
+    function isPeerIdMemberOfPool(uint32 poolId, string memory peerId) external view validatePoolId(poolId) returns (bool, address) {
+        Pool storage pool = pools[poolId];
+        address memberAddress = pool.peerIdToMember[peerId];
+        bool isMember = memberAddress != address(0) && pool.members[memberAddress].joinDate > 0;
+        return (isMember, memberAddress);
+    }
+
+    /**
+     * @dev Get all peer IDs for a member in a specific pool
+     */
+    function getMemberPeerIds(uint32 poolId, address member) external view validatePoolId(poolId) returns (string[] memory) {
+        Pool storage pool = pools[poolId];
+        if (pool.members[member].joinDate > 0) {
+            return pool.memberPeerIds[member];
+        } else {
+            return new string[](0);
+        }
+    }
+
+    /**
+     * @dev Get reputation of a pool member with all peer IDs
+     */
+    function getMemberReputationMultiPeer(uint32 poolId, address member) external view validatePoolId(poolId) returns (
+        bool exists,
+        uint16 reputationScore,
+        uint256 joinDate,
+        string[] memory peerIds
+    ) {
+        Pool storage pool = pools[poolId];
+        exists = pool.members[member].joinDate > 0;
+        if (exists) {
+            reputationScore = pool.members[member].reputationScore;
+            joinDate = pool.members[member].joinDate;
+            peerIds = pool.memberPeerIds[member];
+        } else {
+            peerIds = new string[](0);
+        }
     }
 
     uint256[50] private __gap;

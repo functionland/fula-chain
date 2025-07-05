@@ -13,6 +13,8 @@ interface IStoragePool {
      * - Slot 5: creator (address) + criteria.minPingTime (uint256) - packed together
      * - Slot 6+: members mapping
      * - Slot 7+: memberList array
+     * - Slot 8+: memberPeerIds mapping (address => string[])
+     * - Slot 9+: peerIdToMember mapping (string => address)
      */
     struct Pool {
         string name;                              // Slot 0: Dynamic string
@@ -25,6 +27,8 @@ interface IStoragePool {
         uint256 minPingTime;                     // Slot 6: Minimum ping time requirement
         mapping(address => Member) members;       // Slot 7+: Member data mapping
         address[] memberList;                    // Slot 8+: Array of member addresses
+        mapping(address => string[]) memberPeerIds; // Slot 9+: Multiple peer IDs per member
+        mapping(string => address) peerIdToMember;  // Slot 10+: Peer ID to member mapping
     }
 
     /**
@@ -32,7 +36,7 @@ interface IStoragePool {
      * @notice Fields ordered to minimize storage slots:
      * - Slot 0: joinDate (uint256) - 32 bytes
      * - Slot 1: accountId (address, 20 bytes) + reputationScore (uint16, 2 bytes) + status flags (uint8, 1 byte) = 23 bytes in one slot
-     * - Slot 2+: peerId (string) - dynamic
+     * Note: peerId removed from struct as multiple peer IDs are now stored in Pool.memberPeerIds mapping
      */
     struct Member {
         uint256 joinDate;                        // Slot 0: Timestamp when member joined (32 bytes)
@@ -40,7 +44,6 @@ interface IStoragePool {
         uint16 reputationScore;                  // Slot 1: Reputation score 0-1000 (2 bytes)
         uint8 statusFlags;                       // Slot 1: Status flags for future use (1 byte)
         // 9 bytes remaining in slot 1 for future expansion
-        string peerId;                           // Slot 2+: IPFS peer identifier (dynamic)
     }
 
     /**
@@ -152,4 +155,14 @@ interface IStoragePool {
     function addMemberDirectly(uint32 poolId, address member, string memory peerId, bool requireTokenLock) external;
     function isMemberOfAnyPool(address member) external view returns (bool);
     function getTotalMembers() external view returns (uint256);
+
+    // New methods for multiple peer ID support
+    function isPeerIdMemberOfPool(uint32 poolId, string memory peerId) external view returns (bool, address);
+    function getMemberPeerIds(uint32 poolId, address member) external view returns (string[] memory);
+    function getMemberReputationMultiPeer(uint32 poolId, address member) external view returns (
+        bool exists,
+        uint16 reputationScore,
+        uint256 joinDate,
+        string[] memory peerIds
+    );
 }

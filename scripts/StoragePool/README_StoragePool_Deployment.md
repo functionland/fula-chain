@@ -35,17 +35,17 @@ INITIAL_ADMIN=<Admin_Address>                  # Optional: custom admin
 
 *Option 1: Deploy with new StorageToken (full deployment):*
 ```bash
-npx hardhat run scripts/deployLocalStoragePool.ts --network localhost
+npx hardhat run scripts/StoragePool/deployLocalStoragePool.ts --network localhost
 ```
 
 *Option 2: Deploy with existing StorageToken:*
 ```bash
-TOKEN_ADDRESS=0x... npx hardhat run scripts/deployLocalStoragePool.ts --network localhost
+TOKEN_ADDRESS=0x... npx hardhat run scripts/StoragePool/deployLocalStoragePool.ts --network localhost
 ```
 
 *Option 3: Deploy with custom addresses:*
 ```bash
-TOKEN_ADDRESS=0x... INITIAL_OWNER=0x... INITIAL_ADMIN=0x... npx hardhat run scripts/deployLocalStoragePool.ts --network localhost
+TOKEN_ADDRESS=0x... INITIAL_OWNER=0x... INITIAL_ADMIN=0x... npx hardhat run scripts/StoragePool/deployLocalStoragePool.ts --network localhost
 ```
 
 **Features**:
@@ -81,7 +81,7 @@ ETHERSCAN_API_KEY=<API_Key> # Optional, for automatic verification
 
 **Command**:
 ```bash
-TOKEN_ADDRESS=0x... INITIAL_OWNER=0x... INITIAL_ADMIN=0x... npx hardhat run scripts/deployStoragePool.ts --network sepolia
+TOKEN_ADDRESS=0x... INITIAL_OWNER=0x... INITIAL_ADMIN=0x... npx hardhat run scripts/StoragePool/deployStoragePool.ts --network sepolia
 ```
 
 **Features**:
@@ -105,22 +105,17 @@ INITIAL_OWNER=<Owner_Address>
 INITIAL_ADMIN=<Admin_Address>
 ```
 
-**Command**:
-```bash
-set TOKEN_ADDRESS=0x... && set INITIAL_OWNER=0x... && set INITIAL_ADMIN=0x... && yarn hardhat run scripts/TBD/deployPool.ts --network sepolia
-```
-
 ## Upgrade Scripts
 
 ### StoragePool Implementation Upgrade
 
-**Script**: `scripts/upgradeStoragePool.ts`
+**Script**: `scripts/StoragePool/upgradeStoragePool.ts`
 
 **Purpose**: Deploy new implementation contract for existing StoragePool proxies
 
 **Command**:
 ```bash
-npx hardhat run scripts/upgradeStoragePool.ts --network sepolia
+npx hardhat run scripts/StoragePool/upgradeStoragePool.ts --network sepolia
 ```
 
 **Features**:

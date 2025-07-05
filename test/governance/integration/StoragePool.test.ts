@@ -1784,4 +1784,334 @@ describe("StoragePool", function () {
       });
     });
   });
+
+  describe("Multi-Peer ID Support", function () {
+    let poolId: number;
+    let member1PeerId1: string;
+    let member1PeerId2: string;
+    let member2PeerId1: string;
+    let member2PeerId2: string;
+
+    beforeEach(async function () {
+      // Wait for timelock to expire
+      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+      await ethers.provider.send("evm_mine");
+
+      // Create a pool
+      await storageToken.connect(poolCreator).approve(await storagePool.getAddress(), POOL_CREATION_TOKENS);
+      await storagePool.connect(poolCreator).createDataPool(
+        "Multi-Peer Test Pool",
+        "US-West",
+        REQUIRED_TOKENS,
+        50,
+        7 * 24 * 60 * 60,
+        "QmPoolCreatorPeerId"
+      );
+      poolId = 1;
+
+      // Set up peer IDs for testing
+      member1PeerId1 = "QmMember1PeerId1";
+      member1PeerId2 = "QmMember1PeerId2";
+      member2PeerId1 = "QmMember2PeerId1";
+      member2PeerId2 = "QmMember2PeerId2";
+
+      // Approve tokens for members (enough for multiple join requests)
+      await storageToken.connect(member1).approve(await storagePool.getAddress(), REQUIRED_TOKENS * BigInt(3));
+      await storageToken.connect(member2).approve(await storagePool.getAddress(), REQUIRED_TOKENS * BigInt(3));
+    });
+
+    describe("Multiple Join Requests with Different Peer IDs", function () {
+      it("should allow same member to submit multiple join requests with different peer IDs", async function () {
+        // First join request with first peer ID
+        await expect(storagePool.connect(member1).submitJoinRequest(poolId, member1PeerId1))
+          .to.emit(storagePool, "JoinRequestSubmitted")
+          .withArgs(poolId, member1PeerId1, member1.address);
+
+        // Vote to approve first peer ID
+        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId, member1PeerId1, true);
+
+        // Second join request with second peer ID from same member
+        await expect(storagePool.connect(member1).submitJoinRequest(poolId, member1PeerId2))
+          .to.emit(storagePool, "JoinRequestSubmitted")
+          .withArgs(poolId, member1PeerId2, member1.address);
+
+        // Vote to approve second peer ID
+        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId, member1PeerId2, true);
+
+        // Verify both peer IDs are associated with the same member
+        const peerIds = await storagePool.getMemberPeerIds(poolId, member1.address);
+        expect(peerIds.length).to.equal(2);
+        expect(peerIds).to.include(member1PeerId1);
+        expect(peerIds).to.include(member1PeerId2);
+      });
+
+      it("should prevent duplicate peer IDs in the same pool", async function () {
+        // Member1 submits join request with peer ID
+        await storagePool.connect(member1).submitJoinRequest(poolId, member1PeerId1);
+        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId, member1PeerId1, true);
+
+        // Member2 tries to use the same peer ID - should fail
+        await expect(
+          storagePool.connect(member2).submitJoinRequest(poolId, member1PeerId1)
+        ).to.be.revertedWith("PeerId already in use in this pool");
+      });
+    });
+
+    describe("New Getter Methods", function () {
+      beforeEach(async function () {
+        // Add member1 with two peer IDs
+        await storagePool.connect(member1).submitJoinRequest(poolId, member1PeerId1);
+        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId, member1PeerId1, true);
+
+        await storagePool.connect(member1).submitJoinRequest(poolId, member1PeerId2);
+        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId, member1PeerId2, true);
+
+        // Add member2 with one peer ID
+        await storagePool.connect(member2).submitJoinRequest(poolId, member2PeerId1);
+        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId, member2PeerId1, true);
+      });
+
+      it("should check if peer ID is member of pool", async function () {
+        // Check existing peer IDs
+        let result = await storagePool.isPeerIdMemberOfPool(poolId, member1PeerId1);
+        expect(result[0]).to.be.true; // isMember
+        expect(result[1]).to.equal(member1.address); // memberAddress
+
+        result = await storagePool.isPeerIdMemberOfPool(poolId, member1PeerId2);
+        expect(result[0]).to.be.true;
+        expect(result[1]).to.equal(member1.address);
+
+        result = await storagePool.isPeerIdMemberOfPool(poolId, member2PeerId1);
+        expect(result[0]).to.be.true;
+        expect(result[1]).to.equal(member2.address);
+
+        // Check non-existent peer ID
+        result = await storagePool.isPeerIdMemberOfPool(poolId, "QmNonExistentPeerId");
+        expect(result[0]).to.be.false;
+        expect(result[1]).to.equal(ethers.ZeroAddress);
+      });
+
+      it("should return all peer IDs for a member", async function () {
+        // Get peer IDs for member1 (should have 2)
+        let peerIds = await storagePool.getMemberPeerIds(poolId, member1.address);
+        expect(peerIds.length).to.equal(2);
+        expect(peerIds).to.include(member1PeerId1);
+        expect(peerIds).to.include(member1PeerId2);
+
+        // Get peer IDs for member2 (should have 1)
+        peerIds = await storagePool.getMemberPeerIds(poolId, member2.address);
+        expect(peerIds.length).to.equal(1);
+        expect(peerIds[0]).to.equal(member2PeerId1);
+
+        // Get peer IDs for non-member (should be empty)
+        peerIds = await storagePool.getMemberPeerIds(poolId, otherAccount.address);
+        expect(peerIds.length).to.equal(0);
+      });
+
+      it("should return member reputation with all peer IDs", async function () {
+        const result = await storagePool.getMemberReputationMultiPeer(poolId, member1.address);
+
+        expect(result.exists).to.be.true;
+        expect(result.reputationScore).to.be.greaterThan(0);
+        expect(result.joinDate).to.be.greaterThan(0);
+        expect(result.peerIds.length).to.equal(2);
+        expect(result.peerIds).to.include(member1PeerId1);
+        expect(result.peerIds).to.include(member1PeerId2);
+
+        // Test for non-member
+        const nonMemberResult = await storagePool.getMemberReputationMultiPeer(poolId, otherAccount.address);
+        expect(nonMemberResult.exists).to.be.false;
+        expect(nonMemberResult.peerIds.length).to.equal(0);
+      });
+    });
+
+    describe("Direct Member Addition with Multiple Peer IDs", function () {
+      it("should allow admin to add multiple peer IDs for same member", async function () {
+        // Admin adds member with first peer ID
+        await expect(storagePool.connect(admin).addMemberDirectly(poolId, member1.address, member1PeerId1, false))
+          .to.emit(storagePool, "MemberJoined")
+          .withArgs(poolId, member1.address, member1PeerId1);
+
+        // Admin adds second peer ID for same member
+        await expect(storagePool.connect(admin).addMemberDirectly(poolId, member1.address, member1PeerId2, false))
+          .to.emit(storagePool, "MemberJoined")
+          .withArgs(poolId, member1.address, member1PeerId2);
+
+        // Verify both peer IDs are associated with the member
+        const peerIds = await storagePool.getMemberPeerIds(poolId, member1.address);
+        expect(peerIds.length).to.equal(2);
+        expect(peerIds).to.include(member1PeerId1);
+        expect(peerIds).to.include(member1PeerId2);
+      });
+
+      it("should prevent adding duplicate peer IDs via direct addition", async function () {
+        // Add member with peer ID
+        await storagePool.connect(admin).addMemberDirectly(poolId, member1.address, member1PeerId1, false);
+
+        // Try to add same peer ID again - should fail
+        await expect(
+          storagePool.connect(admin).addMemberDirectly(poolId, member2.address, member1PeerId1, false)
+        ).to.be.revertedWith("PeerId already in use in this pool");
+      });
+    });
+
+    describe("Member Removal with Multiple Peer IDs", function () {
+      beforeEach(async function () {
+        // Add member1 with multiple peer IDs
+        await storagePool.connect(member1).submitJoinRequest(poolId, member1PeerId1);
+        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId, member1PeerId1, true);
+
+        await storagePool.connect(member1).submitJoinRequest(poolId, member1PeerId2);
+        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId, member1PeerId2, true);
+      });
+
+      it("should remove all peer IDs when member leaves pool", async function () {
+        // Verify member has multiple peer IDs
+        let peerIds = await storagePool.getMemberPeerIds(poolId, member1.address);
+        expect(peerIds.length).to.equal(2);
+
+        // Member leaves pool
+        await expect(storagePool.connect(member1).leavePool(poolId))
+          .to.emit(storagePool, "MemberLeft")
+          .withArgs(poolId, member1.address, member1PeerId1)
+          .to.emit(storagePool, "MemberLeft")
+          .withArgs(poolId, member1.address, member1PeerId2);
+
+        // Verify all peer IDs are removed
+        peerIds = await storagePool.getMemberPeerIds(poolId, member1.address);
+        expect(peerIds.length).to.equal(0);
+
+        // Verify peer IDs are no longer associated with any member
+        let result = await storagePool.isPeerIdMemberOfPool(poolId, member1PeerId1);
+        expect(result[0]).to.be.false;
+
+        result = await storagePool.isPeerIdMemberOfPool(poolId, member1PeerId2);
+        expect(result[0]).to.be.false;
+      });
+
+      it("should remove all peer IDs when member is removed by creator", async function () {
+        // Verify member has multiple peer IDs
+        let peerIds = await storagePool.getMemberPeerIds(poolId, member1.address);
+        expect(peerIds.length).to.equal(2);
+
+        // Pool creator removes member
+        await expect(storagePool.connect(poolCreator).removeMember(poolId, member1.address))
+          .to.emit(storagePool, "MemberRemoved")
+          .withArgs(poolId, member1.address, poolCreator.address, member1PeerId1)
+          .to.emit(storagePool, "MemberRemoved")
+          .withArgs(poolId, member1.address, poolCreator.address, member1PeerId2);
+
+        // Verify all peer IDs are removed
+        peerIds = await storagePool.getMemberPeerIds(poolId, member1.address);
+        expect(peerIds.length).to.equal(0);
+
+        // Verify peer IDs are no longer associated with any member
+        let result = await storagePool.isPeerIdMemberOfPool(poolId, member1PeerId1);
+        expect(result[0]).to.be.false;
+
+        result = await storagePool.isPeerIdMemberOfPool(poolId, member1PeerId2);
+        expect(result[0]).to.be.false;
+      });
+    });
+
+    describe("Backward Compatibility", function () {
+      beforeEach(async function () {
+        // Add member with multiple peer IDs
+        await storagePool.connect(member1).submitJoinRequest(poolId, member1PeerId1);
+        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId, member1PeerId1, true);
+
+        await storagePool.connect(member1).submitJoinRequest(poolId, member1PeerId2);
+        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId, member1PeerId2, true);
+      });
+
+      it("should return first peer ID in existing getter methods", async function () {
+        // Test getMemberReputation returns first peer ID
+        const reputation = await storagePool.getMemberReputation(poolId, member1.address);
+        expect(reputation.exists).to.be.true;
+        expect(reputation.peerId).to.equal(member1PeerId1); // Should return first peer ID
+
+        // Test getPoolMembersPaginated returns first peer ID
+        const members = await storagePool.getPoolMembersPaginated(poolId, 0, 10);
+        const member1Index = members.members.findIndex(addr => addr === member1.address);
+        expect(member1Index).to.be.greaterThan(-1);
+        expect(members.peerIds[member1Index]).to.equal(member1PeerId1); // Should return first peer ID
+      });
+    });
+
+    describe("Cross-Pool Multi-Peer ID Support", function () {
+      let poolId2: number;
+
+      beforeEach(async function () {
+        // Wait for timelock to expire
+        await ethers.provider.send("evm_increaseTime", [24 * 60 * 60 + 1]);
+        await ethers.provider.send("evm_mine");
+
+        // Transfer additional tokens to poolCreator for second pool
+        await storageToken.connect(owner).transferFromContract(poolCreator.address, POOL_CREATION_TOKENS);
+
+        // Approve additional tokens for second pool creation
+        await storageToken.connect(poolCreator).approve(await storagePool.getAddress(), POOL_CREATION_TOKENS);
+
+        // Create a second pool
+        await storagePool.connect(poolCreator).createDataPool(
+          "Second Multi-Peer Test Pool",
+          "EU-Central",
+          REQUIRED_TOKENS,
+          75,
+          7 * 24 * 60 * 60,
+          "QmPoolCreator2PeerId"
+        );
+        poolId2 = 2;
+      });
+
+      it("should allow same peer ID in different pools", async function () {
+        // Add member1 to first pool with peer ID
+        await storagePool.connect(member1).submitJoinRequest(poolId, member1PeerId1);
+        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId, member1PeerId1, true);
+
+        // Add member2 to second pool with same peer ID (should be allowed)
+        // Use a different peer ID to avoid voting conflicts since voting is tracked globally by peer ID
+        const samePeerIdForDifferentPool = "QmSamePeerIdDifferentPool";
+        await storagePool.connect(member2).submitJoinRequest(poolId2, samePeerIdForDifferentPool);
+        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId2, samePeerIdForDifferentPool, true);
+
+        // Verify peer IDs exist in both pools with different members
+        let result1 = await storagePool.isPeerIdMemberOfPool(poolId, member1PeerId1);
+        expect(result1[0]).to.be.true;
+        expect(result1[1]).to.equal(member1.address);
+
+        let result2 = await storagePool.isPeerIdMemberOfPool(poolId2, samePeerIdForDifferentPool);
+        expect(result2[0]).to.be.true;
+        expect(result2[1]).to.equal(member2.address);
+
+        // Test that the same peer ID can actually be used in different pools
+        // by using admin to directly add a member with the same peer ID to the second pool
+        await storagePool.connect(admin).addMemberDirectly(poolId2, otherAccount.address, member1PeerId1, false);
+
+        // Verify the same peer ID now exists in both pools
+        let result3 = await storagePool.isPeerIdMemberOfPool(poolId2, member1PeerId1);
+        expect(result3[0]).to.be.true;
+        expect(result3[1]).to.equal(otherAccount.address);
+      });
+
+      it("should prevent same member from joining multiple pools when tokens are locked", async function () {
+        // Member1 joins first pool with first peer ID
+        await storagePool.connect(member1).submitJoinRequest(poolId, member1PeerId1);
+        await storagePool.connect(poolCreator).voteOnJoinRequest(poolId, member1PeerId1, true);
+
+        // Member1 tries to join second pool with second peer ID - should fail
+        await expect(
+          storagePool.connect(member1).submitJoinRequest(poolId2, member1PeerId2)
+        ).to.be.revertedWith("Tokens already locked for another data pool");
+
+        // Verify member1 is only in the first pool
+        let peerIds1 = await storagePool.getMemberPeerIds(poolId, member1.address);
+        expect(peerIds1.length).to.equal(1);
+        expect(peerIds1[0]).to.equal(member1PeerId1);
+
+        let peerIds2 = await storagePool.getMemberPeerIds(poolId2, member1.address);
+        expect(peerIds2.length).to.equal(0);
+      });
+    });
+  });
 });
