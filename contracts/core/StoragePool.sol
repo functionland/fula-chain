@@ -9,7 +9,7 @@ import "./StorageToken.sol";
 
 contract StoragePool is IStoragePool, GovernanceModule {
     bytes32 public constant POOL_CREATOR_ROLE = keccak256("POOL_CREATOR_ROLE");
-    
+
     uint256 public constant IMPLEMENTATION_VERSION = 1;
 
     uint256 private constant POOL_ACTION_DELAY = 8 hours;
@@ -56,9 +56,6 @@ contract StoragePool is IStoragePool, GovernanceModule {
         // Pausable, AccessControlEnumerable, role grants, and timelocks)
         __GovernanceModule_init(initialOwner, initialAdmin);
 
-        // Grant pool-specific roles
-        _grantRole(POOL_CREATOR_ROLE, initialOwner);
-
         token = StorageToken(_storageToken);
         dataPoolCreationTokens = 500_000 * 10**18; // 500K tokens with 18 decimals
     }
@@ -81,8 +78,8 @@ contract StoragePool is IStoragePool, GovernanceModule {
         external
         whenNotPaused
         nonReentrant
-        onlyRole(ProposalTypes.ADMIN_ROLE)
     {
+        require(_hasAdminPrivileges(msg.sender), "Caller must have admin or pool admin role");
         uint256 oldAmount = dataPoolCreationTokens;
         dataPoolCreationTokens = StoragePoolLib.setDataPoolCreationTokensFull(oldAmount, _amount, msg.sender);
         _updateActivityTimestamp();
@@ -92,6 +89,15 @@ contract StoragePool is IStoragePool, GovernanceModule {
     function calculateRequiredLockedTokens(address user) public view returns (uint256) {
 
         return userTotalRequiredLockedTokens[user];
+    }
+
+    /**
+     * @dev Internal helper to check if an address has admin privileges (either ADMIN_ROLE or POOL_ADMIN_ROLE)
+     * @param account The address to check
+     * @return true if the account has admin or pool admin privileges
+     */
+    function _hasAdminPrivileges(address account) internal view returns (bool) {
+        return hasRole(ProposalTypes.ADMIN_ROLE, account) || hasRole(ProposalTypes.POOL_ADMIN_ROLE, account);
     }
 
     /**
@@ -156,7 +162,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
             maxChallengeResponsePeriod,
             creatorPeerId,
             msg.sender,
-            hasRole(ProposalTypes.ADMIN_ROLE, msg.sender)
+            _hasAdminPrivileges(msg.sender)
         );
 
         poolCounter = newPoolId;
@@ -178,7 +184,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
             poolMemberIndices[poolId],
             token,
             msg.sender,
-            hasRole(ProposalTypes.ADMIN_ROLE, msg.sender),
+            _hasAdminPrivileges(msg.sender),
             maxMembers,
             poolId
         );
@@ -239,7 +245,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
             joinRequests[poolId],
             token,
             msg.sender,
-            hasRole(ProposalTypes.ADMIN_ROLE, msg.sender),
+            _hasAdminPrivileges(msg.sender),
             dataPoolCreationTokens
         );
 
@@ -497,7 +503,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
     // This method allows the pool creator or contract owner to remove a member from the pool.
     function removeMember(uint32 poolId, address member) external nonReentrant whenNotPaused validatePoolId(poolId) {
         Pool storage pool = pools[poolId];
-        bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
+        bool isAdmin = _hasAdminPrivileges(msg.sender);
 
         StoragePoolLib.removeMemberFull(
             pool,
@@ -533,7 +539,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
         bool requireTokenLock
     ) external nonReentrant whenNotPaused validatePoolId(poolId) {
         Pool storage pool = pools[poolId];
-        bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
+        bool isAdmin = _hasAdminPrivileges(msg.sender);
 
         StoragePoolLib.addMemberToPoolWithTokens(
             pool,

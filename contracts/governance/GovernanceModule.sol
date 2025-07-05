@@ -227,7 +227,7 @@ abstract contract GovernanceModule is
         bytes32 proposalId;
         
         if (proposalType == uint8(ProposalTypes.ProposalType.AddRole) || proposalType == uint8(ProposalTypes.ProposalType.RemoveRole)) {
-            if (role != ProposalTypes.ADMIN_ROLE && role != ProposalTypes.CONTRACT_OPERATOR_ROLE && role != ProposalTypes.BRIDGE_OPERATOR_ROLE) 
+            if (role != ProposalTypes.ADMIN_ROLE && role != ProposalTypes.CONTRACT_OPERATOR_ROLE && role != ProposalTypes.BRIDGE_OPERATOR_ROLE && role != ProposalTypes.POOL_ADMIN_ROLE)
                 revert InvalidRole(role);
             if (proposalType == uint8(ProposalTypes.ProposalType.AddRole)) {
                 ProposalTypes.TimeConfig storage targetTimeConfig = timeConfigs[target];
