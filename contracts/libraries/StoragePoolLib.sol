@@ -586,11 +586,11 @@ library StoragePoolLib {
                 userTotalRequiredLockedTokens,
                 member
             );
-            
+
             if (!isAdmin) {
                 require(lockedTokens[member] >= requiredLockedTokensForUser, "Insufficient locked tokens for pool member");
             }
-            
+
             // Skip creator as they are handled separately in processTokenRefunds
             if (member != creator) {
                 // Update state before external calls to prevent reentrancy
@@ -615,11 +615,11 @@ library StoragePoolLib {
                     }
                 }
             }
-            
+
             if (member != creator) {
                 safeSubtractUserTokens(userTotalRequiredLockedTokens, member, requiredTokensForPool);
             }
-            
+
             pool.memberList.pop();
             delete pool.members[member];
         }
@@ -853,7 +853,8 @@ library StoragePoolLib {
     ) external {
         // Update state before external calls to prevent reentrancy
         uint256 lockedAmount = lockedTokens[member];
-        if (lockedAmount >= pool.requiredTokens) {
+
+        if ((pool.members[member].statusFlags & 0x01) == 0 && lockedAmount >= pool.requiredTokens) {
             uint256 refundAmount = pool.requiredTokens;
             lockedTokens[member] -= refundAmount;
 
@@ -869,6 +870,7 @@ library StoragePoolLib {
                 emit TokensMarkedClaimable(member, refundAmount);
             }
         } else {
+            // Member is set to forfeit tokens or has insufficient locked tokens, no refund
             safeSubtractUserTokens(userTotalRequiredLockedTokens, member, pool.requiredTokens);
         }
 
@@ -1862,19 +1864,19 @@ library StoragePoolLib {
         // Prevent the pool creator from leaving their own pool
         require(caller != pool.creator, "Pool creator cannot leave their own pool");
 
-        // Calculate refund amount based on actual locked tokens
+        // Calculate refund amount based on actual locked tokens and forfeit flag
         uint256 lockedAmount = lockedTokens[caller];
         uint256 refundAmount = 0;
 
-        // Only refund if user has tokens locked for this pool
-        if (lockedAmount >= pool.requiredTokens && userTotalRequiredLockedTokens[caller] >= pool.requiredTokens) {
+        // Only refund if user has tokens locked for this pool AND is not set to forfeit (bit 0)
+        if ((pool.members[caller].statusFlags & 0x01) == 0 && lockedAmount >= pool.requiredTokens && userTotalRequiredLockedTokens[caller] >= pool.requiredTokens) {
             refundAmount = pool.requiredTokens;
 
             // Update state before external calls to prevent reentrancy
             lockedTokens[caller] -= refundAmount;
             safeSubtractUserTokens(userTotalRequiredLockedTokens, caller, refundAmount);
         } else {
-            // User joined without locking tokens (e.g., added by admin), no refund
+            // User joined without locking tokens (e.g., added by admin) or is set to forfeit, no refund
             safeSubtractUserTokens(userTotalRequiredLockedTokens, caller, pool.requiredTokens);
         }
 
@@ -2184,7 +2186,7 @@ library StoragePoolLib {
         require(pool.members[member].joinDate > 0, "Not a member");
         require(member != pool.creator, "Cannot remove pool creator");
 
-        // Get all peer IDs and locked tokens before removal for event emission
+        // Get all peer IDs before removal for event emission
         string[] memory memberPeerIds = pool.memberPeerIds[member];
         uint256 refundAmount = pool.requiredTokens;
 
@@ -2202,7 +2204,7 @@ library StoragePoolLib {
         // Process member removal with refund - inline logic
         // Update state before external calls to prevent reentrancy
         uint256 lockedAmount = lockedTokens[member];
-        if (lockedAmount >= pool.requiredTokens) {
+        if ((pool.members[member].statusFlags & 0x01) == 0 && lockedAmount >= pool.requiredTokens) {
             uint256 refundAmountActual = pool.requiredTokens;
             lockedTokens[member] -= refundAmountActual;
 
@@ -2216,6 +2218,7 @@ library StoragePoolLib {
                 emit TokensMarkedClaimable(member, refundAmountActual);
             }
         } else {
+            // Member is set to forfeit tokens or has insufficient locked tokens, no refund
             safeSubtractUserTokens(userTotalRequiredLockedTokens, member, pool.requiredTokens);
         }
 
@@ -2228,4 +2231,6 @@ library StoragePoolLib {
         }
         emit TokensUnlocked(member, refundAmount);
     }
+
+
 }

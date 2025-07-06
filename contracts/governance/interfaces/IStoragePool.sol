@@ -37,12 +37,15 @@ interface IStoragePool {
      * - Slot 0: joinDate (uint256) - 32 bytes
      * - Slot 1: accountId (address, 20 bytes) + reputationScore (uint16, 2 bytes) + status flags (uint8, 1 byte) = 23 bytes in one slot
      * Note: peerId removed from struct as multiple peer IDs are now stored in Pool.memberPeerIds mapping
+     *
+     * Status flags bit definitions:
+     * - Bit 0 (0x01): FORFEIT_TOKENS_FLAG - if set, member forfeits locked tokens when leaving/removed
      */
     struct Member {
         uint256 joinDate;                        // Slot 0: Timestamp when member joined (32 bytes)
         address accountId;                       // Slot 1: Member's address (20 bytes)
         uint16 reputationScore;                  // Slot 1: Reputation score 0-1000 (2 bytes)
-        uint8 statusFlags;                       // Slot 1: Status flags for future use (1 byte)
+        uint8 statusFlags;                       // Slot 1: Status flags (1 byte)
         // 9 bytes remaining in slot 1 for future expansion
     }
 
@@ -150,6 +153,9 @@ interface IStoragePool {
 
     // === Legacy Events (kept for backward compatibility) ===
     event PoolEmergencyAction(string action, uint256 timestamp);
+
+    // === Member Status Events ===
+    event MemberForfeitFlagSet(uint32 indexed poolId, address indexed member, bool forfeitTokens, address indexed setter);
 
     function getStorageCost(uint32 poolId) external view returns (uint256);
     function addMemberDirectly(uint32 poolId, address member, string memory peerId, bool requireTokenLock) external;

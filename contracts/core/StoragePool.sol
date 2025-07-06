@@ -14,7 +14,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
 
     uint256 private constant POOL_ACTION_DELAY = 8 hours;
     mapping(bytes32 => uint256) private poolActionTimeLocks;
-    
+
     StorageToken public token;
     mapping(uint256 => Pool) public pools;
     mapping(uint32 => JoinRequest[]) public joinRequests;
@@ -523,6 +523,15 @@ contract StoragePool is IStoragePool, GovernanceModule {
         );
     }
 
+    // Admin function to set forfeit flag for members
+    function setForfeitFlag(uint32 poolId, address member, bool forfeit) external {
+        require(_hasAdminPrivileges(msg.sender) && pools[poolId].members[member].joinDate > 0);
+        pools[poolId].members[member].statusFlags = forfeit ?
+            pools[poolId].members[member].statusFlags | 0x01 :
+            pools[poolId].members[member].statusFlags & 0xFE;
+        emit MemberForfeitFlagSet(poolId, member, forfeit, msg.sender);
+    }
+
     /**
      * @dev Allows users to claim tokens that were marked as claimable when direct transfers failed
      */
@@ -559,6 +568,8 @@ contract StoragePool is IStoragePool, GovernanceModule {
 
         poolMemberIndices[poolId][member] = pool.memberList.length - 1;
     }
+
+
 
 
 
@@ -654,18 +665,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
 
     // === GETTER FUNCTIONS FOR REQUIRED FEATURES ===
 
-    /**
-     * @dev Get all pools with their details and creators
-     */
-    function getAllPools() external view returns (
-        uint256[] memory poolIds,
-        string[] memory names,
-        string[] memory regions,
-        address[] memory creators,
-        uint256[] memory requiredTokens
-    ) {
-        return StoragePoolLib.getAllPools(pools, poolCounter);
-    }
+
 
     /**
      * @dev Get number of members in a specific pool
@@ -691,31 +691,9 @@ contract StoragePool is IStoragePool, GovernanceModule {
         return StoragePoolLib.getPoolMembersPaginated(pools[poolId], offset, limit);
     }
 
-    /**
-     * @dev Get join requests for a specific user
-     */
-    function getUserJoinRequests(address user) external view returns (
-        uint32[] memory poolIds,
-        string[] memory peerIds,
-        uint32[] memory timestamps,
-        uint8[] memory statuses
-    ) {
-        return StoragePoolLib.getUserJoinRequests(joinRequests, requestIndex, user, poolCounter);
-    }
 
-    /**
-     * @dev Get vote status and counts for a join request
-     */
-    function getJoinRequestVoteStatus(string memory peerId) external view returns (
-        bool exists,
-        uint32 poolId,
-        address accountId,
-        uint128 approvals,
-        uint128 rejections,
-        uint8 status
-    ) {
-        return StoragePoolLib.getJoinRequestVoteStatus(usersActiveJoinRequestByPeerID, peerId);
-    }
+
+
 
     /**
      * @dev Get reputation of a pool member
