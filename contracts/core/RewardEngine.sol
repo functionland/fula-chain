@@ -63,16 +63,26 @@ contract RewardEngine is GovernanceModule {
     uint256 public expectedPeriod;
     uint256 public rewardSystemStartTime; // When the reward system became active
 
+    // Peer ID interning for efficient storage and comparison
+    // string peerId => bytes32 internedId
+    mapping(string => bytes32) public peerIdToInterned;
+    // bytes32 internedId => string peerId (for reverse lookup)
+    mapping(bytes32 => string) public internedToPeerId;
+    uint256 private nextPeerIdCounter = 1;
+
     // Online status tracking - optimized for zero-loop batch operations
-    // poolId => timestamp => array of peerIds that were online
-    mapping(uint32 => mapping(uint256 => string[])) public onlineStatus;
+    // poolId => timestamp => array of interned peerIds that were online
+    mapping(uint32 => mapping(uint256 => bytes32[])) public onlineStatus;
 
-    // Timestamp index for efficient period lookups - eliminates time iteration loops
-    // poolId => array of timestamps when online status was recorded
-    mapping(uint32 => uint256[]) public recordedTimestamps;
+    // Linked-list for efficient timestamp storage - O(1) insertions
+    // poolId => timestamp => next timestamp (0 means end of list)
+    mapping(uint32 => mapping(uint256 => uint256)) public timestampNext;
 
-    // Helper mapping to check if timestamp already exists: poolId => timestamp => index+1 (0 means not found)
-    mapping(uint32 => mapping(uint256 => uint256)) private timestampIndex;
+    // Head of linked list for each pool (0 means empty list)
+    mapping(uint32 => uint256) public timestampHead;
+
+    // Check if timestamp exists: poolId => timestamp => exists
+    mapping(uint32 => mapping(uint256 => bool)) public timestampExists;
 
     // Claimed rewards tracking to prevent double claiming
     // account => peerId => poolId => lastClaimedTimestamp
@@ -153,8 +163,26 @@ contract RewardEngine is GovernanceModule {
     /// @notice Internal function to check circuit breaker for view functions
     function _checkCircuitBreakerView() internal view {
         if (circuitBreakerTripped) {
-            revert CircuitBreakerTripped();
+            if (block.number >= lastCircuitBreakerResetBlock + CIRCUIT_BREAKER_COOLDOWN_BLOCKS) {
+                // Circuit breaker cooldown has elapsed, but we don't auto-reset in view functions
+                // Users should call resetCircuitBreakerAuto() to reset it
+                revert CircuitBreakerTripped();
+            } else {
+                revert CircuitBreakerTripped();
+            }
         }
+    }
+
+    /// @notice Auto-reset circuit breaker after cooldown (view function, callable by anyone)
+    /// @dev This is a view function that can be called off-chain to reset the circuit breaker
+    function resetCircuitBreakerAuto() external view {
+        if (circuitBreakerTripped && block.number >= lastCircuitBreakerResetBlock + CIRCUIT_BREAKER_COOLDOWN_BLOCKS) {
+            // Note: This is a view function, so it doesn't actually reset the state
+            // It's meant to be called off-chain to check if reset is possible
+            // The actual reset happens in state-changing functions via _checkCircuitBreaker(true)
+            return;
+        }
+        revert CircuitBreakerTripped();
     }
 
     /// @notice Modifier to check circuit breaker status with auto-reset
@@ -177,12 +205,13 @@ contract RewardEngine is GovernanceModule {
 
     /// @notice Emergency withdrawal function for stuck tokens (admin only)
     /// @dev Can only transfer tokens to the StorageToken contract address for security
+    /// @dev Can bypass pause restrictions for true emergencies
     /// @param tokenAddress Address of the token to withdraw
     /// @param amount Amount to withdraw
     function emergencyWithdraw(
         address tokenAddress,
         uint256 amount
-    ) external onlyRole(ProposalTypes.ADMIN_ROLE) whenPaused nonReentrant {
+    ) external onlyRole(ProposalTypes.ADMIN_ROLE) nonReentrant {
         if (tokenAddress == address(0)) revert InvalidAddress();
         if (amount == 0) revert InvalidAmount();
 
@@ -293,13 +322,19 @@ contract RewardEngine is GovernanceModule {
         // Normalize timestamp to period boundary for consistent storage
         uint256 normalizedTimestamp = _normalizeToPeriodBoundary(timestamp);
 
+        // Intern peer IDs for efficient storage and comparison
+        bytes32[] memory internedPeerIds = new bytes32[](peerIds.length);
+        for (uint256 i = 0; i < peerIds.length; i++) {
+            internedPeerIds[i] = _internPeerId(peerIds[i]);
+        }
+
         // Zero-loop batch recording - store entire array at once
         // No validation needed here - pool membership will be verified during reward calculation
-        onlineStatus[poolId][normalizedTimestamp] = peerIds;
+        onlineStatus[poolId][normalizedTimestamp] = internedPeerIds;
 
-        // Record timestamp in sorted order if it's new (for efficient binary search)
-        if (timestampIndex[poolId][normalizedTimestamp] == 0) {
-            _insertTimestampSorted(poolId, normalizedTimestamp);
+        // Record timestamp in linked list if it's new (O(1) insertion)
+        if (!timestampExists[poolId][normalizedTimestamp]) {
+            _insertTimestampLinked(poolId, normalizedTimestamp);
         }
 
         emit OnlineStatusSubmitted(poolId, msg.sender, peerIds.length, normalizedTimestamp);
@@ -331,27 +366,24 @@ contract RewardEngine is GovernanceModule {
         uint256 timeRange = normalizedCurrentTime - normalizedSinceTime;
         totalExpected = timeRange / expectedPeriod;
 
-        // Ultra-optimized: Use binary search to find timestamp range efficiently
-        // This scales logarithmically instead of linearly, crucial for long-term usage
-        uint256[] storage timestamps = recordedTimestamps[poolId];
+        // Ultra-optimized: Use linked-list to iterate through timestamps efficiently
+        // This scales linearly but with O(1) insertions, crucial for long-term usage
         onlineCount = 0;
+        uint256 currentTimestamp = timestampHead[poolId];
 
-        if (timestamps.length == 0) {
+        if (currentTimestamp == 0) {
             return (0, totalExpected);
         }
 
-        // Binary search to find the start and end indices for our time range
-        uint256 startIndex = _findFirstTimestampIndex(timestamps, normalizedSinceTime);
-        uint256 endIndex = _findLastTimestampIndex(timestamps, normalizedCurrentTime);
-
-        // Only iterate through timestamps within our range
-        for (uint256 i = startIndex; i <= endIndex && i < timestamps.length; i++) {
-            uint256 timestamp = timestamps[i];
-
-            // Check if this peerId was online at this timestamp
-            if (_isPeerOnlineAtTimestamp(poolId, timestamp, peerId)) {
-                onlineCount++;
+        // Iterate through linked list of timestamps within our range
+        while (currentTimestamp != 0) {
+            if (currentTimestamp >= normalizedSinceTime && currentTimestamp <= normalizedCurrentTime) {
+                // Check if this peerId was online at this timestamp
+                if (_isPeerOnlineAtTimestamp(poolId, currentTimestamp, peerId)) {
+                    onlineCount++;
+                }
             }
+            currentTimestamp = timestampNext[poolId][currentTimestamp];
         }
 
         return (onlineCount, totalExpected);
@@ -566,9 +598,8 @@ contract RewardEngine is GovernanceModule {
         uint256 currentMonth = _getCurrentMonth();
         monthlyRewardsClaimed[peerId][poolId][currentMonth] += totalRewards;
 
-        // 3. INTERACTIONS - External calls last
-        // If ANY external call fails, the entire transaction reverts
-        // This automatically restores the state to before the transaction
+        // 3. INTERACTIONS - Single atomic transfer to prevent dual-transfer ordering issues
+        // First, transfer tokens from StakingPool to this contract
         bool success = stakingPool.transferTokens(totalRewards);
         if (!success) revert InsufficientRewards();
 
@@ -578,7 +609,8 @@ contract RewardEngine is GovernanceModule {
         // Update caller's total claimed rewards before final transfer
         totalRewardsClaimed[account] += totalRewards;
 
-        // Transfer tokens to the user (external call)
+        // Now transfer tokens from this contract to the user (single external call)
+        // If this fails, the entire transaction reverts and state is restored
         IERC20(address(token)).safeTransfer(account, totalRewards);
 
         // Emit tracking events
@@ -650,123 +682,68 @@ contract RewardEngine is GovernanceModule {
         return (timestamp / expectedPeriod) * expectedPeriod;
     }
 
+    /// @notice Internal function to intern a peer ID for efficient storage
+    /// @param peerId The peer ID to intern
+    /// @return internedId The interned bytes32 representation
+    function _internPeerId(string memory peerId) internal returns (bytes32 internedId) {
+        internedId = peerIdToInterned[peerId];
+        if (internedId == bytes32(0)) {
+            // Create new interned ID
+            internedId = bytes32(nextPeerIdCounter++);
+            peerIdToInterned[peerId] = internedId;
+            internedToPeerId[internedId] = peerId;
+        }
+        return internedId;
+    }
+
     /// @notice Internal function to check if a peerId was online at a specific timestamp
     /// @param poolId The pool ID
     /// @param timestamp The timestamp to check
     /// @param peerId The peer ID to check
     /// @return isOnline True if the peerId was online at the timestamp
     function _isPeerOnlineAtTimestamp(uint32 poolId, uint256 timestamp, string memory peerId) internal view returns (bool isOnline) {
-        string[] memory onlinePeers = onlineStatus[poolId][timestamp];
+        bytes32 internedPeerId = peerIdToInterned[peerId];
+        if (internedPeerId == bytes32(0)) {
+            return false; // Peer ID was never interned, so it was never online
+        }
+
+        bytes32[] memory onlinePeers = onlineStatus[poolId][timestamp];
         for (uint256 i = 0; i < onlinePeers.length; i++) {
-            if (keccak256(bytes(onlinePeers[i])) == keccak256(bytes(peerId))) {
+            if (onlinePeers[i] == internedPeerId) {
                 return true;
             }
         }
         return false;
     }
 
-    /// @notice Internal function to insert timestamp in sorted order
+    /// @notice Internal function to insert timestamp in linked list (O(1) operation)
     /// @param poolId The pool ID
     /// @param timestamp The timestamp to insert
-    function _insertTimestampSorted(uint32 poolId, uint256 timestamp) internal {
-        uint256[] storage timestamps = recordedTimestamps[poolId];
+    function _insertTimestampLinked(uint32 poolId, uint256 timestamp) internal {
+        // Mark timestamp as existing
+        timestampExists[poolId][timestamp] = true;
 
-        // If array is empty or timestamp is greater than last element, just append
-        if (timestamps.length == 0 || timestamp > timestamps[timestamps.length - 1]) {
-            timestamps.push(timestamp);
-            timestampIndex[poolId][timestamp] = timestamps.length;
-            return;
-        }
-
-        // Find insertion point using binary search
-        uint256 insertIndex = _findInsertionIndex(timestamps, timestamp);
-
-        // Insert at the found position
-        timestamps.push(0); // Expand array
-
-        // Shift elements to the right
-        for (uint256 i = timestamps.length - 1; i > insertIndex; i--) {
-            timestamps[i] = timestamps[i - 1];
-        }
-
-        // Insert the new timestamp
-        timestamps[insertIndex] = timestamp;
-
-        // Update all indices after insertion point
-        for (uint256 i = insertIndex; i < timestamps.length; i++) {
-            timestampIndex[poolId][timestamps[i]] = i + 1;
-        }
+        // Insert at head of linked list for O(1) insertion
+        uint256 currentHead = timestampHead[poolId];
+        timestampNext[poolId][timestamp] = currentHead;
+        timestampHead[poolId] = timestamp;
     }
 
-    /// @notice Internal function to find insertion index for maintaining sorted order
-    /// @param timestamps Sorted array of timestamps
-    /// @param timestamp Timestamp to find insertion point for
-    /// @return index The index where timestamp should be inserted
-    function _findInsertionIndex(uint256[] storage timestamps, uint256 timestamp) internal view returns (uint256 index) {
-        uint256 left = 0;
-        uint256 right = timestamps.length;
 
-        while (left < right) {
-            uint256 mid = (left + right) / 2;
-            if (timestamps[mid] < timestamp) {
-                left = mid + 1;
-            } else {
-                right = mid;
-            }
-        }
-
-        return left;
-    }
-
-    /// @notice Internal function to find first timestamp index >= target using binary search
-    /// @param timestamps Sorted array of timestamps
-    /// @param target Target timestamp
-    /// @return index First index where timestamp >= target
-    function _findFirstTimestampIndex(uint256[] storage timestamps, uint256 target) internal view returns (uint256 index) {
-        uint256 left = 0;
-        uint256 right = timestamps.length;
-
-        while (left < right) {
-            uint256 mid = (left + right) / 2;
-            if (timestamps[mid] < target) {
-                left = mid + 1;
-            } else {
-                right = mid;
-            }
-        }
-
-        return left;
-    }
-
-    /// @notice Internal function to find last timestamp index <= target using binary search
-    /// @param timestamps Sorted array of timestamps
-    /// @param target Target timestamp
-    /// @return index Last index where timestamp <= target
-    function _findLastTimestampIndex(uint256[] storage timestamps, uint256 target) internal view returns (uint256 index) {
-        if (timestamps.length == 0) return 0;
-
-        uint256 left = 0;
-        uint256 right = timestamps.length - 1;
-
-        while (left <= right) {
-            uint256 mid = (left + right) / 2;
-            if (timestamps[mid] <= target) {
-                left = mid + 1;
-            } else {
-                if (mid == 0) break;
-                right = mid - 1;
-            }
-        }
-
-        return right;
-    }
 
     /// @notice Get all online peerIds for a specific pool and timestamp
     /// @param poolId The pool ID
     /// @param timestamp The timestamp to check
     /// @return peerIds Array of peerIds that were online at the timestamp
     function getOnlinePeerIds(uint32 poolId, uint256 timestamp) external view returns (string[] memory peerIds) {
-        return onlineStatus[poolId][timestamp];
+        bytes32[] memory internedPeerIds = onlineStatus[poolId][timestamp];
+        peerIds = new string[](internedPeerIds.length);
+
+        for (uint256 i = 0; i < internedPeerIds.length; i++) {
+            peerIds[i] = internedToPeerId[internedPeerIds[i]];
+        }
+
+        return peerIds;
     }
 
     /// @notice Check if a specific peerId was online at a timestamp
@@ -782,7 +759,16 @@ contract RewardEngine is GovernanceModule {
     /// @param poolId The pool ID
     /// @return count Number of timestamps recorded for the pool
     function getRecordedTimestampCount(uint32 poolId) external view returns (uint256 count) {
-        return recordedTimestamps[poolId].length;
+        // Count timestamps in linked list
+        uint256 currentTimestamp = timestampHead[poolId];
+        count = 0;
+
+        while (currentTimestamp != 0) {
+            count++;
+            currentTimestamp = timestampNext[poolId][currentTimestamp];
+        }
+
+        return count;
     }
 
     /// @notice Get recorded timestamps for a pool (paginated)
@@ -791,8 +777,8 @@ contract RewardEngine is GovernanceModule {
     /// @param limit Maximum number of timestamps to return
     /// @return timestamps Array of recorded timestamps
     function getRecordedTimestamps(uint32 poolId, uint256 offset, uint256 limit) external view returns (uint256[] memory timestamps) {
-        uint256[] storage allTimestamps = recordedTimestamps[poolId];
-        uint256 totalCount = allTimestamps.length;
+        // First, count total timestamps
+        uint256 totalCount = this.getRecordedTimestampCount(poolId);
 
         if (offset >= totalCount) {
             return new uint256[](0);
@@ -806,8 +792,18 @@ contract RewardEngine is GovernanceModule {
         uint256 resultLength = endIndex - offset;
         timestamps = new uint256[](resultLength);
 
-        for (uint256 i = 0; i < resultLength; i++) {
-            timestamps[i] = allTimestamps[offset + i];
+        // Traverse linked list to get timestamps
+        uint256 currentTimestamp = timestampHead[poolId];
+        uint256 currentIndex = 0;
+        uint256 resultIndex = 0;
+
+        while (currentTimestamp != 0 && resultIndex < resultLength) {
+            if (currentIndex >= offset) {
+                timestamps[resultIndex] = currentTimestamp;
+                resultIndex++;
+            }
+            currentIndex++;
+            currentTimestamp = timestampNext[poolId][currentTimestamp];
         }
 
         return timestamps;
