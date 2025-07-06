@@ -23,8 +23,6 @@ contract StoragePool is IStoragePool, GovernanceModule {
 
     uint256 public poolCounter;
     uint256 public dataPoolCreationTokens; // Amount needed to create a pool
-    uint32 private constant MAX_MEMBERS = 1000;
-    uint256 private constant MAX_REQUIRED_TOKENS = 10_000_000 * 10**18; // 10M tokens max
     mapping(uint32 => uint256) public storageCostPerTBYear;
 
     // required to remove for loops to make gas fees predictable
@@ -48,9 +46,9 @@ contract StoragePool is IStoragePool, GovernanceModule {
         address initialOwner,
         address initialAdmin
     ) public reinitializer(1) {
-        require(_storageToken != address(0), "Invalid token address");
-        require(initialOwner != address(0), "Invalid owner address");
-        require(initialAdmin != address(0), "Invalid admin address");
+        require(_storageToken != address(0), "INV_TKN");
+        require(initialOwner != address(0), "INV_OWN");
+        require(initialAdmin != address(0), "INV_ADM");
 
         // Initialize governance module (handles UUPSUpgradeable, Ownable, ReentrancyGuard,
         // Pausable, AccessControlEnumerable, role grants, and timelocks)
@@ -67,8 +65,8 @@ contract StoragePool is IStoragePool, GovernanceModule {
     // Users should call emergencyAction(1) to pause and emergencyAction(2) to unpause
 
     modifier validatePoolId(uint32 poolId) {
-        require(poolId > 0 && poolId <= poolCounter, "Invalid pool ID");
-        require(pools[poolId].creator != address(0), "Pool does not exist");
+        require(poolId > 0 && poolId <= poolCounter, "INV_pID");
+        require(pools[poolId].creator != address(0), "NOT_EXIST");
         _;
     }
 
@@ -82,7 +80,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
         whenNotPaused
         nonReentrant
     {
-        require(_hasAdminPrivileges(msg.sender), "Caller must have admin or pool admin role");
+        require(_hasAdminPrivileges(msg.sender), "REQUIRE_ADMIN");
         uint256 oldAmount = dataPoolCreationTokens;
         dataPoolCreationTokens = StoragePoolLib.setDataPoolCreationTokensFull(oldAmount, _amount, msg.sender);
         _updateActivityTimestamp();
@@ -778,10 +776,6 @@ contract StoragePool is IStoragePool, GovernanceModule {
         if (!_checkUpgrade(newImplementation)) revert("UpgradeNotAuthorized");
     }
 
-
-
-
-
     /**
      * @dev Internal helper to safely transfer tokens using the library's secure transfer function
      * @param to The recipient address
@@ -790,15 +784,6 @@ contract StoragePool is IStoragePool, GovernanceModule {
      */
     function _safeTokenTransfer(address to, uint256 amount) internal returns (bool success) {
         return StoragePoolLib.safeTokenTransfer(transferLocks, token, to, amount);
-    }
-
-    /**
-     * @dev Helper function to convert uint256 to string for event logging
-     * @param value The uint256 value to convert
-     * @return The string representation of the value
-     */
-    function _uint2str(uint256 value) internal pure returns (string memory) {
-        return StoragePoolLib.uint2str(value);
     }
 
     /**
