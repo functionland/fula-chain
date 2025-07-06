@@ -210,8 +210,7 @@ describe("StoragePool", function () {
 
       await expect(
         storagePool.connect(otherAccount).setDataPoolCreationTokens(newRequirement)
-      ).to.be.revertedWithCustomError(storagePool, "AccessControlUnauthorizedAccount")
-      .withArgs(otherAccount.address, ADMIN_ROLE);
+      ).to.be.revertedWith("Caller must have admin or pool admin role");
     });
 
     it("should revert when contract is paused", async function () {

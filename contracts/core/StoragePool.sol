@@ -56,6 +56,9 @@ contract StoragePool is IStoragePool, GovernanceModule {
         // Pausable, AccessControlEnumerable, role grants, and timelocks)
         __GovernanceModule_init(initialOwner, initialAdmin);
 
+        // Grant pool-specific roles
+        _grantRole(POOL_CREATOR_ROLE, initialOwner);
+
         token = StorageToken(_storageToken);
         dataPoolCreationTokens = 500_000 * 10**18; // 500K tokens with 18 decimals
     }
