@@ -142,7 +142,7 @@ describe("StoragePool", function () {
             unsafeAllowLinkedLibraries: true
           }
         )
-      ).to.be.revertedWith("Invalid token address");
+      ).to.be.revertedWith("INV_TKN");
 
       await expect(
         upgrades.deployProxy(
@@ -154,7 +154,7 @@ describe("StoragePool", function () {
             unsafeAllowLinkedLibraries: true
           }
         )
-      ).to.be.revertedWith("Invalid owner address");
+      ).to.be.revertedWith("INV_OWN");
 
       await expect(
         upgrades.deployProxy(
@@ -166,7 +166,7 @@ describe("StoragePool", function () {
             unsafeAllowLinkedLibraries: true
           }
         )
-      ).to.be.revertedWith("Invalid admin address");
+      ).to.be.revertedWith("INV_ADM");
     });
 
     it("should emit correct events during initialization", async function () {
@@ -210,7 +210,7 @@ describe("StoragePool", function () {
 
       await expect(
         storagePool.connect(otherAccount).setDataPoolCreationTokens(newRequirement)
-      ).to.be.revertedWith("Caller must have admin or pool admin role");
+      ).to.be.revertedWith("REQUIRE_ADMIN");
     });
 
     it("should revert when contract is paused", async function () {
@@ -416,7 +416,7 @@ describe("StoragePool", function () {
 
       await expect(
         storagePool.connect(member1).submitJoinRequest(nonExistentPoolId, "QmMember1PeerId")
-      ).to.be.revertedWith("Invalid pool ID");
+      ).to.be.revertedWith("INV_pID");
     });
 
     it("should revert when already a member", async function () {
@@ -543,7 +543,7 @@ describe("StoragePool", function () {
 
       await expect(
         storagePool.connect(member1).leavePool(nonExistentPoolId)
-      ).to.be.revertedWith("Invalid pool ID");
+      ).to.be.revertedWith("INV_pID");
     });
 
     it("should revert when not a member", async function () {
@@ -622,7 +622,7 @@ describe("StoragePool", function () {
 
       await expect(
         storagePool.connect(poolCreator).deletePool(nonExistentPoolId)
-      ).to.be.revertedWith("Invalid pool ID");
+      ).to.be.revertedWith("INV_pID");
     });
 
     it("should revert when non-creator tries to delete", async function () {
@@ -651,7 +651,7 @@ describe("StoragePool", function () {
       // Try to delete again
       await expect(
         storagePool.connect(poolCreator).deletePool(poolId)
-      ).to.be.revertedWith("Pool does not exist");
+      ).to.be.revertedWith("NOT_EXIST");
     });
 
     it("should revert when contract is paused", async function () {
@@ -719,7 +719,7 @@ describe("StoragePool", function () {
 
       await expect(
         storagePool.connect(poolCreator).removeMember(nonExistentPoolId, member1.address)
-      ).to.be.revertedWith("Invalid pool ID");
+      ).to.be.revertedWith("INV_pID");
     });
 
     it("should revert when non-creator tries to remove member", async function () {
@@ -1338,7 +1338,7 @@ describe("StoragePool", function () {
       it("should revert for invalid pool ID", async function () {
         await expect(
           storagePool.getPoolMemberCount(999)
-        ).to.be.revertedWith("Invalid pool ID");
+        ).to.be.revertedWith("INV_pID");
       });
     });
 
@@ -1516,7 +1516,7 @@ describe("StoragePool", function () {
       it("should revert for invalid pool ID", async function () {
         await expect(
           storagePool.getMemberReputation(999, member1.address)
-        ).to.be.revertedWith("Invalid pool ID");
+        ).to.be.revertedWith("INV_pID");
       });
     });
 
@@ -1779,7 +1779,7 @@ describe("StoragePool", function () {
 
         // Verify member count returns 0 for deleted pool
         await expect(storagePool.getPoolMemberCount(adminPoolId))
-          .to.be.revertedWith("Pool does not exist");
+          .to.be.revertedWith("NOT_EXIST");
       });
     });
   });
