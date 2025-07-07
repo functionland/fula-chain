@@ -336,7 +336,9 @@ library StoragePoolLib {
         address caller,
         bool isAdmin,
         bool requireTokenLock,
-        uint32 poolId
+        uint32 poolId,
+        mapping(uint256 => IStoragePool.Pool) storage pools,
+        uint256 poolCounter
     ) external {
         require(pool.memberList.length < 1000, "Pool is full");
         require(pool.peerIdToMember[peerId] == address(0), "PeerId already in use in this pool");
@@ -355,6 +357,11 @@ library StoragePoolLib {
 
         // Access control: only admin or pool creator
         require(caller == pool.creator || isAdmin, "Not authorized");
+
+        // Check if user has forfeit flag set in current pool (banned from joining pools)
+        if (pool.members[member].joinDate > 0 && (pool.members[member].statusFlags & 0x01) != 0) {
+            revert("Account banned from joining pools");
+        }
 
         // Token locking logic
         if (requireTokenLock) {
@@ -889,12 +896,19 @@ library StoragePoolLib {
         StorageToken token,
         address requester,
         uint32 poolId,
-        string memory peerId
+        string memory peerId,
+        mapping(uint256 => IStoragePool.Pool) storage pools,
+        uint256 poolCounter
     ) external view {
         require(pool.creator != address(0), "Data pool does not exist");
         require(pool.peerIdToMember[peerId] == address(0), "PeerId already in use in this pool");
         require(token.balanceOf(requester) >= pool.requiredTokens, "Insufficient tokens");
         require(pool.memberList.length + joinRequests[poolId].length < 1000, "Data pool has reached maximum capacity"); // MAX_MEMBERS = 1000
+
+        // Check if user has forfeit flag set in current pool (banned from joining pools)
+        if (pool.members[requester].joinDate > 0 && (pool.members[requester].statusFlags & 0x01) != 0) {
+            revert("Account banned from joining pools");
+        }
 
         // Allow members to add additional peer IDs, but prevent joining different pools if already locked
         if (pool.members[requester].joinDate == 0) {
@@ -1068,7 +1082,8 @@ library StoragePoolLib {
             request.approvals++;
 
             // Check if approvals meet the threshold for acceptance
-            uint256 approvalThreshold = calculateApprovalThreshold(pool.memberList.length);
+            uint256 memberCount = pool.memberList.length;
+            uint256 approvalThreshold = memberCount == 0 ? 1 : (memberCount <= 2 ? 1 : (memberCount + 2) / 3);
             uint256 absoluteThreshold = 10; // Absolute threshold for large pools
 
             if (
@@ -1098,7 +1113,8 @@ library StoragePoolLib {
             request.rejections++;
 
             // Check if rejections meet the threshold for denial
-            uint256 rejectionThreshold = calculateRejectionThreshold(pool.memberList.length);
+            uint256 memberCount = pool.memberList.length;
+            uint256 rejectionThreshold = memberCount == 0 ? 1 : (memberCount == 1 ? 1 : (memberCount / 2) + 1);
 
             if (request.rejections >= rejectionThreshold) {
                 // Update state before external calls to prevent reentrancy
@@ -1132,23 +1148,7 @@ library StoragePoolLib {
         }
     }
 
-    /**
-     * @dev Calculate approval threshold using ceiling division
-     */
-    function calculateApprovalThreshold(uint256 memberCount) internal pure returns (uint256) {
-        if (memberCount == 0) return 1; // Edge case protection
-        if (memberCount <= 2) return 1; // Minimum threshold for small pools
-        return (memberCount + 2) / 3; // Ceiling division: ceil(memberCount/3)
-    }
 
-    /**
-     * @dev Calculate rejection threshold using ceiling division for majority
-     */
-    function calculateRejectionThreshold(uint256 memberCount) internal pure returns (uint256) {
-        if (memberCount == 0) return 1; // Edge case protection
-        if (memberCount == 1) return 1; // Single member requires 1 rejection
-        return (memberCount / 2) + 1; // Majority: more than half
-    }
 
     /**
      * @dev Adds a member from voting process (internal helper)
@@ -1978,38 +1978,7 @@ library StoragePoolLib {
         return totalMembers;
     }
 
-    /**
-     * @dev Helper function to convert uint256 to string for event logging
-     * @param value The uint256 value to convert
-     * @return The string representation of the value
-     */
-    function uint2str(uint256 value) external pure returns (string memory) {
-        return _uint2str(value);
-    }
 
-    /**
-     * @dev Internal helper function to convert uint256 to string
-     * @param value The uint256 value to convert
-     * @return The string representation of the value
-     */
-    function _uint2str(uint256 value) internal pure returns (string memory) {
-        if (value == 0) {
-            return "0";
-        }
-        uint256 temp = value;
-        uint256 digits;
-        while (temp != 0) {
-            digits++;
-            temp /= 10;
-        }
-        bytes memory buffer = new bytes(digits);
-        while (value != 0) {
-            digits -= 1;
-            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
-            value /= 10;
-        }
-        return string(buffer);
-    }
 
     /**
      * @dev Internal function to add a member to a pool
@@ -2144,7 +2113,7 @@ library StoragePoolLib {
             0, // no specific target ID
             address(0), // no specific target address
             _amount,
-            string(abi.encodePacked("Changed from ", _uint2str(oldAmount), " to ", _uint2str(_amount))),
+            "Pool creation tokens updated",
             block.timestamp
         );
 

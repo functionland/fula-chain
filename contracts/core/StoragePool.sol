@@ -327,7 +327,9 @@ contract StoragePool is IStoragePool, GovernanceModule {
             token,
             msg.sender,
             poolId,
-            peerId
+            peerId,
+            pools,
+            poolCounter
         );
 
         // Create join request using library
@@ -533,6 +535,53 @@ contract StoragePool is IStoragePool, GovernanceModule {
     }
 
     /**
+     * @dev Helper function to convert uint256 to string for event logging
+     */
+    function uint2str(uint256 value) external pure returns (string memory) {
+        return _uint2str(value);
+    }
+
+    /**
+     * @dev Internal helper function to convert uint256 to string
+     */
+    function _uint2str(uint256 value) internal pure returns (string memory) {
+        if (value == 0) {
+            return "0";
+        }
+        uint256 temp = value;
+        uint256 digits;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        bytes memory buffer = new bytes(digits);
+        while (value != 0) {
+            digits -= 1;
+            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+            value /= 10;
+        }
+        return string(buffer);
+    }
+
+    /**
+     * @dev Calculate approval threshold using ceiling division
+     */
+    function calculateApprovalThreshold(uint256 memberCount) internal pure returns (uint256) {
+        if (memberCount == 0) return 1; // Edge case protection
+        if (memberCount <= 2) return 1; // Minimum threshold for small pools
+        return (memberCount + 2) / 3; // Ceiling division: ceil(memberCount/3)
+    }
+
+    /**
+     * @dev Calculate rejection threshold using ceiling division for majority
+     */
+    function calculateRejectionThreshold(uint256 memberCount) internal pure returns (uint256) {
+        if (memberCount == 0) return 1; // Edge case protection
+        if (memberCount == 1) return 1; // Single member requires 1 rejection
+        return (memberCount / 2) + 1; // Majority: more than half
+    }
+
+    /**
      * @dev Allows users to claim tokens that were marked as claimable when direct transfers failed
      */
     function claimTokens() external nonReentrant whenNotPaused {
@@ -563,7 +612,9 @@ contract StoragePool is IStoragePool, GovernanceModule {
             msg.sender,
             isAdmin,
             requireTokenLock,
-            poolId
+            poolId,
+            pools,
+            poolCounter
         );
 
         poolMemberIndices[poolId][member] = pool.memberList.length - 1;
