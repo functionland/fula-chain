@@ -750,6 +750,20 @@ contract RewardEngine is GovernanceModule {
         return peerIds;
     }
 
+    /// @notice Get all online peerIds for the latest submission in a pool
+    /// @param poolId The pool ID
+    /// @return peerIds Array of peerIds that were online in the latest submission
+    function getLatestOnlinePeerIds(uint32 poolId) external view returns (string[] memory peerIds) {
+        // Get the latest timestamp (first in the linked list)
+        uint256 latestTimestamp = timestampHead[poolId];
+
+        if (latestTimestamp == 0) {
+            return new string[](0); // No submissions yet
+        }
+
+        return this.getOnlinePeerIds(poolId, latestTimestamp);
+    }
+
     /// @notice Check if a specific peerId was online at a timestamp
     /// @param poolId The pool ID
     /// @param timestamp The timestamp to check
