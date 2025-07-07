@@ -41,6 +41,9 @@ contract StoragePool is IStoragePool, GovernanceModule {
     mapping(address => uint256) private lastClaimTimestamp;
     mapping(address => bool) private transferLocks;
 
+    // Mapping to track banned users per pool (persists even after leaving)
+    mapping(uint32 => mapping(address => bool)) private bannedUsers;
+
     function initialize(
         address _storageToken,
         address initialOwner,
@@ -329,7 +332,8 @@ contract StoragePool is IStoragePool, GovernanceModule {
             poolId,
             peerId,
             pools,
-            poolCounter
+            poolCounter,
+            bannedUsers
         );
 
         // Create join request using library
@@ -525,12 +529,26 @@ contract StoragePool is IStoragePool, GovernanceModule {
         );
     }
 
-    // Admin function to set forfeit flag for members
-    function setForfeitFlag(uint32 poolId, address member, bool forfeit) external {
-        require(_hasAdminPrivileges(msg.sender) && pools[poolId].members[member].joinDate > 0);
-        pools[poolId].members[member].statusFlags = forfeit ?
-            pools[poolId].members[member].statusFlags | 0x01 :
-            pools[poolId].members[member].statusFlags & 0xFE;
+    // Admin function to set forfeit flag for members (works for current and former members)
+    function setForfeitFlag(uint32 poolId, address member, bool forfeit) external validatePoolId(poolId) {
+        require(_hasAdminPrivileges(msg.sender), "Not authorized");
+
+        // Check if user is currently a member or was previously banned (allowing management of former members)
+        bool isCurrentMember = pools[poolId].members[member].joinDate > 0;
+        bool wasPreviouslyBanned = bannedUsers[poolId][member];
+
+        require(isCurrentMember || wasPreviouslyBanned, "Not a member");
+
+        // Set the forfeit flag in member data if they're still a member
+        if (isCurrentMember) {
+            pools[poolId].members[member].statusFlags = forfeit ?
+                pools[poolId].members[member].statusFlags | 0x01 :
+                pools[poolId].members[member].statusFlags & 0xFE;
+        }
+
+        // Set the banned status that persists even after leaving
+        bannedUsers[poolId][member] = forfeit;
+
         emit MemberForfeitFlagSet(poolId, member, forfeit, msg.sender);
     }
 
@@ -614,7 +632,8 @@ contract StoragePool is IStoragePool, GovernanceModule {
             requireTokenLock,
             poolId,
             pools,
-            poolCounter
+            poolCounter,
+            bannedUsers
         );
 
         poolMemberIndices[poolId][member] = pool.memberList.length - 1;

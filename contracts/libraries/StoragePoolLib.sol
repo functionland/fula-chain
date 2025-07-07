@@ -338,7 +338,8 @@ library StoragePoolLib {
         bool requireTokenLock,
         uint32 poolId,
         mapping(uint256 => IStoragePool.Pool) storage pools,
-        uint256 poolCounter
+        uint256 poolCounter,
+        mapping(uint32 => mapping(address => bool)) storage bannedUsers
     ) external {
         require(pool.memberList.length < 1000, "Pool is full");
         require(pool.peerIdToMember[peerId] == address(0), "PeerId already in use in this pool");
@@ -358,8 +359,8 @@ library StoragePoolLib {
         // Access control: only admin or pool creator
         require(caller == pool.creator || isAdmin, "Not authorized");
 
-        // Check if user has forfeit flag set in current pool (banned from joining pools)
-        if (pool.members[member].joinDate > 0 && (pool.members[member].statusFlags & 0x01) != 0) {
+        // Check if user is banned from joining this pool (persists even after leaving)
+        if (bannedUsers[poolId][member]) {
             revert("Account banned from joining pools");
         }
 
@@ -898,15 +899,16 @@ library StoragePoolLib {
         uint32 poolId,
         string memory peerId,
         mapping(uint256 => IStoragePool.Pool) storage pools,
-        uint256 poolCounter
+        uint256 poolCounter,
+        mapping(uint32 => mapping(address => bool)) storage bannedUsers
     ) external view {
         require(pool.creator != address(0), "Data pool does not exist");
         require(pool.peerIdToMember[peerId] == address(0), "PeerId already in use in this pool");
         require(token.balanceOf(requester) >= pool.requiredTokens, "Insufficient tokens");
         require(pool.memberList.length + joinRequests[poolId].length < 1000, "Data pool has reached maximum capacity"); // MAX_MEMBERS = 1000
 
-        // Check if user has forfeit flag set in current pool (banned from joining pools)
-        if (pool.members[requester].joinDate > 0 && (pool.members[requester].statusFlags & 0x01) != 0) {
+        // Check if user is banned from joining this pool (persists even after leaving)
+        if (bannedUsers[poolId][requester]) {
             revert("Account banned from joining pools");
         }
 
@@ -1877,6 +1879,10 @@ library StoragePoolLib {
             safeSubtractUserTokens(userTotalRequiredLockedTokens, caller, refundAmount);
         } else {
             // User joined without locking tokens (e.g., added by admin) or is set to forfeit, no refund
+            // Clear locked tokens even if forfeiting to allow future pool joins
+            if (lockedAmount >= pool.requiredTokens) {
+                lockedTokens[caller] -= pool.requiredTokens;
+            }
             safeSubtractUserTokens(userTotalRequiredLockedTokens, caller, pool.requiredTokens);
         }
 
@@ -2188,6 +2194,10 @@ library StoragePoolLib {
             }
         } else {
             // Member is set to forfeit tokens or has insufficient locked tokens, no refund
+            // Clear locked tokens even if forfeiting to allow future pool joins
+            if (lockedAmount >= pool.requiredTokens) {
+                lockedTokens[member] -= pool.requiredTokens;
+            }
             safeSubtractUserTokens(userTotalRequiredLockedTokens, member, pool.requiredTokens);
         }
 

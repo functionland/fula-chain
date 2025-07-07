@@ -1766,6 +1766,11 @@ describe("StoragePool", function () {
     let secondPoolId: number;
 
     beforeEach(async function () {
+      // Get current pool counter to determine next pool IDs
+      const currentPoolCounter = await storagePool.poolCounter();
+      poolId = Number(currentPoolCounter) + 1;
+      secondPoolId = Number(currentPoolCounter) + 2;
+
       // Create first pool
       await storageToken.connect(poolCreator).approve(await storagePool.getAddress(), POOL_CREATION_TOKENS);
       await storagePool.connect(poolCreator).createDataPool(
@@ -1776,7 +1781,6 @@ describe("StoragePool", function () {
         10 * 24 * 60 * 60,
         "QmForfeitTestCreator"
       );
-      poolId = 1;
 
       // Add member1 as a member with token lock
       await storageToken.connect(member1).approve(await storagePool.getAddress(), REQUIRED_TOKENS);
@@ -1797,7 +1801,6 @@ describe("StoragePool", function () {
         10 * 24 * 60 * 60,
         "QmSecondPoolCreator"
       );
-      secondPoolId = 2;
     });
 
     describe("Forfeit Flag Management", function () {
@@ -1809,6 +1812,9 @@ describe("StoragePool", function () {
 
         // Check that forfeit flag is set by verifying the member cannot rejoin after leaving
         await storagePool.connect(member1).leavePool(poolId);
+
+        // Approve new tokens for the rejoin attempt (since previous tokens were forfeited)
+        await storageToken.connect(member1).approve(await storagePool.getAddress(), REQUIRED_TOKENS);
 
         // Try to rejoin - should fail due to forfeit flag
         await expect(
@@ -1822,6 +1828,10 @@ describe("StoragePool", function () {
 
         // Verify forfeit flag is set by checking ban behavior
         await storagePool.connect(member1).leavePool(poolId);
+
+        // Approve new tokens for the rejoin attempt (since previous tokens were forfeited)
+        await storageToken.connect(member1).approve(await storagePool.getAddress(), REQUIRED_TOKENS);
+
         await expect(
           storagePool.connect(member1).submitJoinRequest(poolId, "QmBannedAttempt")
         ).to.be.revertedWith("Account banned from joining pools");
@@ -1844,7 +1854,7 @@ describe("StoragePool", function () {
 
       it("should not allow setting forfeit flag for non-member", async function () {
         await expect(storagePool.connect(admin).setForfeitFlag(poolId, otherAccount.address, true))
-          .to.be.revertedWith("Not authorized");
+          .to.be.revertedWith("Not a member");
       });
     });
 
@@ -1914,6 +1924,9 @@ describe("StoragePool", function () {
         // Member1 leaves the pool first
         await storagePool.connect(member1).leavePool(poolId);
 
+        // Approve new tokens for the rejoin attempt (since previous tokens were forfeited)
+        await storageToken.connect(member1).approve(await storagePool.getAddress(), REQUIRED_TOKENS);
+
         // Try to submit join request to same pool - should fail
         await expect(
           storagePool.connect(member1).submitJoinRequest(poolId, "QmBannedMember1")
@@ -1944,6 +1957,9 @@ describe("StoragePool", function () {
 
         // Member1 leaves the pool first
         await storagePool.connect(member1).leavePool(poolId);
+
+        // Approve new tokens for the rejoin attempt (since previous tokens were forfeited)
+        await storageToken.connect(member1).approve(await storagePool.getAddress(), REQUIRED_TOKENS);
 
         // Verify member1 cannot rejoin same pool
         await expect(
