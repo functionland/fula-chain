@@ -1761,6 +1761,243 @@ describe("StoragePool", function () {
     });
   });
 
+  describe("Forfeit Flag Functionality", function () {
+    let poolId: number;
+    let secondPoolId: number;
+
+    beforeEach(async function () {
+      // Create first pool
+      await storageToken.connect(poolCreator).approve(await storagePool.getAddress(), POOL_CREATION_TOKENS);
+      await storagePool.connect(poolCreator).createDataPool(
+        "Forfeit Test Pool",
+        "US-West",
+        REQUIRED_TOKENS,
+        50,
+        10 * 24 * 60 * 60,
+        "QmForfeitTestCreator"
+      );
+      poolId = 1;
+
+      // Add member1 as a member with token lock
+      await storageToken.connect(member1).approve(await storagePool.getAddress(), REQUIRED_TOKENS);
+      await storagePool.connect(poolCreator).addMemberDirectly(
+        poolId,
+        member1.address,
+        "QmForfeitTestMember1",
+        true
+      );
+
+      // Create second pool for testing ban functionality
+      await storageToken.connect(admin).approve(await storagePool.getAddress(), POOL_CREATION_TOKENS);
+      await storagePool.connect(admin).createDataPool(
+        "Second Pool",
+        "US-East",
+        REQUIRED_TOKENS,
+        50,
+        10 * 24 * 60 * 60,
+        "QmSecondPoolCreator"
+      );
+      secondPoolId = 2;
+    });
+
+    describe("Forfeit Flag Management", function () {
+      it("should allow admin to set forfeit flag for a member", async function () {
+        // Admin sets forfeit flag for member1
+        await expect(storagePool.connect(admin).setForfeitFlag(poolId, member1.address, true))
+          .to.emit(storagePool, "MemberForfeitFlagSet")
+          .withArgs(poolId, member1.address, true, admin.address);
+
+        // Check that forfeit flag is set by verifying the member cannot rejoin after leaving
+        await storagePool.connect(member1).leavePool(poolId);
+
+        // Try to rejoin - should fail due to forfeit flag
+        await expect(
+          storagePool.connect(member1).submitJoinRequest(poolId, "QmRejoinAttempt")
+        ).to.be.revertedWith("Account banned from joining pools");
+      });
+
+      it("should allow admin to unset forfeit flag for a member", async function () {
+        // First set the forfeit flag
+        await storagePool.connect(admin).setForfeitFlag(poolId, member1.address, true);
+
+        // Verify forfeit flag is set by checking ban behavior
+        await storagePool.connect(member1).leavePool(poolId);
+        await expect(
+          storagePool.connect(member1).submitJoinRequest(poolId, "QmBannedAttempt")
+        ).to.be.revertedWith("Account banned from joining pools");
+
+        // Then unset it
+        await expect(storagePool.connect(admin).setForfeitFlag(poolId, member1.address, false))
+          .to.emit(storagePool, "MemberForfeitFlagSet")
+          .withArgs(poolId, member1.address, false, admin.address);
+
+        // Check that forfeit flag is unset by verifying member can now rejoin
+        await expect(
+          storagePool.connect(member1).submitJoinRequest(poolId, "QmUnbannedAttempt")
+        ).to.not.be.reverted;
+      });
+
+      it("should not allow non-admin to set forfeit flag", async function () {
+        await expect(storagePool.connect(member2).setForfeitFlag(poolId, member1.address, true))
+          .to.be.revertedWith("Not authorized");
+      });
+
+      it("should not allow setting forfeit flag for non-member", async function () {
+        await expect(storagePool.connect(admin).setForfeitFlag(poolId, otherAccount.address, true))
+          .to.be.revertedWith("Not authorized");
+      });
+    });
+
+    describe("Token Forfeiture on Leave", function () {
+      it("should forfeit tokens when member with forfeit flag leaves pool", async function () {
+        // Set forfeit flag for member1
+        await storagePool.connect(admin).setForfeitFlag(poolId, member1.address, true);
+
+        // Get initial token balance
+        const initialBalance = await storageToken.balanceOf(member1.address);
+
+        // Member1 leaves the pool
+        await storagePool.connect(member1).leavePool(poolId);
+
+        // Check that tokens were not refunded (forfeited)
+        const finalBalance = await storageToken.balanceOf(member1.address);
+        expect(finalBalance).to.equal(initialBalance); // No refund
+      });
+
+      it("should refund tokens when member without forfeit flag leaves pool", async function () {
+        // Get initial token balance
+        const initialBalance = await storageToken.balanceOf(member1.address);
+
+        // Member1 leaves the pool (forfeit flag is false by default)
+        await storagePool.connect(member1).leavePool(poolId);
+
+        // Check that tokens were refunded
+        const finalBalance = await storageToken.balanceOf(member1.address);
+        expect(finalBalance).to.equal(initialBalance + REQUIRED_TOKENS); // Refunded
+      });
+    });
+
+    describe("Token Forfeiture on Removal", function () {
+      it("should forfeit tokens when member with forfeit flag is removed", async function () {
+        // Set forfeit flag for member1
+        await storagePool.connect(admin).setForfeitFlag(poolId, member1.address, true);
+
+        // Get initial token balance
+        const initialBalance = await storageToken.balanceOf(member1.address);
+
+        // Admin removes member1 from the pool
+        await storagePool.connect(admin).removeMember(poolId, member1.address);
+
+        // Check that tokens were not refunded (forfeited)
+        const finalBalance = await storageToken.balanceOf(member1.address);
+        expect(finalBalance).to.equal(initialBalance); // No refund
+      });
+
+      it("should refund tokens when member without forfeit flag is removed", async function () {
+        // Get initial token balance
+        const initialBalance = await storageToken.balanceOf(member1.address);
+
+        // Admin removes member1 from the pool (forfeit flag is false by default)
+        await storagePool.connect(admin).removeMember(poolId, member1.address);
+
+        // Check that tokens were refunded
+        const finalBalance = await storageToken.balanceOf(member1.address);
+        expect(finalBalance).to.equal(initialBalance + REQUIRED_TOKENS); // Refunded
+      });
+    });
+
+    describe("Ban from Joining Pools", function () {
+      it("should prevent banned user from submitting join requests to same pool", async function () {
+        // Set forfeit flag for member1 in first pool
+        await storagePool.connect(admin).setForfeitFlag(poolId, member1.address, true);
+
+        // Member1 leaves the pool first
+        await storagePool.connect(member1).leavePool(poolId);
+
+        // Try to submit join request to same pool - should fail
+        await expect(
+          storagePool.connect(member1).submitJoinRequest(poolId, "QmBannedMember1")
+        ).to.be.revertedWith("Account banned from joining pools");
+      });
+
+      it("should prevent banned user from being added directly to same pool", async function () {
+        // Set forfeit flag for member1 in first pool
+        await storagePool.connect(admin).setForfeitFlag(poolId, member1.address, true);
+
+        // Member1 leaves the pool first
+        await storagePool.connect(member1).leavePool(poolId);
+
+        // Try to add member1 directly to same pool - should fail
+        await expect(
+          storagePool.connect(admin).addMemberDirectly(
+            poolId,
+            member1.address,
+            "QmBannedMember1Direct",
+            true
+          )
+        ).to.be.revertedWith("Account banned from joining pools");
+      });
+
+      it("should allow banned user to join pools after flag is removed", async function () {
+        // Set forfeit flag for member1 in first pool
+        await storagePool.connect(admin).setForfeitFlag(poolId, member1.address, true);
+
+        // Member1 leaves the pool first
+        await storagePool.connect(member1).leavePool(poolId);
+
+        // Verify member1 cannot rejoin same pool
+        await expect(
+          storagePool.connect(member1).submitJoinRequest(poolId, "QmBannedMember1")
+        ).to.be.revertedWith("Account banned from joining pools");
+
+        // Remove forfeit flag
+        await storagePool.connect(admin).setForfeitFlag(poolId, member1.address, false);
+
+        // Now member1 should be able to submit join request
+        await expect(
+          storagePool.connect(member1).submitJoinRequest(poolId, "QmUnbannedMember1")
+        ).to.not.be.reverted;
+
+        // Verify the join request was created
+        const requestIndex = await storagePool.requestIndex(member1.address);
+        expect(requestIndex).to.be.greaterThan(0);
+      });
+
+      it("should allow non-banned users to join pools normally", async function () {
+        // Set forfeit flag for member1 but not member2
+        await storagePool.connect(admin).setForfeitFlag(poolId, member1.address, true);
+
+        // Member2 should still be able to join second pool
+        await storageToken.connect(member2).approve(await storagePool.getAddress(), REQUIRED_TOKENS);
+        await expect(
+          storagePool.connect(member2).submitJoinRequest(secondPoolId, "QmMember2SecondPool")
+        ).to.not.be.reverted;
+
+        // Verify the join request was created
+        const requestIndex = await storagePool.requestIndex(member2.address);
+        expect(requestIndex).to.be.greaterThan(0);
+      });
+
+      it("should prevent admin from adding banned users even with admin privileges", async function () {
+        // Set forfeit flag for member1
+        await storagePool.connect(admin).setForfeitFlag(poolId, member1.address, true);
+
+        // Member1 leaves the pool first
+        await storagePool.connect(member1).leavePool(poolId);
+
+        // Even admin should not be able to add banned user to same pool
+        await expect(
+          storagePool.connect(admin).addMemberDirectly(
+            poolId,
+            member1.address,
+            "QmAdminTryBannedUser",
+            false // Admin can bypass token lock but not ban
+          )
+        ).to.be.revertedWith("Account banned from joining pools");
+      });
+    });
+  });
+
   describe("Multi-Peer ID Support", function () {
     let poolId: number;
     let member1PeerId1: string;
