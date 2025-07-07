@@ -22,7 +22,7 @@ contract RewardEngine is GovernanceModule {
     event MiningRewardsClaimed(address indexed account, string indexed peerId, uint32 indexed poolId, uint256 amount);
     event StorageRewardsClaimed(address indexed account, string indexed peerId, uint32 indexed poolId, uint256 amount);
     event OnlineStatusSubmitted(uint32 indexed poolId, address indexed submitter, uint256 count, uint256 timestamp);
-    event YearlyMiningRewardsUpdated(uint256 oldAmount, uint256 newAmount);
+    event MonthlyRewardPerPeerUpdated(uint256 oldAmount, uint256 newAmount);
     event ExpectedPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
     event RewardPoolSet(address indexed stakingPool);
     event TotalRewardsDistributedUpdated(uint256 totalDistributed);
@@ -48,8 +48,9 @@ contract RewardEngine is GovernanceModule {
     // Constants
     uint256 public constant MAX_BATCH_SIZE = 100;
     uint256 public constant SECONDS_PER_YEAR = 365 days;
+    uint256 public constant SECONDS_PER_MONTH = 30 days;
     uint256 public constant DEFAULT_EXPECTED_PERIOD = 8 hours;
-    uint256 public constant DEFAULT_YEARLY_MINING_REWARDS = 120_000_000 * 10**18; // 120M tokens
+    uint256 public constant DEFAULT_MONTHLY_REWARD_PER_PEER = 8000 * 10**18; // 8000 tokens per peer per month
     uint256 public constant MAX_HISTORICAL_SUBMISSION = 7 days; // Maximum 1 week back
     uint256 public constant MAX_FUTURE_SUBMISSION = 1 minutes; // Maximum 1 minute future
     uint256 public constant MAX_MONTHLY_REWARD_PER_PEER = 8000 * 10**18; // 8000 tokens per month
@@ -59,7 +60,7 @@ contract RewardEngine is GovernanceModule {
     StoragePool public storagePool;
     StakingPool public stakingPool;
 
-    uint256 public yearlyMiningRewards;
+    uint256 public monthlyRewardPerPeer;
     uint256 public expectedPeriod;
     uint256 public rewardSystemStartTime; // When the reward system became active
 
@@ -68,7 +69,7 @@ contract RewardEngine is GovernanceModule {
     mapping(string => bytes32) public peerIdToInterned;
     // bytes32 internedId => string peerId (for reverse lookup)
     mapping(bytes32 => string) public internedToPeerId;
-    uint256 private nextPeerIdCounter = 1;
+    uint256 private nextPeerIdCounter;
 
     // Online status tracking - optimized for zero-loop batch operations
     // poolId => timestamp => array of interned peerIds that were online
@@ -132,9 +133,12 @@ contract RewardEngine is GovernanceModule {
         storagePool = StoragePool(_storagePool);
         stakingPool = StakingPool(_stakingPool);
 
-        yearlyMiningRewards = DEFAULT_YEARLY_MINING_REWARDS;
+        monthlyRewardPerPeer = DEFAULT_MONTHLY_REWARD_PER_PEER;
         expectedPeriod = DEFAULT_EXPECTED_PERIOD;
         rewardSystemStartTime = block.timestamp; // Set when the reward system becomes active
+
+        // Initialize peer ID counter
+        nextPeerIdCounter = 1;
 
         // Initialize circuit breaker
         circuitBreakerTripped = false;
@@ -258,20 +262,20 @@ contract RewardEngine is GovernanceModule {
         emit ERC20Recovered(tokenAddress, recipient, amount);
     }
 
-    /// @notice Set the yearly mining rewards amount
-    /// @param _yearlyMiningRewards New yearly mining rewards amount
-    function setYearlyMiningRewards(uint256 _yearlyMiningRewards)
+    /// @notice Set the monthly reward per peer amount
+    /// @param _monthlyRewardPerPeer New monthly reward per peer amount
+    function setMonthlyRewardPerPeer(uint256 _monthlyRewardPerPeer)
         external
         whenNotPaused
         nonReentrant
         onlyRole(ProposalTypes.ADMIN_ROLE)
     {
-        if (_yearlyMiningRewards == 0) revert InvalidAmount();
+        if (_monthlyRewardPerPeer == 0) revert InvalidAmount();
 
-        uint256 oldAmount = yearlyMiningRewards;
-        yearlyMiningRewards = _yearlyMiningRewards;
+        uint256 oldAmount = monthlyRewardPerPeer;
+        monthlyRewardPerPeer = _monthlyRewardPerPeer;
 
-        emit YearlyMiningRewardsUpdated(oldAmount, _yearlyMiningRewards);
+        emit MonthlyRewardPerPeerUpdated(oldAmount, _monthlyRewardPerPeer);
     }
 
     /// @notice Set the expected period for online status reporting
@@ -298,7 +302,7 @@ contract RewardEngine is GovernanceModule {
         uint32 poolId,
         string[] calldata peerIds,
         uint256 timestamp
-    ) external whenNotPaused nonReentrant {
+    ) external whenNotPaused nonReentrant notTripped {
         if (peerIds.length == 0 || peerIds.length > MAX_BATCH_SIZE) revert BatchTooLarge();
 
         // Enhanced timestamp validation
@@ -810,21 +814,18 @@ contract RewardEngine is GovernanceModule {
     }
 
     /// @notice Internal function to safely calculate reward per period with overflow protection
-    /// @param totalMembers Total number of members
     /// @return rewardPerPeriod Safe reward per period calculation
-    function _calculateRewardPerPeriod(uint256 totalMembers) internal view returns (uint256 rewardPerPeriod) {
-        if (totalMembers == 0) return 0;
+    function _calculateRewardPerPeriod(uint256 /* totalMembers */) internal view returns (uint256 rewardPerPeriod) {
+        // Simplified calculation: use monthly reward per peer directly
+        // Calculate reward per period based on monthly amount
+        uint256 periodsPerMonth = SECONDS_PER_MONTH / expectedPeriod;
 
-        // Check for potential overflow before multiplication
-        if (yearlyMiningRewards > type(uint256).max / expectedPeriod) return 0;
+        if (periodsPerMonth == 0) return 0;
 
-        uint256 numerator = yearlyMiningRewards * expectedPeriod;
-        uint256 denominator = SECONDS_PER_YEAR * totalMembers;
+        // Check for potential overflow before division
+        if (monthlyRewardPerPeer > type(uint256).max / periodsPerMonth) return 0;
 
-        // Additional safety check for denominator
-        if (denominator == 0) return 0;
-
-        return numerator / denominator;
+        return monthlyRewardPerPeer / periodsPerMonth;
     }
 
     /// @notice Internal function to safely calculate total reward with overflow and division protection
