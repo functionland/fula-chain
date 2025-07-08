@@ -23,7 +23,7 @@ describe("StoragePool", function () {
   const TOKEN_UNIT = ethers.parseEther("1");
   const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion tokens
   const INITIAL_SUPPLY = TOTAL_SUPPLY / BigInt(2); // 1 billion tokens
-  const POOL_CREATION_TOKENS = ethers.parseEther("1000"); // 1000 tokens
+  const POOL_CREATION_TOKENS = ethers.parseEther("15000000"); // 15M tokens (matches contract default)
   const REQUIRED_TOKENS = ethers.parseEther("100"); // 100 tokens to join pool
 
   beforeEach(async function () {
@@ -468,7 +468,7 @@ describe("StoragePool", function () {
       await storageToken.connect(poolCreator).approve(await storagePool.getAddress(), POOL_CREATION_TOKENS);
 
       // Advance time to bypass any potential timelock issues
-      await time.increase(8 * 60 * 60 + 1); // 8 hours + 1 second
+      await time.increase(4 * 60 * 60 + 1); // 4 hours + 1 second (matches POOL_ACTION_DELAY)
 
       const tx = await storagePool.connect(poolCreator).createDataPool(
         "Test Pool",
@@ -1131,7 +1131,7 @@ describe("StoragePool", function () {
       await storageToken.connect(poolCreator).approve(await storagePool.getAddress(), POOL_CREATION_TOKENS);
 
       // Advance time to bypass any potential timelock issues
-      await time.increase(8 * 60 * 60 + 1); // 8 hours + 1 second
+      await time.increase(4 * 60 * 60 + 1); // 4 hours + 1 second (matches POOL_ACTION_DELAY)
 
       const tx = await storagePool.connect(poolCreator).createDataPool(
         "Test Pool",

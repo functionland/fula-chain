@@ -12,7 +12,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
 
     uint256 public constant IMPLEMENTATION_VERSION = 1;
 
-    uint256 private constant POOL_ACTION_DELAY = 8 hours;
+    uint256 private constant POOL_ACTION_DELAY = 4 hours;
     mapping(bytes32 => uint256) private poolActionTimeLocks;
 
     StorageToken public token;
@@ -61,7 +61,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
         _grantRole(POOL_CREATOR_ROLE, initialOwner);
 
         token = StorageToken(_storageToken);
-        dataPoolCreationTokens = 500_000 * 10**18; // 500K tokens with 18 decimals
+        dataPoolCreationTokens = 15_000_000 * 10**18; // 15M tokens with 18 decimals
     }
 
     // Emergency pause/unpause functionality is now handled by the inherited GovernanceModule.emergencyAction()
