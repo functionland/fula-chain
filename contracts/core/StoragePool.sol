@@ -79,8 +79,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
     // Users should call emergencyAction(1) to pause and emergencyAction(2) to unpause
 
     modifier validatePoolId(uint32 poolId) {
-        require(poolId > 0 && poolId <= poolCounter, "INV_pID");
-        require(pools[poolId].creator != address(0), "NOT_EXIST");
+        require(poolId > 0 && poolId <= poolCounter && pools[poolId].creator != address(0), "INV_POOL");
         _;
     }
 
@@ -115,94 +114,22 @@ contract StoragePool is IStoragePool, GovernanceModule {
         return hasRole(ProposalTypes.ADMIN_ROLE, account) || hasRole(ProposalTypes.POOL_ADMIN_ROLE, account);
     }
 
-    /**
-     * @dev Creates a new data storage pool with specified parameters and requirements
-     * @param name The human-readable name for the pool (max 256 chars, printable ASCII only)
-     * @param region The geographical region where the pool operates (max 256 chars)
-     * @param requiredTokens The number of tokens members must lock to join this pool
-     * @param minPingTime The minimum acceptable ping time for pool members (1ms to 10s)
-     * @param maxChallengeResponsePeriod Maximum time allowed for challenge responses (1h to 30d)
-     * @param creatorPeerId The IPFS peer ID of the pool creator (max 256 chars)
-     *
-     * @notice This function creates a decentralized storage pool where:
-     * - Pool creator becomes the first member automatically
-     * - Creator must lock dataPoolCreationTokens (unless admin)
-     * - Pool gets assigned a unique incremental ID
-     * - Creator receives POOL_CREATOR_ROLE for pool management
-     * - Timelock prevents rapid pool creation by same user
-     *
-     * @notice Security Features:
-     * - Comprehensive input validation via StoragePoolLib.validatePoolCreationParams
-     * - Reentrancy protection via nonReentrant modifier
-     * - Pause protection via whenNotPaused modifier
-     * - Rate limiting via poolActionTimeLocks mapping
-     * - Token lock requirements (bypassed for admins)
-     *
-     * Requirements:
-     * - Contract must not be paused
-     * - All input parameters must pass validation
-     * - Caller must have sufficient locked tokens (unless admin)
-     * - Timelock period must have elapsed since last pool creation
-     *
-     * Emits:
-     * - DataPoolCreated(poolId, name, creator) via StoragePoolLib
-     * - TokensLocked(creator, amount) if tokens are locked
-     *
-     * @custom:security-note This function handles token locking and pool state changes.
-     * The Checks-Effects-Interactions pattern is enforced in the library.
-     */
-    function createDataPool(
-        string memory name,
-        string memory region,
-        uint256 requiredTokens,
-        uint256 minPingTime,
-        uint256 maxChallengeResponsePeriod,
-        string memory creatorPeerId
-    ) external nonReentrant whenNotPaused {
+    /// @dev Creates a new data storage pool
+    function createDataPool(string memory name, string memory region, uint256 requiredTokens,
+        uint256 minPingTime, uint256 maxChallengeResponsePeriod, string memory creatorPeerId)
+        external nonReentrant whenNotPaused {
         bytes32 actionHash = keccak256(abi.encodePacked("CREATE_POOL", msg.sender));
-        require(block.timestamp >= poolActionTimeLocks[actionHash], "Timelock active");
+        require(block.timestamp >= poolActionTimeLocks[actionHash], "LOCKED");
+        require(bytes(name).length > 0 && bytes(region).length > 0 && bytes(creatorPeerId).length > 0, "EMPTY");
+        require(requiredTokens > 0 && minPingTime > 0 && requiredTokens <= dataPoolCreationTokens, "INV_VAL");
 
-        // Basic input validation
-        require(bytes(name).length > 0, "Pool name cannot be empty");
-        require(bytes(region).length > 0, "Region cannot be empty");
-        require(bytes(creatorPeerId).length > 0, "Creator peer ID cannot be empty");
-        require(msg.sender != address(0), "Creator cannot be zero address");
-        require(requiredTokens > 0, "Required tokens must be positive");
-        require(minPingTime > 0, "Minimum ping time must be greater than zero");
-
-        if (maxChallengeResponsePeriod == 0) {
-            maxChallengeResponsePeriod = 7 days;
-        }
-
-        // Additional business logic validation
-        require(requiredTokens <= dataPoolCreationTokens, "Required tokens to join the pool exceed limit");
-
+        if (maxChallengeResponsePeriod == 0) maxChallengeResponsePeriod = 7 days;
         bool isAdmin = _hasAdminPrivileges(msg.sender);
 
-        // Token locking logic - admin can bypass
-        if (isAdmin) {
-            // Admin can create pools without locking tokens
-            // Only lock tokens if admin chooses to and has sufficient balance
-            if (token.balanceOf(msg.sender) >= dataPoolCreationTokens) {
-                if (token.transferFrom(msg.sender, address(this), dataPoolCreationTokens)) {
-                    lockedTokens[msg.sender] += dataPoolCreationTokens;
-                    userTotalRequiredLockedTokens[msg.sender] += dataPoolCreationTokens;
-                    emit TokensLocked(msg.sender, dataPoolCreationTokens);
-                }
-            }
-        } else {
-            // Non-admin pool creators must lock tokens
-            require(token.balanceOf(msg.sender) >= dataPoolCreationTokens, "Insufficient tokens for pool creation");
-            require(token.transferFrom(msg.sender, address(this), dataPoolCreationTokens), "Token transfer failed");
-            lockedTokens[msg.sender] += dataPoolCreationTokens;
-            userTotalRequiredLockedTokens[msg.sender] += dataPoolCreationTokens;
-            emit TokensLocked(msg.sender, dataPoolCreationTokens);
-        }
+        _lockTokens(msg.sender, dataPoolCreationTokens, isAdmin);
 
-        uint256 newPoolId = poolCounter + 1;
+        uint256 newPoolId = ++poolCounter;
         Pool storage pool = pools[newPoolId];
-
-        // Set pool properties (optimized struct layout)
         pool.name = name;
         pool.region = region;
         pool.id = newPoolId;
@@ -211,108 +138,48 @@ contract StoragePool is IStoragePool, GovernanceModule {
         pool.creator = msg.sender;
         pool.minPingTime = minPingTime;
 
-        // Add creator as first member
-        if (pool.memberList.length < 1000) {
-            // Global peer ID validation - ensure peer ID uniqueness across all pools
-            address existingAccount = globalPeerIdToAccount[creatorPeerId];
-            if (existingAccount != address(0)) {
-                require(existingAccount == msg.sender, "Peer ID already used by different account");
-                uint32 existingPool = globalPeerIdToPool[creatorPeerId];
-                require(existingPool == uint32(newPoolId), "Peer ID already member of different pool");
-            } else {
-                // First time this peer ID is being used - register it globally
-                globalPeerIdToAccount[creatorPeerId] = msg.sender;
-                globalPeerIdToPool[creatorPeerId] = uint32(newPoolId);
-            }
+        _validateGlobalPeerId(creatorPeerId, msg.sender, uint32(newPoolId));
+        _addMemberToPool(pool, msg.sender, creatorPeerId, 500);
 
-            // Create member entry
-            pool.members[msg.sender] = Member({
-                joinDate: block.timestamp,
-                accountId: msg.sender,
-                reputationScore: 500,
-                statusFlags: 0
-            });
-            pool.memberList.push(msg.sender);
-
-            // Add peer ID mappings
-            pool.memberPeerIds[msg.sender].push(creatorPeerId);
-            pool.peerIdToMember[creatorPeerId] = msg.sender;
-
-            emit MemberJoined(newPoolId, msg.sender, creatorPeerId);
-        }
-
-        // Update timelock
         poolActionTimeLocks[actionHash] = block.timestamp + POOL_ACTION_DELAY;
-
-        poolCounter = newPoolId;
         _grantRole(POOL_CREATOR_ROLE, msg.sender);
-
+        
         emit DataPoolCreated(newPoolId, name, msg.sender);
+        emit MemberJoined(newPoolId, msg.sender, creatorPeerId);
+        
     }
 
-    /**
-     * @dev Remove members from pool in batches to avoid gas limit issues
-     * @param poolId The pool ID
-     * @param maxMembers Maximum number of members to remove in this batch (max 100)
-     */
+    /// @dev Remove members from pool in batches
     function removeMembersBatch(uint32 poolId, uint256 maxMembers) external nonReentrant whenNotPaused validatePoolId(poolId) {
-        require(maxMembers > 0 && maxMembers <= 100, "Invalid batch size");
+        require(maxMembers > 0 && maxMembers <= 100, "INV_BATCH");
         Pool storage pool = pools[poolId];
-        bool isAdmin = _hasAdminPrivileges(msg.sender);
-        require(msg.sender == pool.creator || isAdmin, "Not authorized");
-
-        uint256 membersToRemove = 0;
-        uint256 memberCount = pool.memberList.length;
-
-        // Calculate how many members to remove (excluding creator)
-        for (uint256 i = 0; i < memberCount && membersToRemove < maxMembers; i++) {
-            if (pool.memberList[i] != pool.creator) {
-                membersToRemove++;
-            }
-        }
-
-        require(membersToRemove > 0, "No members to remove");
-        require(pool.memberList.length > 0, "Pool has no members");
+        require(msg.sender == pool.creator || _hasAdminPrivileges(msg.sender), "NAUTH");
+        require(pool.memberList.length > 0, "NO_MBRS");
 
         uint256 removedCount = 0;
-
-        // Remove members (excluding creator)
         for (uint256 i = 0; i < pool.memberList.length && removedCount < maxMembers; ) {
             if (gasleft() < 60000) break;
-
             address member = pool.memberList[i];
 
             if (member != pool.creator) {
-                // Refund tokens for this specific member
                 uint256 lockedAmount = lockedTokens[member];
                 if ((pool.members[member].statusFlags & 0x01) == 0 && lockedAmount >= pool.requiredTokens) {
-                    uint256 refundAmount = pool.requiredTokens;
-                    lockedTokens[member] -= refundAmount;
-                    if (userTotalRequiredLockedTokens[member] >= refundAmount) {
-                        userTotalRequiredLockedTokens[member] -= refundAmount;
-                    }
-
-                    bool transferSuccess = _safeTokenTransfer(member, refundAmount);
-                    if (!transferSuccess) {
-                        claimableTokens[member] += refundAmount;
-                        emit TokensMarkedClaimable(member, refundAmount);
-                    }
-                } else {
-                    if (lockedAmount >= pool.requiredTokens) {
-                        lockedTokens[member] -= pool.requiredTokens;
-                    }
+                    lockedTokens[member] -= pool.requiredTokens;
                     if (userTotalRequiredLockedTokens[member] >= pool.requiredTokens) {
                         userTotalRequiredLockedTokens[member] -= pool.requiredTokens;
                     }
+                    if (!_safeTokenTransfer(member, pool.requiredTokens)) {
+                        claimableTokens[member] += pool.requiredTokens;
+                        emit TokensMarkedClaimable(member, pool.requiredTokens);
+                    }
+                } else {
+                    if (lockedAmount >= pool.requiredTokens) lockedTokens[member] -= pool.requiredTokens;
+                    if (userTotalRequiredLockedTokens[member] >= pool.requiredTokens) userTotalRequiredLockedTokens[member] -= pool.requiredTokens;
                 }
 
-                // Get all peer IDs before deleting member data
                 string[] memory memberPeerIds = pool.memberPeerIds[member];
-
-                // Remove from member list and update indices
                 _removeMemberFromList(pool.memberList, poolMemberIndices[poolId], member);
 
-                // Clean up peer ID mappings
                 for (uint256 j = 0; j < memberPeerIds.length; j++) {
                     delete pool.peerIdToMember[memberPeerIds[j]];
                     delete globalPeerIdToAccount[memberPeerIds[j]];
@@ -322,68 +189,27 @@ contract StoragePool is IStoragePool, GovernanceModule {
 
                 delete pool.memberPeerIds[member];
                 delete pool.members[member];
-
                 removedCount++;
-                // Don't increment i since we removed an element
             } else {
                 i++;
             }
         }
-
         emit MembersBatchRemoved(poolId, removedCount);
     }
 
-    /**
-     * @dev Allows the pool creator to permanently delete their storage pool
-     * @param poolId The unique identifier of the pool to delete
-     *
-     * @notice This function completely removes a storage pool and handles:
-     * - Validation that caller is the pool creator
-     * - Refunding locked tokens to all pool members
-     * - Refunding pool creation tokens to the creator
-     * - Clearing all pool data and member associations
-     * - Rate limiting via timelock mechanism
-     *
-     * @notice Token Refund Process:
-     * - All members get their locked tokens refunded
-     * - Pool creator gets pool creation tokens refunded
-     * - If direct transfers fail, tokens are marked as claimable
-     * - Secure transfer validation prevents manipulation attacks
-     *
-     * @notice Security Features:
-     * - Only pool creator can delete their own pool
-     * - Comprehensive input validation via validatePoolId modifier
-     * - Reentrancy protection via nonReentrant modifier
-     * - Pause protection via whenNotPaused modifier
-     * - Rate limiting via poolActionTimeLocks mapping
-     * - Secure token transfers with fallback to claimable system
-     *
-     * Requirements:
-     * - Contract must not be paused
-     * - Pool must exist and be valid
-     * - Caller must be the pool creator
-     * - Timelock period must have elapsed since last pool deletion
-     *
-     * Emits:
-     * - DataPoolDeleted(poolId, creator) via StoragePoolLib
-     * - TokensUnlocked(member, amount) for each successful refund
-     * - TokensMarkedClaimable(member, amount) for failed transfers
-     *
-     * @custom:security-note This function handles bulk token refunds and pool state cleanup.
-     * All state changes occur before external token transfers to prevent reentrancy.
-     */
+    /// @dev Allows the pool creator to permanently delete their storage pool
     function deletePool(uint32 poolId) external nonReentrant whenNotPaused validatePoolId(poolId) {
         bytes32 actionHash = keccak256(abi.encodePacked("DELETE_POOL", msg.sender));
-        require(block.timestamp >= poolActionTimeLocks[actionHash], "Timelock active");
+        require(block.timestamp >= poolActionTimeLocks[actionHash], "LOCKED");
 
         Pool storage pool = pools[poolId];
         address creator = pool.creator;
         bool isAdmin = _hasAdminPrivileges(msg.sender);
 
         // Validate deletion requirements
-        require(creator != address(0), "Pool does not exist");
-        require(msg.sender == creator || isAdmin, "Not authorized");
-        require(pool.memberList.length <= 1, "Pool must have at most 1 member (creator only)");
+        require(creator != address(0), "NO_POOL");
+        require(msg.sender == creator || isAdmin, "NAUTH");
+        require(pool.memberList.length <= 1, "TOO_MANY");
 
         // Get locked tokens before refund for event emission
         uint256 creatorLockedTokens = lockedTokens[creator];
@@ -440,101 +266,27 @@ contract StoragePool is IStoragePool, GovernanceModule {
     }
 
 
-    /**
-     * @dev Allows users to submit requests to join storage pools as resource providers
-     *
-     * @notice This function enables users to request membership in storage pools with the following process:
-     * - Validates user eligibility and pool requirements
-     * - Checks token lock requirements and balances
-     * - Creates and stores the join request
-     * - Locks required tokens for the duration of the request
-     * - Emits monitoring events for tracking
-     *
-     * @notice Join Request Validation:
-     * - User must not already be a member of the pool
-     * - User must not have an active join request for the pool
-     * - User must have sufficient token balance for locking
-     * - Pool must be accepting new members
-     * - Peer ID must be valid and not already in use
-     *
-     * @notice Token Locking Mechanism:
-     * - Locks pool.requiredTokens from user's balance
-     * - Updates lockedTokens and userTotalRequiredLockedTokens mappings
-     * - Tokens remain locked until request is approved/rejected/cancelled
-     * - Uses secure token transfer validation
-     *
-     * @notice Request Management:
-     * - Creates JoinRequest struct with optimized field packing
-     * - Assigns unique request ID for tracking
-     * - Updates user's active request mappings
-     * - Maintains request indices for efficient lookups
-     *
-     * @notice Security Features:
-     * - Duplicate request prevention via active request tracking
-     * - Token balance validation before locking
-     * - Reentrancy protection via nonReentrant modifier
-     * - Comprehensive input validation
-     *
-     * @param poolId Unique identifier of the pool to join
-     * @param peerId IPFS peer identifier for the requesting user
-     *
-     * Requirements:
-     * - Pool must exist and be in valid state
-     * - User must not be a current member of the pool
-     * - User must not have an active join request for the pool
-     * - User must have sufficient token balance (>= pool.requiredTokens)
-     * - Peer ID must be valid and unique
-     * - Contract must not be paused
-     *
-     * Emits:
-     * - JoinRequestSubmitted(poolId, user, requestId) for request tracking
-     * - TokensLocked(user, amount) for token lock tracking
-     *
-     * @custom:security This function implements comprehensive validation and secure token locking.
-     */
+    /// @dev Submit join request to storage pool
     function submitJoinRequest(uint32 poolId, string memory peerId) external nonReentrant whenNotPaused validatePoolId(poolId) {
         Pool storage pool = pools[poolId];
-
-        // Validation
-        require(pool.creator != address(0), "Data pool does not exist");
-        require(pool.peerIdToMember[peerId] == address(0), "PeerId already in use in this pool");
-        require(token.balanceOf(msg.sender) >= pool.requiredTokens, "Insufficient tokens");
-        require(pool.memberList.length + joinRequests[poolId].length < 1000, "Data pool has reached maximum capacity");
-
-        if (bannedUsers[poolId][msg.sender]) {
-            revert("Account banned from joining pools");
-        }
+        require(pool.creator != address(0) && pool.peerIdToMember[peerId] == address(0), "INV_POOL");
+        require(!bannedUsers[poolId][msg.sender] && requestIndex[msg.sender] == 0, "BANNED");
+        require(token.balanceOf(msg.sender) >= pool.requiredTokens && pool.memberList.length + joinRequests[poolId].length < 1000, "INSUF_TOK");
 
         if (pool.members[msg.sender].joinDate == 0) {
-            require(lockedTokens[msg.sender] == 0, "Tokens already locked for another data pool");
+            require(lockedTokens[msg.sender] == 0, "TOK_LOCK");
         }
 
-        require(requestIndex[msg.sender] == 0, "User already has active requests");
+        _validateGlobalPeerId(peerId, msg.sender, 0);
 
-        // Global peer ID validation
-        address existingAccount = globalPeerIdToAccount[peerId];
-        if (existingAccount != address(0)) {
-            require(existingAccount == msg.sender, "Peer ID already used by different account");
-            uint32 existingPool = globalPeerIdToPool[peerId];
-            require(existingPool == 0, "Peer ID already member of a pool");
-        }
+        _lockTokens(msg.sender, pool.requiredTokens, false);
 
-        // Lock tokens
-        require(token.transferFrom(msg.sender, address(this), pool.requiredTokens), "Token transfer failed");
-        lockedTokens[msg.sender] += pool.requiredTokens;
-
-        // Create join request
-        JoinRequest[] storage requests = joinRequests[poolId];
-        uint256 newIndex = requests.length;
-        requests.push();
-
-        JoinRequest storage newRequest = requests[newIndex];
+        uint256 newIndex = joinRequests[poolId].length;
+        joinRequests[poolId].push();
+        JoinRequest storage newRequest = joinRequests[poolId][newIndex];
         newRequest.accountId = msg.sender;
         newRequest.poolId = poolId;
         newRequest.timestamp = uint32(block.timestamp);
-        newRequest.status = 0;
-        newRequest.approvals = 0;
-        newRequest.rejections = 0;
         newRequest.peerId = peerId;
 
         JoinRequest storage peerRequest = usersActiveJoinRequestByPeerID[peerId];
@@ -543,9 +295,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
         peerRequest.poolId = poolId;
         peerRequest.approvals = 0;
         peerRequest.rejections = 0;
-
         requestIndex[msg.sender] = newIndex + 1;
-        userTotalRequiredLockedTokens[msg.sender] += pool.requiredTokens;
 
         emit TokensLocked(msg.sender, pool.requiredTokens);
         emit JoinRequestSubmitted(poolId, peerId, msg.sender);
@@ -641,41 +391,14 @@ contract StoragePool is IStoragePool, GovernanceModule {
      * @custom:security This function implements secure request cancellation with comprehensive cleanup.
      */
     function cancelJoinRequest(uint32 poolId) external nonReentrant whenNotPaused validatePoolId(poolId) {
-        require(poolId < 1000000, "Invalid pool ID");
         uint256 index = requestIndex[msg.sender];
-        require(index > 0, "Request not found");
-        require(index <= joinRequests[poolId].length, "Invalid request");
+        require(index > 0 && index <= joinRequests[poolId].length, "Invalid request");
+
         Pool storage pool = pools[poolId];
-
-        uint256 arrayIndex = index - 1;
-        require(arrayIndex < joinRequests[poolId].length, "Array index out of bounds");
-
-        JoinRequest storage request = joinRequests[poolId][arrayIndex];
-        string memory requestPeerId = request.peerId;
-
-        uint256 lockedAmount = lockedTokens[msg.sender];
-        uint256 refundAmount = 0;
-
-        if (lockedAmount >= pool.requiredTokens) {
-            refundAmount = pool.requiredTokens;
-            lockedTokens[msg.sender] -= refundAmount;
-            if (userTotalRequiredLockedTokens[msg.sender] >= pool.requiredTokens) {
-                userTotalRequiredLockedTokens[msg.sender] -= pool.requiredTokens;
-            }
-        }
-
+        string memory requestPeerId = joinRequests[poolId][index - 1].peerId;
         delete globalPeerIdToAccount[requestPeerId];
         _removeJoinRequest(poolId, msg.sender);
-
-        if (refundAmount > 0) {
-            bool transferSuccess = _safeTokenTransfer(msg.sender, refundAmount);
-            if (transferSuccess) {
-                emit TokensUnlocked(msg.sender, refundAmount);
-            } else {
-                claimableTokens[msg.sender] += refundAmount;
-                emit TokensMarkedClaimable(msg.sender, refundAmount);
-            }
-        }
+        _refundTokens(msg.sender, pool.requiredTokens);
 
         emit JoinRequestCanceled(poolId, msg.sender, requestPeerId);
     }
@@ -724,9 +447,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
      */
     function leavePool(uint32 poolId) external nonReentrant whenNotPaused validatePoolId(poolId) {
         Pool storage pool = pools[poolId];
-
-        require(pool.members[msg.sender].joinDate > 0, "Not a member");
-        require(msg.sender != pool.creator, "Pool creator cannot leave their own pool");
+        require(pool.members[msg.sender].joinDate > 0 && msg.sender != pool.creator, "Invalid member");
 
         uint256 lockedAmount = lockedTokens[msg.sender];
         uint256 refundAmount = 0;
@@ -738,12 +459,8 @@ contract StoragePool is IStoragePool, GovernanceModule {
                 userTotalRequiredLockedTokens[msg.sender] -= refundAmount;
             }
         } else {
-            if (lockedAmount >= pool.requiredTokens) {
-                lockedTokens[msg.sender] -= pool.requiredTokens;
-            }
-            if (userTotalRequiredLockedTokens[msg.sender] >= pool.requiredTokens) {
-                userTotalRequiredLockedTokens[msg.sender] -= pool.requiredTokens;
-            }
+            if (lockedAmount >= pool.requiredTokens) lockedTokens[msg.sender] -= pool.requiredTokens;
+            if (userTotalRequiredLockedTokens[msg.sender] >= pool.requiredTokens) userTotalRequiredLockedTokens[msg.sender] -= pool.requiredTokens;
         }
 
         string[] memory memberPeerIds = pool.memberPeerIds[msg.sender];
@@ -753,23 +470,19 @@ contract StoragePool is IStoragePool, GovernanceModule {
             delete pool.peerIdToMember[memberPeerIds[i]];
             delete globalPeerIdToAccount[memberPeerIds[i]];
             delete globalPeerIdToPool[memberPeerIds[i]];
+            emit MemberLeft(poolId, msg.sender, memberPeerIds[i]);
         }
 
         delete pool.memberPeerIds[msg.sender];
         delete pool.members[msg.sender];
 
         if (refundAmount > 0) {
-            bool transferSuccess = _safeTokenTransfer(msg.sender, refundAmount);
-            if (transferSuccess) {
+            if (_safeTokenTransfer(msg.sender, refundAmount)) {
                 emit TokensUnlocked(msg.sender, refundAmount);
             } else {
                 claimableTokens[msg.sender] += refundAmount;
                 emit TokensMarkedClaimable(msg.sender, refundAmount);
             }
-        }
-
-        for (uint256 i = 0; i < memberPeerIds.length; i++) {
-            emit MemberLeft(poolId, msg.sender, memberPeerIds[i]);
         }
     }
 
@@ -864,61 +577,21 @@ contract StoragePool is IStoragePool, GovernanceModule {
      * @dev Helper function to convert uint256 to string for event logging
      */
     function uint2str(uint256 value) external pure returns (string memory) {
-        return _uint2str(value);
+        return StoragePoolLib.uint2str(value);
     }
 
-    /**
-     * @dev Internal helper function to convert uint256 to string
-     */
-    function _uint2str(uint256 value) internal pure returns (string memory) {
-        if (value == 0) {
-            return "0";
-        }
-        uint256 temp = value;
-        uint256 digits;
-        while (temp != 0) {
-            digits++;
-            temp /= 10;
-        }
-        bytes memory buffer = new bytes(digits);
-        while (value != 0) {
-            digits -= 1;
-            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
-            value /= 10;
-        }
-        return string(buffer);
-    }
 
-    /**
-     * @dev Calculate approval threshold using ceiling division
-     */
-    function calculateApprovalThreshold(uint256 memberCount) internal pure returns (uint256) {
-        if (memberCount == 0) return 1; // Edge case protection
-        if (memberCount <= 2) return 1; // Minimum threshold for small pools
-        return (memberCount + 2) / 3; // Ceiling division: ceil(memberCount/3)
-    }
-
-    /**
-     * @dev Calculate rejection threshold using ceiling division for majority
-     */
-    function calculateRejectionThreshold(uint256 memberCount) internal pure returns (uint256) {
-        if (memberCount == 0) return 1; // Edge case protection
-        if (memberCount == 1) return 1; // Single member requires 1 rejection
-        return (memberCount / 2) + 1; // Majority: more than half
-    }
 
     /**
      * @dev Allows users to claim tokens that were marked as claimable when direct transfers failed
      */
     function claimTokens() external nonReentrant whenNotPaused {
-        uint256 claimableAmount = claimableTokens[msg.sender];
-        require(claimableAmount > 0, "No tokens to claim");
-
-        claimableTokens[msg.sender] = 0;
-        bool transferSuccess = _safeTokenTransfer(msg.sender, claimableAmount);
-        require(transferSuccess, "Transfer failed");
-
-        emit TokensClaimed(msg.sender, claimableAmount);
+        StoragePoolLib.claimTokensFull(
+            claimableTokens,
+            transferLocks,
+            token,
+            msg.sender
+        );
     }
 
     /**
@@ -936,17 +609,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
         require(pool.memberList.length < 1000, "Pool is full");
         require(pool.peerIdToMember[peerId] == address(0), "PeerId already in use in this pool");
 
-        // Global peer ID validation - ensure peer ID uniqueness across all pools
-        address existingAccount = globalPeerIdToAccount[peerId];
-        if (existingAccount != address(0)) {
-            require(existingAccount == member, "Peer ID already used by different account");
-            uint32 existingPool = globalPeerIdToPool[peerId];
-            require(existingPool == poolId, "Peer ID already member of different pool");
-        } else {
-            // First time this peer ID is being used - register it globally
-            globalPeerIdToAccount[peerId] = member;
-            globalPeerIdToPool[peerId] = poolId;
-        }
+        _validateGlobalPeerId(peerId, member, poolId);
 
         // Access control: only admin or pool creator
         require(msg.sender == pool.creator || isAdmin, "Not authorized");
@@ -972,24 +635,7 @@ contract StoragePool is IStoragePool, GovernanceModule {
             }
         }
 
-        // Add member to pool (optimized struct)
-        if (pool.members[member].joinDate == 0) {
-            pool.members[member] = Member({
-                joinDate: block.timestamp,
-                accountId: member,
-                reputationScore: 500,    // Default reputation score
-                statusFlags: 0          // Default status flags
-            });
-            pool.memberList.push(member);
-        }
-
-        // Add peer ID to member's peer ID list
-        pool.memberPeerIds[member].push(peerId);
-        pool.peerIdToMember[peerId] = member;
-
-        poolMemberIndices[poolId][member] = pool.memberList.length - 1;
-
-        emit MemberJoined(pool.id, member, peerId);
+        _addMemberToPool(pool, member, peerId, 500);
     }
 
 
@@ -1052,95 +698,44 @@ contract StoragePool is IStoragePool, GovernanceModule {
      *
      * @custom:security This function implements democratic governance with secure vote processing.
      */
-    function voteOnJoinRequest(
-        uint32 poolId,
-        string memory peerIdToVote,
-        bool approve
-    ) external nonReentrant whenNotPaused validatePoolId(poolId) {
-        require(bytes(peerIdToVote).length > 0, "Invalid peer ID");
-        require(usersActiveJoinRequestByPeerID[peerIdToVote].accountId != address(0), "Join request not found");
-
-        Pool storage pool = pools[poolId];
-
-        // Ensure the voter is a member of the pool
-        require(pool.members[msg.sender].joinDate > 0, "Not a pool member");
-
-        // Get the join request
+    function voteOnJoinRequest(uint32 poolId, string memory peerIdToVote, bool approve)
+        external nonReentrant whenNotPaused validatePoolId(poolId) {
         JoinRequest storage request = usersActiveJoinRequestByPeerID[peerIdToVote];
-        require(request.poolId == poolId, "Invalid pool ID");
-
-        // Ensure the voter has not already voted on this request
+        require(request.accountId != address(0) && request.poolId == poolId, "Invalid request");
+        require(pools[poolId].members[msg.sender].joinDate > 0, "Not member");
         require(!request.votes[msg.sender], "Already voted");
 
-        // Record the voter's vote
         request.votes[msg.sender] = true;
+        Pool storage pool = pools[poolId];
+        uint256 memberCount = pool.memberList.length;
 
         if (approve) {
-            // Increment approval count
-            request.approvals++;
-
-            // Check if approvals meet the threshold for acceptance
-            uint256 memberCount = pool.memberList.length;
-            uint256 approvalThreshold = memberCount == 0 ? 1 : (memberCount <= 2 ? 1 : (memberCount + 2) / 3);
-            uint256 absoluteThreshold = 10; // Absolute threshold for large pools
-
-            if (
-                request.approvals >= approvalThreshold ||
-                request.approvals >= absoluteThreshold
-            ) {
-                // Validate global peer ID uniqueness before approval
+            if (++request.approvals >= (memberCount <= 2 ? 1 : (memberCount + 2) / 3) || request.approvals >= 10) {
                 address existingAccount = globalPeerIdToAccount[request.peerId];
                 if (existingAccount != address(0)) {
-                    require(existingAccount == request.accountId, "Peer ID already used by different account");
-                    uint32 existingPool = globalPeerIdToPool[request.peerId];
-                    require(existingPool == poolId, "Peer ID already member of different pool");
+                    require(existingAccount == request.accountId && globalPeerIdToPool[request.peerId] == poolId, "Peer ID conflict");
                 } else {
-                    // First time this peer ID is being used - register it globally
                     globalPeerIdToAccount[request.peerId] = request.accountId;
                     globalPeerIdToPool[request.peerId] = poolId;
                 }
-
-                // Add the user as a member of the pool
                 _addMemberFromVoting(pool, request.peerId, request.accountId);
-
-                // Remove the join request from storage
                 _removeJoinRequest(poolId, request.accountId);
             }
         } else {
-            // Increment rejection count
-            request.rejections++;
-
-            // Check if rejections meet the threshold for denial
-            uint256 memberCount = pool.memberList.length;
-            uint256 rejectionThreshold = memberCount == 0 ? 1 : (memberCount == 1 ? 1 : (memberCount / 2) + 1);
-
-            if (request.rejections >= rejectionThreshold) {
-                // Update state before external calls to prevent reentrancy
+            if (++request.rejections >= (memberCount <= 1 ? 1 : (memberCount / 2) + 1)) {
                 uint256 lockedAmount = lockedTokens[request.accountId];
                 if (lockedAmount >= pool.requiredTokens) {
-                    uint256 refundAmount = pool.requiredTokens;
-                    lockedTokens[request.accountId] -= refundAmount;
-
-                    // External call after state updates - use secure transfer with validation
-                    bool transferSuccess = _safeTokenTransfer(request.accountId, refundAmount);
-                    if (transferSuccess) {
-                        emit TokensUnlocked(request.accountId, refundAmount);
+                    lockedTokens[request.accountId] -= pool.requiredTokens;
+                    if (_safeTokenTransfer(request.accountId, pool.requiredTokens)) {
+                        emit TokensUnlocked(request.accountId, pool.requiredTokens);
                     } else {
-                        // If transfer fails after validation, mark as claimable as last resort
-                        claimableTokens[request.accountId] += refundAmount;
-                        emit TokensMarkedClaimable(request.accountId, refundAmount);
+                        claimableTokens[request.accountId] += pool.requiredTokens;
+                        emit TokensMarkedClaimable(request.accountId, pool.requiredTokens);
                     }
                 }
-
-                // Get peerId before removing the request
                 string memory requestPeerId = request.peerId;
-
-                // Clean up global peer ID registration since request was rejected
                 delete globalPeerIdToAccount[requestPeerId];
-
-                // Remove the join request from storage
                 _removeJoinRequest(poolId, request.accountId);
-
                 emit JoinRequestRejected(poolId, request.accountId, requestPeerId);
             }
         }
@@ -1194,27 +789,16 @@ contract StoragePool is IStoragePool, GovernanceModule {
     /**
      * @dev Get paginated list of pool members
      */
-    function getPoolMembersPaginated(
-        uint32 poolId,
-        uint256 offset,
-        uint256 limit
-    ) external view validatePoolId(poolId) returns (
-        address[] memory members,
-        string[] memory peerIds,
-        uint256[] memory joinDates,
-        uint16[] memory reputationScores,
-        bool hasMore
-    ) {
+    function getPoolMembersPaginated(uint32 poolId, uint256 offset, uint256 limit)
+        external view validatePoolId(poolId) returns (
+        address[] memory members, string[] memory peerIds, uint256[] memory joinDates, uint16[] memory reputationScores, bool hasMore) {
         Pool storage pool = pools[poolId];
         uint256 totalMembers = pool.memberList.length;
         require(offset < totalMembers, "Offset exceeds member count");
 
-        uint256 end = offset + limit;
-        if (end > totalMembers) {
-            end = totalMembers;
-        }
-
+        uint256 end = offset + limit > totalMembers ? totalMembers : offset + limit;
         uint256 resultLength = end - offset;
+
         members = new address[](resultLength);
         peerIds = new string[](resultLength);
         joinDates = new uint256[](resultLength);
@@ -1223,13 +807,11 @@ contract StoragePool is IStoragePool, GovernanceModule {
         for (uint256 i = 0; i < resultLength; i++) {
             address memberAddr = pool.memberList[offset + i];
             members[i] = memberAddr;
-            // Return first peer ID for backward compatibility
             string[] memory memberPeerIds = pool.memberPeerIds[memberAddr];
             peerIds[i] = memberPeerIds.length > 0 ? memberPeerIds[0] : "";
             joinDates[i] = pool.members[memberAddr].joinDate;
             reputationScores[i] = pool.members[memberAddr].reputationScore;
         }
-
         hasMore = end < totalMembers;
     }
 
@@ -1265,9 +847,12 @@ contract StoragePool is IStoragePool, GovernanceModule {
         uint256 totalRequired,
         uint256 claimableAmount
     ) {
-        lockedAmount = lockedTokens[wallet];
-        totalRequired = userTotalRequiredLockedTokens[wallet];
-        claimableAmount = claimableTokens[wallet];
+        return StoragePoolLib.getUserLockedTokens(
+            lockedTokens,
+            userTotalRequiredLockedTokens,
+            claimableTokens,
+            wallet
+        );
     }
 
 
@@ -1313,33 +898,15 @@ contract StoragePool is IStoragePool, GovernanceModule {
      * @return success Whether the transfer was successful
      */
     function _safeTokenTransfer(address to, uint256 amount) internal returns (bool success) {
-        require(to != address(0) && amount > 0, "Invalid params");
-        require(!transferLocks[to], "Transfer in progress");
-
-        // Set lock before external call
-        transferLocks[to] = true;
-
-        // Store result before clearing lock to prevent reentrancy
-        bool transferResult;
-        try token.transfer(to, amount) returns (bool result) {
-            transferResult = result;
-        } catch {
-            transferResult = false;
-        }
-
-        // Clear lock after external call completes
-        transferLocks[to] = false;
-
-        return transferResult;
+        return StoragePoolLib.safeTokenTransfer(transferLocks, token, to, amount);
     }
 
     /**
      * @dev Check if a peer ID is a member of a specific pool
      */
     function isPeerIdMemberOfPool(uint32 poolId, string memory peerId) external view validatePoolId(poolId) returns (bool, address) {
-        Pool storage pool = pools[poolId];
-        address memberAddress = pool.peerIdToMember[peerId];
-        bool isMember = memberAddress != address(0) && pool.members[memberAddress].joinDate > 0;
+        address memberAddress = globalPeerIdToAccount[peerId];
+        bool isMember = (memberAddress != address(0) && globalPeerIdToPool[peerId] == poolId);
         return (isMember, memberAddress);
     }
 
@@ -1347,74 +914,43 @@ contract StoragePool is IStoragePool, GovernanceModule {
      * @dev Get all peer IDs for a member in a specific pool
      */
     function getMemberPeerIds(uint32 poolId, address member) external view validatePoolId(poolId) returns (string[] memory) {
-        Pool storage pool = pools[poolId];
-        if (pool.members[member].joinDate > 0) {
-            return pool.memberPeerIds[member];
-        } else {
-            return new string[](0);
-        }
+        return pools[poolId].memberPeerIds[member];
     }
 
     /**
      * @dev Get reputation of a pool member with all peer IDs
      */
     function getMemberReputationMultiPeer(uint32 poolId, address member) external view validatePoolId(poolId) returns (
-        bool exists,
-        uint16 reputationScore,
-        uint256 joinDate,
-        string[] memory peerIds
-    ) {
+        bool exists, uint16 reputationScore, uint256 joinDate, string[] memory peerIds) {
         Pool storage pool = pools[poolId];
-        exists = pool.members[member].joinDate > 0;
-        if (exists) {
-            reputationScore = pool.members[member].reputationScore;
-            joinDate = pool.members[member].joinDate;
-            peerIds = pool.memberPeerIds[member];
-        } else {
-            peerIds = new string[](0);
-        }
+        joinDate = pool.members[member].joinDate;
+        exists = (joinDate > 0);
+        reputationScore = pool.members[member].reputationScore;
+        peerIds = exists ? pool.memberPeerIds[member] : new string[](0);
     }
 
     function _addMemberFromVoting(Pool storage pool, string memory peerId, address accountId) internal {
-        require(accountId != address(0), "Invalid account ID");
-        require(pool.memberList.length < 1000, "Pool is full");
-        require(pool.peerIdToMember[peerId] == address(0), "PeerId already in use in this pool");
-
-        if (pool.members[accountId].joinDate == 0) {
-            pool.members[accountId] = Member({
-                joinDate: block.timestamp,
-                accountId: accountId,
-                reputationScore: 400,
-                statusFlags: 0
-            });
-            poolMemberIndices[pool.id][accountId] = pool.memberList.length;
-            pool.memberList.push(accountId);
-        }
-
-        pool.memberPeerIds[accountId].push(peerId);
-        pool.peerIdToMember[peerId] = accountId;
-        emit MemberJoined(pool.id, accountId, peerId);
+        require(accountId != address(0) && pool.memberList.length < 1000 && pool.peerIdToMember[peerId] == address(0), "Invalid member");
+        _addMemberToPool(pool, accountId, peerId, 400);
     }
 
     function _removeJoinRequest(uint32 poolId, address member) internal {
         uint256 index = requestIndex[member];
-        require(index > 0, "Request not found");
-        require(joinRequests[poolId].length > 0, "No join requests to remove");
+        require(index > 0 && joinRequests[poolId].length > 0, "Invalid request");
 
         uint256 arrayIndex = index - 1;
-        require(arrayIndex < joinRequests[poolId].length, "Invalid request index");
-
         string memory peerIdToDelete = joinRequests[poolId][arrayIndex].peerId;
         uint256 lastArrayIndex = joinRequests[poolId].length - 1;
 
         if (arrayIndex != lastArrayIndex) {
-            address movedAccountId = joinRequests[poolId][lastArrayIndex].accountId;
-            joinRequests[poolId][arrayIndex].peerId = joinRequests[poolId][lastArrayIndex].peerId;
-            joinRequests[poolId][arrayIndex].accountId = joinRequests[poolId][lastArrayIndex].accountId;
-            joinRequests[poolId][arrayIndex].poolId = joinRequests[poolId][lastArrayIndex].poolId;
-            joinRequests[poolId][arrayIndex].approvals = joinRequests[poolId][lastArrayIndex].approvals;
-            joinRequests[poolId][arrayIndex].rejections = joinRequests[poolId][lastArrayIndex].rejections;
-            requestIndex[movedAccountId] = arrayIndex + 1;
+            JoinRequest storage lastRequest = joinRequests[poolId][lastArrayIndex];
+            JoinRequest storage currentRequest = joinRequests[poolId][arrayIndex];
+            currentRequest.peerId = lastRequest.peerId;
+            currentRequest.accountId = lastRequest.accountId;
+            currentRequest.poolId = lastRequest.poolId;
+            currentRequest.approvals = lastRequest.approvals;
+            currentRequest.rejections = lastRequest.rejections;
+            requestIndex[lastRequest.accountId] = arrayIndex + 1;
         }
 
         joinRequests[poolId].pop();
@@ -1430,6 +966,63 @@ contract StoragePool is IStoragePool, GovernanceModule {
         memberIndices[lastMember] = memberIndex;
         memberList.pop();
         delete memberIndices[member];
+    }
+
+    /// @dev Consolidate token locking logic
+    function _lockTokens(address user, uint256 amount, bool isAdmin) internal {
+        if (isAdmin) {
+            if (token.balanceOf(user) >= amount && token.transferFrom(user, address(this), amount)) {
+                lockedTokens[user] += amount;
+                userTotalRequiredLockedTokens[user] += amount;
+                emit TokensLocked(user, amount);
+            }
+        } else {
+            require(token.balanceOf(user) >= amount && token.transferFrom(user, address(this), amount), "TXN_FAIL");
+            lockedTokens[user] += amount;
+            userTotalRequiredLockedTokens[user] += amount;
+            emit TokensLocked(user, amount);
+        }
+    }
+
+    /// @dev Consolidate token refund logic
+    function _refundTokens(address user, uint256 amount) internal {
+        uint256 lockedAmount = lockedTokens[user];
+        if (lockedAmount >= amount) {
+            lockedTokens[user] -= amount;
+            if (userTotalRequiredLockedTokens[user] >= amount) {
+                userTotalRequiredLockedTokens[user] -= amount;
+            }
+            if (_safeTokenTransfer(user, amount)) {
+                emit TokensUnlocked(user, amount);
+            } else {
+                claimableTokens[user] += amount;
+                emit TokensMarkedClaimable(user, amount);
+            }
+        }
+    }
+
+    /// @dev Consolidate global peer ID validation
+    function _validateGlobalPeerId(string memory peerId, address account, uint32 poolId) internal view {
+        address existingAccount = globalPeerIdToAccount[peerId];
+        if (existingAccount != address(0)) {
+            require(existingAccount == account, "PEER_CONF");
+            uint32 existingPool = globalPeerIdToPool[peerId];
+            require(existingPool == poolId || existingPool == 0, "PEER_CONF");
+        }
+    }
+
+    /// @dev Consolidate member addition logic
+    function _addMemberToPool(Pool storage pool, address member, string memory peerId, uint16 reputation) internal {
+        if (pool.members[member].joinDate == 0) {
+            pool.members[member] = Member({joinDate: block.timestamp, accountId: member, reputationScore: reputation, statusFlags: 0});
+            pool.memberList.push(member);
+            poolMemberIndices[pool.id][member] = pool.memberList.length - 1;
+        }
+        pool.memberPeerIds[member].push(peerId);
+        pool.peerIdToMember[peerId] = member;
+        globalPeerIdToAccount[peerId] = member;
+        globalPeerIdToPool[peerId] = uint32(pool.id);
+        emit MemberJoined(pool.id, member, peerId);
     }
 
     uint256[50] private __gap;

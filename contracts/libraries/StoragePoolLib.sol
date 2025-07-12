@@ -986,6 +986,83 @@ library StoragePoolLib {
     );
 
     /**
+     * @dev Helper function to convert uint256 to string for event logging
+     */
+    function uint2str(uint256 value) external pure returns (string memory) {
+        if (value == 0) {
+            return "0";
+        }
+        uint256 temp = value;
+        uint256 digits;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        bytes memory buffer = new bytes(digits);
+        while (value != 0) {
+            digits -= 1;
+            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+            value /= 10;
+        }
+        return string(buffer);
+    }
+
+    /**
+     * @dev Calculate approval threshold using ceiling division
+     */
+    function calculateApprovalThreshold(uint256 memberCount) external pure returns (uint256) {
+        if (memberCount == 0) return 1; // Edge case protection
+        if (memberCount <= 2) return 1; // Minimum threshold for small pools
+        return (memberCount + 2) / 3; // Ceiling division: ceil(memberCount/3)
+    }
+
+    /**
+     * @dev Calculate rejection threshold using ceiling division for majority
+     */
+    function calculateRejectionThreshold(uint256 memberCount) external pure returns (uint256) {
+        if (memberCount == 0) return 1; // Edge case protection
+        if (memberCount == 1) return 1; // Single member requires 1 rejection
+        return (memberCount / 2) + 1; // Majority: more than half
+    }
+
+    /**
+     * @dev Allows users to claim tokens that were marked as claimable when direct transfers failed
+     */
+    function claimTokensFull(
+        mapping(address => uint256) storage claimableTokens,
+        mapping(address => bool) storage transferLocks,
+        StorageToken token,
+        address caller
+    ) external {
+        uint256 claimableAmount = claimableTokens[caller];
+        require(claimableAmount > 0, "No tokens to claim");
+
+        claimableTokens[caller] = 0;
+        bool transferSuccess = safeTokenTransfer(transferLocks, token, caller, claimableAmount);
+        require(transferSuccess, "Transfer failed");
+
+        emit TokensClaimed(caller, claimableAmount);
+    }
+
+    /**
+     * @dev Get locked tokens for any wallet
+     */
+    function getUserLockedTokens(
+        mapping(address => uint256) storage lockedTokens,
+        mapping(address => uint256) storage userTotalRequiredLockedTokens,
+        mapping(address => uint256) storage claimableTokens,
+        address wallet
+    ) external view returns (
+        uint256 lockedAmount,
+        uint256 totalRequired,
+        uint256 claimableAmount
+    ) {
+        lockedAmount = lockedTokens[wallet];
+        totalRequired = userTotalRequiredLockedTokens[wallet];
+        claimableAmount = claimableTokens[wallet];
+    }
+
+    /**
      * @dev Safely adds tokens to a mapping with overflow protection
      * @param tokenMapping The mapping to update
      * @param account The account to update
