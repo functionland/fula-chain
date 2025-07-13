@@ -1,4 +1,5 @@
 import { ethers, upgrades } from "hardhat";
+import hre from "hardhat";
 import * as readline from "readline";
 
 // Function to create a readline interface for user input
@@ -20,17 +21,52 @@ function createInterface() {
     });
   }
 
+  // Function to ensure contracts are compiled with viaIR
+  async function ensureViaIRCompilation() {
+    console.log("Ensuring contracts are compiled with viaIR enabled...");
+
+    // Force recompilation to ensure viaIR is used
+    try {
+      await hre.run("compile", { force: true });
+      console.log("✅ Contracts compiled successfully with viaIR");
+    } catch (error) {
+      console.error("❌ Compilation failed:", error);
+      throw new Error("Failed to compile contracts with viaIR. Please check your hardhat.config.ts");
+    }
+  }
+
 async function main() {
     const [deployer] = await ethers.getSigners();
     console.log("Deploying contracts with the account:", deployer.address);
 
-    // Deploy StoragePoolLib library first
-    console.log("Deploying StoragePoolLib library...");
-    const StoragePoolLib = await ethers.getContractFactory("StoragePoolLib");
-    const storagePoolLib = await StoragePoolLib.deploy();
-    await storagePoolLib.waitForDeployment();
-    const libAddress = await storagePoolLib.getAddress();
-    console.log("StoragePoolLib deployed to:", libAddress);
+    // Ensure contracts are compiled with viaIR before deployment
+    await ensureViaIRCompilation();
+
+    // Check if StoragePoolLib address is provided via environment variable
+    const preDeployedLibAddress = process.env.STORAGE_POOL_LIB_ADDRESS?.trim();
+    const preDeployedImplAddress = process.env.STORAGE_POOL_IMPL_ADDRESS?.trim();
+    let libAddress: string;
+
+    if (preDeployedLibAddress) {
+        console.log("Using pre-deployed StoragePoolLib library at:", preDeployedLibAddress);
+
+        // Validate that the provided address has contract code
+        const code = await ethers.provider.getCode(preDeployedLibAddress);
+        if (code === "0x") {
+            throw new Error(`No contract found at provided STORAGE_POOL_LIB_ADDRESS: ${preDeployedLibAddress}`);
+        }
+
+        libAddress = preDeployedLibAddress;
+        console.log("✅ Pre-deployed StoragePoolLib library validated");
+    } else {
+        // Deploy StoragePoolLib library first
+        console.log("Deploying new StoragePoolLib library...");
+        const StoragePoolLib = await ethers.getContractFactory("StoragePoolLib");
+        const storagePoolLib = await StoragePoolLib.deploy();
+        await storagePoolLib.waitForDeployment();
+        libAddress = await storagePoolLib.getAddress();
+        console.log("StoragePoolLib deployed to:", libAddress);
+    }
 
     // Get the contract factory with library linking
     const StoragePool = await ethers.getContractFactory("StoragePool", {
@@ -38,7 +74,21 @@ async function main() {
             StoragePoolLib: libAddress
         }
     });
-    console.log("Deploying StoragePool...");
+
+    // Check if implementation is pre-deployed
+    if (preDeployedImplAddress) {
+        console.log("Using pre-deployed StoragePool implementation at:", preDeployedImplAddress);
+
+        // Validate that the provided address has contract code
+        const implCode = await ethers.provider.getCode(preDeployedImplAddress);
+        if (implCode === "0x") {
+            throw new Error(`No contract found at provided STORAGE_POOL_IMPL_ADDRESS: ${preDeployedImplAddress}`);
+        }
+        console.log("✅ Pre-deployed StoragePool implementation validated");
+        console.log("Proceeding directly to proxy deployment...");
+    } else {
+        console.log("Deploying StoragePool implementation...");
+    }
 
     // Validate environment variables
     const storageTokenAddress = process.env.TOKEN_ADDRESS?.trim();
@@ -111,6 +161,11 @@ async function main() {
     // Display deployment parameters
     console.log("\n=== Deployment Parameters ===");
     console.log(`StorageToken Address: ${storageTokenAddress}`);
+    console.log(`StoragePoolLib Address: ${libAddress}`);
+    console.log(`Library Source: ${preDeployedLibAddress ? 'Pre-deployed' : 'Newly deployed'}`);
+    if (preDeployedImplAddress) {
+        console.log(`StoragePool Implementation: ${preDeployedImplAddress} (Pre-deployed)`);
+    }
     console.log(`Initial Owner: ${initialOwner}`);
     console.log(`Initial Admin: ${initialAdmin}`);
     console.log(`Deployer: ${deployer.address}`);
@@ -118,20 +173,52 @@ async function main() {
     // Wait for user confirmation
     await waitForUserConfirmation("\nPress Enter to continue with deployment or Ctrl+C to abort...");
 
-    // Deploy the proxy contract
-    const storagePool = await upgrades.deployProxy(
-        StoragePool,
-        [storageTokenAddress, initialOwner, initialAdmin],
-        {
-            initializer: "initialize",
-            kind: "uups",
-            unsafeAllow: ["external-library-linking", "constructor"]
-        }
-    );
+    let storagePool: any;
+    let contractAddress: string;
+    let implementationAddress: string;
 
-    await storagePool.waitForDeployment();
-    const contractAddress = await storagePool.getAddress();
-    const implementationAddress = await upgrades.erc1967.getImplementationAddress(contractAddress);
+    if (preDeployedImplAddress) {
+        // Deploy proxy using pre-deployed implementation
+        console.log("Deploying proxy with pre-deployed implementation...");
+
+        // First, force import the existing implementation to register it with OpenZeppelin
+        await upgrades.forceImport(preDeployedImplAddress, StoragePool, {
+            kind: "uups",
+            unsafeAllow: ["external-library-linking"]
+        });
+
+        // Now deploy the proxy using the imported implementation
+        storagePool = await upgrades.deployProxy(
+            StoragePool,
+            [storageTokenAddress, initialOwner, initialAdmin],
+            {
+                initializer: "initialize",
+                kind: "uups",
+                unsafeAllow: ["external-library-linking"]
+            }
+        );
+
+        await storagePool.waitForDeployment();
+        contractAddress = await storagePool.getAddress();
+        implementationAddress = preDeployedImplAddress;
+    } else {
+        // Deploy both implementation and proxy
+        console.log("Deploying implementation and proxy...");
+
+        storagePool = await upgrades.deployProxy(
+            StoragePool,
+            [storageTokenAddress, initialOwner, initialAdmin],
+            {
+                initializer: "initialize",
+                kind: "uups",
+                unsafeAllow: ["external-library-linking"]
+            }
+        );
+
+        await storagePool.waitForDeployment();
+        contractAddress = await storagePool.getAddress();
+        implementationAddress = await upgrades.erc1967.getImplementationAddress(contractAddress);
+    }
 
     console.log("StoragePoolLib library deployed to:", libAddress);
     console.log("StoragePool proxy deployed to:", contractAddress);
@@ -180,19 +267,45 @@ async function main() {
         console.log("\nWaiting for 6 block confirmations before verification...");
         await storagePool.deploymentTransaction()?.wait(6);
 
-        try {
-            console.log("Verifying implementation contract...");
-            await hre.run("verify:verify", {
-                address: implementationAddress,
-                constructorArguments: []
-            });
-            console.log("Implementation contract verified successfully");
-        } catch (error: any) {
-            if (error.message.includes("Already Verified")) {
-                console.log("Implementation contract already verified");
-            } else {
-                console.error("Error verifying implementation contract:", error);
+        // Only verify the library if it was newly deployed
+        if (!preDeployedLibAddress) {
+            try {
+                console.log("Verifying StoragePoolLib library contract...");
+                await hre.run("verify:verify", {
+                    address: libAddress,
+                    contract: "contracts/libraries/StoragePoolLib.sol:StoragePoolLib",
+                    constructorArguments: []
+                });
+                console.log("✅ StoragePoolLib library verified successfully");
+            } catch (error: any) {
+                if (error.message.includes("Already Verified")) {
+                    console.log("✅ StoragePoolLib library already verified");
+                } else {
+                    console.error("❌ Error verifying StoragePoolLib library:", error);
+                }
             }
+        } else {
+            console.log("ℹ️  Skipping StoragePoolLib verification (using pre-deployed library)");
+        }
+
+        // Only verify the implementation if it was newly deployed
+        if (!preDeployedImplAddress) {
+            try {
+                console.log("Verifying implementation contract...");
+                await hre.run("verify:verify", {
+                    address: implementationAddress,
+                    constructorArguments: []
+                });
+                console.log("✅ Implementation contract verified successfully");
+            } catch (error: any) {
+                if (error.message.includes("Already Verified")) {
+                    console.log("✅ Implementation contract already verified");
+                } else {
+                    console.error("❌ Error verifying implementation contract:", error);
+                }
+            }
+        } else {
+            console.log("ℹ️  Skipping implementation verification (using pre-deployed implementation)");
         }
 
         try {
@@ -201,14 +314,23 @@ async function main() {
                 address: contractAddress,
                 constructorArguments: []
             });
-            console.log("Proxy contract verified successfully");
+            console.log("✅ Proxy contract verified successfully");
         } catch (error: any) {
             if (error.message.includes("Already Verified")) {
-                console.log("Proxy contract already verified");
+                console.log("✅ Proxy contract already verified");
             } else {
-                console.error("Error verifying proxy contract:", error);
+                console.error("❌ Error verifying proxy contract:", error);
             }
         }
+    } else {
+        console.log("\n📝 To verify contracts manually:");
+        if (!preDeployedLibAddress) {
+            console.log(`npx hardhat verify ${libAddress} --contract contracts/libraries/StoragePoolLib.sol:StoragePoolLib --network ${hre.network.name}`);
+        }
+        if (!preDeployedImplAddress) {
+            console.log(`npx hardhat verify ${implementationAddress} --network ${hre.network.name}`);
+        }
+        console.log(`npx hardhat verify ${contractAddress} --network ${hre.network.name}`);
     }
 }
 
@@ -220,8 +342,25 @@ main()
     });
 
 // Command to deploy:
-// TOKEN_ADDRESS=<Token_Proxy_address> INITIAL_OWNER=<owner_address> INITIAL_ADMIN=<admin_address> npx hardhat run scripts/deployStoragePool.ts --network sepolia
-// Note: Both proxy and implementation contract verification are handled automatically if ETHERSCAN_API_KEY environment variable is set
+// TOKEN_ADDRESS=<Token_Proxy_address> INITIAL_OWNER=<owner_address> INITIAL_ADMIN=<admin_address> npx hardhat run scripts/StoragePool/deployStoragePool.ts --network sepolia
+//
+// Optional: Use pre-deployed StoragePoolLib library:
+// TOKEN_ADDRESS=<Token_Proxy_address> INITIAL_OWNER=<owner_address> INITIAL_ADMIN=<admin_address> STORAGE_POOL_LIB_ADDRESS=<Library_address> npx hardhat run scripts/StoragePool/deployStoragePool.ts --network sepolia
+//
+// Optional: Use pre-deployed StoragePool implementation:
+// TOKEN_ADDRESS=<Token_Proxy_address> INITIAL_OWNER=<owner_address> INITIAL_ADMIN=<admin_address> STORAGE_POOL_LIB_ADDRESS=<Library_address> STORAGE_POOL_IMPL_ADDRESS=<Implementation_address> npx hardhat run scripts/StoragePool/deployStoragePool.ts --network sepolia
+//
+// Environment Variables:
+// - TOKEN_ADDRESS: Required - Address of deployed StorageToken contract
+// - INITIAL_OWNER: Required - Address that will own the contract
+// - INITIAL_ADMIN: Required - Address that will have admin role
+// - STORAGE_POOL_LIB_ADDRESS: Optional - Address of pre-deployed StoragePoolLib library (if not provided, deploys new one)
+// - STORAGE_POOL_IMPL_ADDRESS: Optional - Address of pre-deployed StoragePool implementation (if not provided, deploys new one)
+// - ETHERSCAN_API_KEY: Optional - For automatic contract verification
+//
+// Note: Contract verification is handled automatically if ETHERSCAN_API_KEY environment variable is set
+// Only newly deployed contracts are verified (pre-deployed contracts are skipped)
 // Manual verification commands (if needed):
+// npx hardhat verify <library_address> --contract contracts/libraries/StoragePoolLib.sol:StoragePoolLib --network sepolia
 // npx hardhat verify <implementation_address> --network sepolia
 // npx hardhat verify <proxy_address> --network sepolia
