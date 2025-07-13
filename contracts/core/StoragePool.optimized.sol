@@ -54,6 +54,7 @@ contract StoragePool is Initializable, GovernanceModule {
     mapping(uint32 => mapping(string => uint256)) private joinRequestIndex;
     mapping(uint32 => mapping(string => JoinRequest)) private joinRequests;
     mapping(address => bool) public isForfeited;
+    mapping(string => uint256) public claimableTokens;
 
     event PoolCreated(uint32 indexed poolId, address indexed creator, string name, string region, uint256 requiredTokens, uint32 maxMembers);
     event JoinRequestSubmitted(uint32 indexed poolId, address indexed account, string peerId);
@@ -64,6 +65,8 @@ contract StoragePool is Initializable, GovernanceModule {
     event ForfeitFlagCleared(address indexed account);
     event PoolParametersUpdated(uint32 indexed poolId, uint256 requiredTokens, uint32 maxMembers);
     event EmergencyTokensRecovered(uint256 amount);
+    event TokensMarkedClaimable(string indexed peerId, uint256 amount);
+    event TokensClaimed(string indexed peerId, uint256 amount);
 
     error PoolNotFound(uint32 poolId);
     error AlreadyInPool(string peerId);
@@ -89,15 +92,48 @@ contract StoragePool is Initializable, GovernanceModule {
         tokenPool = _tokenPool;
     }
 
+    function _safeTransferOrMarkClaimable(string memory peerId, address to, uint256 amount) internal {
+        try storageToken.transfer(to, amount) returns (bool success) {
+            if (!success) {
+                claimableTokens[peerId] += amount;
+                emit TokensMarkedClaimable(peerId, amount);
+            }
+        } catch {
+            claimableTokens[peerId] += amount;
+            emit TokensMarkedClaimable(peerId, amount);
+        }
+    }
+
+    function _removeJoinRequest(uint32 poolId, string memory peerId) internal {
+        uint256 idx = joinRequestIndex[poolId][peerId];
+        string memory lastKey = joinRequestKeys[poolId][joinRequestKeys[poolId].length - 1];
+        joinRequestKeys[poolId][idx] = lastKey;
+        joinRequestIndex[poolId][lastKey] = idx;
+        joinRequestKeys[poolId].pop();
+        delete joinRequestIndex[poolId][peerId];
+        delete joinRequests[poolId][peerId];
+    }
+
+    function _processTokenRefund(string memory peerId, address account, uint256 amount, bool forfeited) internal {
+        if (amount > 0) {
+            IPool(tokenPool).transferTokens(amount);
+            if (forfeited) {
+                storageToken.safeTransfer(address(storageToken), amount);
+            } else {
+                _safeTransferOrMarkClaimable(peerId, account, amount);
+            }
+        }
+    }
+
     function _removePeerFromPool(uint32 poolId, string memory peerId) internal {
         Pool storage pool = pools[poolId];
         address account = pool.peerIdToMember[peerId];
         uint256 amount = pool.lockedTokens[peerId];
         bool forfeited = isForfeited[account];
-        
+
         delete pool.peerIdToMember[peerId];
         delete pool.lockedTokens[peerId];
-        
+
         string[] storage peerArray = pool.memberPeerIds[account];
         for (uint256 i = 0; i < peerArray.length; i++) {
             if (keccak256(bytes(peerArray[i])) == keccak256(bytes(peerId))) {
@@ -106,7 +142,7 @@ contract StoragePool is Initializable, GovernanceModule {
                 break;
             }
         }
-        
+
         if (peerArray.length == 0) {
             uint256 idx = pool.memberIndex[account];
             address lastAddr = pool.memberList[pool.memberList.length - 1];
@@ -115,19 +151,9 @@ contract StoragePool is Initializable, GovernanceModule {
             pool.memberList.pop();
             delete pool.memberIndex[account];
         }
-        
-        if (pool.memberCount > 0) {
-            pool.memberCount -= 1;
-        }
-        
-        if (amount > 0) {
-            IPool(tokenPool).transferTokens(amount);
-            if (forfeited) {
-                storageToken.safeTransfer(address(storageToken), amount);
-            } else {
-                storageToken.safeTransfer(account, amount);
-            }
-        }
+
+        if (pool.memberCount > 0) pool.memberCount -= 1;
+        _processTokenRefund(peerId, account, amount, forfeited);
         emit MemberRemoved(poolId, account, peerId, forfeited, msg.sender);
     }
 
@@ -250,26 +276,22 @@ contract StoragePool is Initializable, GovernanceModule {
             uint256 amount = pool.requiredTokens;
             if (amount > 0) {
                 IPool(tokenPool).transferTokens(amount);
-                storageToken.safeTransfer(forfeited ? address(storageToken) : req.account, amount);
+                if (forfeited) {
+                    storageToken.safeTransfer(address(storageToken), amount);
+                } else {
+                    _safeTransferOrMarkClaimable(peerId, req.account, amount);
+                }
             }
             emit JoinRequestResolved(poolId, req.account, peerId, false, forfeited);
             delete joinRequests[poolId][peerId];
         }
     }
 
-    function _removeJoinRequest(uint32 poolId, string memory peerId) internal {
-        uint256 idx = joinRequestIndex[poolId][peerId];
-        string memory lastKey = joinRequestKeys[poolId][joinRequestKeys[poolId].length - 1];
-        joinRequestKeys[poolId][idx] = lastKey;
-        joinRequestIndex[poolId][lastKey] = idx;
-        joinRequestKeys[poolId].pop();
-        delete joinRequestIndex[poolId][peerId];
-    }
-
     function cancelJoinRequest(uint32 poolId, string memory peerId) external whenNotPaused nonReentrant {
         JoinRequest storage req = joinRequests[poolId][peerId];
         if (req.account == address(0) || req.status != 0) revert NoActiveRequest(peerId);
         Pool storage pool = pools[poolId];
+        if (pool.id != poolId) revert PoolNotFound(poolId);
         bool isPrivileged = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender) || hasRole(ProposalTypes.POOL_ADMIN_ROLE, msg.sender);
         if (!(msg.sender == req.account || isPrivileged || msg.sender == pool.creator)) {
             revert OnlyCreatorOrAdmin();
@@ -282,7 +304,11 @@ contract StoragePool is Initializable, GovernanceModule {
         bool forfeited = isForfeited[req.account];
         if (amount > 0) {
             IPool(tokenPool).transferTokens(amount);
-            storageToken.safeTransfer(forfeited ? address(storageToken) : req.account, amount);
+            if (forfeited) {
+                storageToken.safeTransfer(address(storageToken), amount);
+            } else {
+                _safeTransferOrMarkClaimable(peerId, req.account, amount);
+            }
         }
         emit JoinRequestResolved(poolId, req.account, peerId, false, forfeited);
         delete joinRequests[poolId][peerId];
@@ -513,6 +539,40 @@ contract StoragePool is Initializable, GovernanceModule {
             return pool.requiredTokens;
         }
         return 0;
+    }
+
+    function claimTokens(string memory peerId) external nonReentrant whenNotPaused {
+        uint256 amount = claimableTokens[peerId];
+        if (amount == 0) revert InvalidTokenAmount();
+
+        bool isOwner = false;
+        for (uint256 i = 0; i < poolIds.length && !isOwner; i++) {
+            if (pools[poolIds[i]].peerIdToMember[peerId] == msg.sender) isOwner = true;
+        }
+        if (!isOwner) revert NotMember(msg.sender);
+
+        claimableTokens[peerId] = 0;
+        storageToken.safeTransfer(msg.sender, amount);
+        emit TokensClaimed(peerId, amount);
+    }
+
+    function calculateRequiredLockedTokens(address user) external view returns (uint256 total) {
+        for (uint256 i = 0; i < poolIds.length; i++) {
+            string[] memory peerIds = pools[poolIds[i]].memberPeerIds[user];
+            for (uint256 j = 0; j < peerIds.length; j++) {
+                total += pools[poolIds[i]].lockedTokens[peerIds[j]];
+            }
+        }
+    }
+
+    function getUserLockedTokens(address wallet) external view returns (uint256 lockedAmount, uint256 claimableAmount) {
+        for (uint256 i = 0; i < poolIds.length; i++) {
+            string[] memory peerIds = pools[poolIds[i]].memberPeerIds[wallet];
+            for (uint256 j = 0; j < peerIds.length; j++) {
+                lockedAmount += pools[poolIds[i]].lockedTokens[peerIds[j]];
+                claimableAmount += claimableTokens[peerIds[j]];
+            }
+        }
     }
 
     function _authorizeUpgrade(address newImplementation) internal nonReentrant whenNotPaused onlyRole(ProposalTypes.ADMIN_ROLE) override {
