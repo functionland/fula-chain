@@ -103,8 +103,13 @@ async function main() {
                     kind: "uups"
                 }
             );
-
+            
             await stakingPool.waitForDeployment();
+
+            // Add extra wait time for Base network
+            console.log("Waiting for deployment to be fully processed...");
+            await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
+
             stakingPoolAddress = await stakingPool.getAddress();
             console.log("StakingPool proxy deployed to:", stakingPoolAddress);
             
@@ -121,12 +126,31 @@ async function main() {
 
         // Deploy StoragePool as UUPS proxy
         console.log("\nDeploying StoragePool as UUPS proxy...");
+        console.log({
+          storageTokenAddress,
+          stakingPoolAddress,
+          initialOwner,
+          initialAdmin,
+        });
+
+        // First, try to deploy just the implementation
+        console.log("Deploying StoragePool implementation...");
+        const storagePoolImpl = await upgrades.deployImplementation(StoragePool, {
+            kind: "uups",
+            timeout: 120000
+        });
+        console.log("StoragePool implementation deployed to:", storagePoolImpl);
+
+        // Now deploy the proxy
+        console.log("Deploying StoragePool proxy...");
         const storagePool = await upgrades.deployProxy(
             StoragePool,
             [storageTokenAddress, stakingPoolAddress, initialOwner, initialAdmin],
             {
                 initializer: "initialize",
-                kind: "uups"
+                kind: "uups",
+                txOverrides: { gasLimit: 5000000 },
+                timeout: 120000
             }
         );
 
@@ -166,7 +190,8 @@ async function main() {
         }
 
         // Verify contracts if API key is available
-        if (process.env.ETHERSCAN_API_KEY) {
+        const apiKey = process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY;
+        if (apiKey) {
             console.log("\nWaiting for block confirmations before verification...");
             // Wait for several blocks to make sure the contract is indexed by the explorer
             for (let i = 0; i < 6; i++) {
@@ -190,6 +215,16 @@ async function main() {
             // If new staking pool was deployed, verify that too
             if (deployStakingPool) {
                 const stakingPoolImplAddress = await upgrades.erc1967.getImplementationAddress(stakingPoolAddress);
+                console.log("Manually initializing the implementation contract to lock it...");
+
+                const stakingPoolImpl = await ethers.getContractAt("StakingPool", stakingPoolImplAddress);
+
+                // Dummy call to prevent hijack: random address inputs that no one controls
+                await stakingImpl.initialize(storageTokenAdress, stakingPoolAddress, stakingPoolAddress);
+
+                console.log("✅ Implementation contract manually initialized to prevent backdoor");
+
+
                 console.log("Verifying StakingPool implementation contract on Etherscan...");
                 try {
                     await hre.run("verify:verify", {
@@ -231,7 +266,7 @@ main()
 
 // Run with environment variables:
 // TOKEN_ADDRESS=0x... INITIAL_OWNER=0x... INITIAL_ADMIN=0x... DEPLOY_STAKING_POOL=true ETHERSCAN_API_KEY=abc... npx hardhat run scripts/StoragePool/deployStoragePool.ts --network mainnet
-// set TOKEN_ADDRESS=0x9e12735d77c72c5C3670636D428f2F3815d8A4cB & set INITIAL_OWNER=0x383a6A34C623C02dcf9BB7069FAE4482967fb713 & set INITIAL_ADMIN=0xFa8b02596a84F3b81B4144eA2F30482f8C33D446 & set ETHERESCAN_API_KEY=... & set DEPLOY_STAKING_POOL=true & npx hardhat run scripts/StoragePool/deployStoragePool.ts --network base
+// set TOKEN_ADDRESS=0x9e12735d77c72c5C3670636D428f2F3815d8A4cB & set INITIAL_OWNER=0x383a6A34C623C02dcf9BB7069FAE4482967fb713 & set INITIAL_ADMIN=0xFa8b02596a84F3b81B4144eA2F30482f8C33D446 & set BASESCAN_API_KEY=... & set DEPLOY_STAKING_POOL=true & npx hardhat run scripts/StoragePool/deployStoragePool.ts --network base
 //
 // Or for using existing staking pool:
 // TOKEN_ADDRESS=0x... STAKING_POOL_ADDRESS=0x... npx hardhat run scripts/StoragePool/deployStoragePool.ts --network mainnet
