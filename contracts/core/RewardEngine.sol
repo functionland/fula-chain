@@ -668,7 +668,7 @@ contract RewardEngine is GovernanceModule {
     function _getPoolCreator(uint32 poolId) internal view returns (address creator) {
         // Get pool creator directly from the pools mapping
         // Note: We can't cache this in a view function, but it's a simple storage read
-        (, , , , , address poolCreator, ) = storagePool.pools(poolId);
+        (address poolCreator, , , , , , , , ) = storagePool.pools(poolId);
         if (poolCreator == address(0)) revert InvalidPoolId();
         return poolCreator;
     }

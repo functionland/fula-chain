@@ -1,174 +1,87 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+interface IPool {
+    function transferTokens(uint256 amount) external returns (bool);
+    function receiveTokens(address from, uint256 amount) external returns (bool);
+}
+
 interface IStoragePool {
-    /**
-     * @dev Pool struct optimized for gas efficiency through strategic field ordering
-     * @notice Fields are ordered to minimize storage slots:
-     * - Slot 0: name (string)
-     * - Slot 1: region (string)
-     * - Slot 2: id (uint256)
-     * - Slot 3: requiredTokens (uint256)
-     * - Slot 4: maxChallengeResponsePeriod (uint256)
-     * - Slot 5: creator (address) + criteria.minPingTime (uint256) - packed together
-     * - Slot 6+: members mapping
-     * - Slot 7+: memberList array
-     * - Slot 8+: memberPeerIds mapping (address => string[])
-     * - Slot 9+: peerIdToMember mapping (string => address)
-     */
+    // Structs
     struct Pool {
-        string name;                              // Slot 0: Dynamic string
-        string region;                            // Slot 1: Dynamic string
-        uint256 id;                              // Slot 2: Pool identifier
-        uint256 requiredTokens;                  // Slot 3: Required tokens to join pool
-        uint256 maxChallengeResponsePeriod;      // Slot 4: Max challenge response time (seconds)
-        address creator;                         // Slot 5: Pool creator (20 bytes)
-        // Note: Criteria is inlined for gas optimization
-        uint256 minPingTime;                     // Slot 6: Minimum ping time requirement
-        mapping(address => Member) members;       // Slot 7+: Member data mapping
-        address[] memberList;                    // Slot 8+: Array of member addresses
-        mapping(address => string[]) memberPeerIds; // Slot 9+: Multiple peer IDs per member
-        mapping(string => address) peerIdToMember;  // Slot 10+: Peer ID to member mapping
+        // Pack small fields together for storage optimization - fits in 2 slots
+        address creator;                    // 20 bytes
+        uint32 id;                         // 4 bytes
+        uint32 maxChallengeResponsePeriod; // 4 bytes
+        uint32 memberCount;                // 4 bytes - total 32 bytes (slot 1)
+        uint32 maxMembers;                 // 4 bytes
+        uint256 requiredTokens;            // 32 bytes (slot 2)
+        uint256 minPingTime;               // 32 bytes (slot 3)
+        string name;
+        string region;
+        address[] memberList;
+        mapping(address => uint256) memberIndex;
+        mapping(address => string[]) memberPeerIds;
+        mapping(string => address) peerIdToMember;
+        mapping(string => uint256) lockedTokens;
     }
 
-    /**
-     * @dev Member struct optimized for gas efficiency
-     * @notice Fields ordered to minimize storage slots:
-     * - Slot 0: joinDate (uint256) - 32 bytes
-     * - Slot 1: accountId (address, 20 bytes) + reputationScore (uint16, 2 bytes) + status flags (uint8, 1 byte) = 23 bytes in one slot
-     * Note: peerId removed from struct as multiple peer IDs are now stored in Pool.memberPeerIds mapping
-     *
-     * Status flags bit definitions:
-     * - Bit 0 (0x01): FORFEIT_TOKENS_FLAG - if set, member forfeits locked tokens when leaving/removed
-     */
-    struct Member {
-        uint256 joinDate;                        // Slot 0: Timestamp when member joined (32 bytes)
-        address accountId;                       // Slot 1: Member's address (20 bytes)
-        uint16 reputationScore;                  // Slot 1: Reputation score 0-1000 (2 bytes)
-        uint8 statusFlags;                       // Slot 1: Status flags (1 byte)
-        // 9 bytes remaining in slot 1 for future expansion
-    }
-
-    /**
-     * @dev Criteria struct - removed as it's inlined into Pool for gas optimization
-     * @notice minPingTime is now directly in Pool struct
-     */
-    struct Criteria {
-        uint256 minPingTime;                     // Kept for backward compatibility
-    }
-
-    /**
-     * @dev JoinRequest struct optimized for gas efficiency
-     * @notice Fields ordered to minimize storage slots:
-     * - Slot 0: accountId (address, 20 bytes) + poolId (uint32, 4 bytes) + timestamp (uint32, 4 bytes) + status (uint8, 1 byte) = 29 bytes
-     * - Slot 1: approvals (uint128, 16 bytes) + rejections (uint128, 16 bytes) = 32 bytes
-     * - Slot 2+: peerId (string) - dynamic
-     * - Slot 3+: votes mapping
-     */
     struct JoinRequest {
-        address accountId;                       // Slot 0: Requester's address (20 bytes)
-        uint32 poolId;                          // Slot 0: Target pool ID (4 bytes)
-        uint32 timestamp;                       // Slot 0: Request creation timestamp (4 bytes)
-        uint8 status;                           // Slot 0: Request status (1 byte) - 0: pending, 1: approved, 2: rejected
-        // 3 bytes remaining in slot 0
-        uint128 approvals;                      // Slot 1: Number of approval votes (16 bytes)
-        uint128 rejections;                     // Slot 1: Number of rejection votes (16 bytes)
-        string peerId;                          // Slot 2+: IPFS peer identifier (dynamic)
-        mapping(address => bool) votes;         // Slot 3+: Voting record mapping
+        // Pack small fields together for storage optimization - fits in 2 slots
+        address account;        // 20 bytes
+        uint32 poolId;         // 4 bytes
+        uint32 timestamp;      // 4 bytes
+        uint32 index;          // 4 bytes - total 32 bytes (slot 1)
+        uint128 approvals;     // 16 bytes
+        uint128 rejections;    // 16 bytes - total 32 bytes (slot 2)
+        uint8 status;          // 1 byte - Initialize to 1 instead of 0
+        string peerId;
+        mapping(string => bool) votes;
     }
 
-    // === Core Pool Events ===
-    event DataPoolCreated(uint256 indexed poolId, string name, address creator);
-    event DataPoolDeleted(uint256 indexed poolId, address creator);
+    // Events
+    event PoolCreated(uint32 indexed poolId, address indexed creator, string name, string region, uint256 requiredTokens, uint32 maxMembers);
+    event JoinRequestSubmitted(uint32 indexed poolId, address indexed account, string peerId);
+    event JoinRequestResolved(uint32 indexed poolId, address indexed account, string peerId, bool approved, bool tokensForfeited);
+    event MemberAdded(uint32 indexed poolId, address indexed account, string peerId, address indexed addedBy);
+    event MemberRemoved(uint32 indexed poolId, address indexed account, string peerId, bool tokensForfeited, address removedBy);
+    event ForfeitFlagSet(address indexed account);
+    event ForfeitFlagCleared(address indexed account);
+    event PoolParametersUpdated(uint32 indexed poolId, uint256 requiredTokens, uint32 maxMembers);
+    event EmergencyTokensRecovered(uint256 amount);
+    event TokensMarkedClaimable(string indexed peerId, uint256 amount);
+    event TokensClaimed(string indexed peerId, uint256 amount);
 
-    // === Member Management Events ===
-    event MemberJoined(uint256 indexed poolId, address member, string peerId);
-    event MemberLeft(uint256 indexed poolId, address member, string peerId);
-    event MemberRemoved(uint32 indexed poolId, address member, address removedBy, string peerId);
-    event MembersBatchRemoved(uint32 indexed poolId, uint256 count);
+    // Custom Errors
+    error PNF(); // PoolNotFound
+    error AIP(); // AlreadyInPool
+    error ARQ(); // AlreadyRequested
+    error PNF2(); // PeerNotFound
+    error CR(); // CapacityReached
+    error UF(); // UserFlagged
+    error NM(); // NotMember
+    error AV(); // AlreadyVoted
+    error NAR(); // NoActiveRequest
+    error OCA(); // OnlyCreatorOrAdmin
+    error PNE(); // PoolNotEmpty
+    error PRE(); // PendingRequestsExist
+    error ITA(); // InvalidTokenAmount
+    error IA(); // InsufficientAllowance
 
-    // === Join Request Events ===
-    event JoinRequestSubmitted(uint256 indexed poolId, string peerId, address member);
-    event JoinRequestCanceled(uint256 indexed poolId, address requester, string peerId);
-    event JoinRequestRejected(uint32 poolId, address indexed accountId, string peerId);
-
-    // === Token Management Events ===
-    event TokensLocked(address user, uint256 amount);
-    event TokensUnlocked(address user, uint256 amount);
-    event TokensMarkedClaimable(address user, uint256 amount);
-    event TokensClaimed(address user, uint256 amount);
-
-    // === Configuration Events ===
-    event PoolCreationRequirementUpdated(uint256 newAmount);
-    event StorageCostSet(uint32 indexed poolId, uint256 costPerTBYear);
-
-
-
-    // === Enhanced Admin Monitoring Events ===
-    event AdminActionExecuted(
-        address indexed admin,
-        string indexed actionType,
-        uint256 indexed targetId,
-        address targetAddress,
-        uint256 value,
-        string details,
-        uint256 timestamp
-    );
-
-    event RoleManagementAction(
-        address indexed admin,
-        address indexed target,
-        bytes32 indexed role,
-        bool granted,
-        string reason,
-        uint256 timestamp
-    );
-
-    event SecurityParameterChanged(
-        address indexed admin,
-        string indexed parameterName,
-        uint256 oldValue,
-        uint256 newValue,
-        string reason,
-        uint256 timestamp
-    );
-
-    event EmergencyActionDetailed(
-        address indexed admin,
-        string indexed actionType,
-        uint256 indexed poolId,
-        address[] affectedAddresses,
-        uint256[] values,
-        string reason,
-        uint256 timestamp
-    );
-
-    event GovernanceActionExecuted(
-        address indexed executor,
-        uint256 indexed proposalId,
-        string actionType,
-        bytes data,
-        uint256 timestamp
-    );
-
-    // === Legacy Events (kept for backward compatibility) ===
-    event PoolEmergencyAction(string action, uint256 timestamp);
-
-    // === Member Status Events ===
-    event MemberForfeitFlagSet(uint32 indexed poolId, address indexed member, bool forfeitTokens, address indexed setter);
-
-    function getStorageCost(uint32 poolId) external view returns (uint256);
-    function addMemberDirectly(uint32 poolId, address member, string memory peerId, bool requireTokenLock) external;
-    function isMemberOfAnyPool(address member) external view returns (bool);
-    function getTotalMembers() external view returns (uint256);
-
-    // New methods for multiple peer ID support
-    function isPeerIdMemberOfPool(uint32 poolId, string memory peerId) external view returns (bool, address);
-    function getMemberPeerIds(uint32 poolId, address member) external view returns (string[] memory);
-    function getMemberReputationMultiPeer(uint32 poolId, address member) external view returns (
-        bool exists,
-        uint16 reputationScore,
-        uint256 joinDate,
-        string[] memory peerIds
-    );
+    // External Functions
+    function initialize(address _storageToken, address _tokenPool, address initialOwner, address initialAdmin) external;
+    function createPool(string calldata name, string calldata region, uint256 requiredTokens, uint32 maxChallengeResponsePeriod, uint256 minPingTime, uint32 maxMembers, string calldata peerId) external;
+    function joinPoolRequest(uint32 poolId, string calldata peerId) external;
+    function voteOnJoinRequest(uint32 poolId, string calldata peerId, string calldata voterPeerId, bool approve) external;
+    function cancelJoinRequest(uint32 poolId, string calldata peerId) external;
+    function approveJoinRequest(uint32 poolId, string calldata peerId) external;
+    function addMember(uint32 poolId, address account, string calldata peerId) external;
+    function removeMemberPeerId(uint32 poolId, string calldata peerId) external;
+    function removeMembersBatch(uint32 poolId, uint256 count) external;
+    function deletePool(uint32 poolId) external;
+    function setMaxMembers(uint32 poolId, uint32 newMax) external;
+    function setRequiredTokens(uint32 poolId, uint256 newRequired) external;
+    function setForfeitFlag(address account, bool flag) external;
+    function emergencyRecoverTokens(uint256 amount) external;
+    function claimTokens(string calldata peerId) external;
 }

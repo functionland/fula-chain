@@ -5,56 +5,23 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../governance/GovernanceModule.sol";
 import "../governance/libraries/ProposalTypes.sol";
+import "../governance/interfaces/IStoragePool.sol";
 
-interface IPool {
-    function transferTokens(uint256 amount) external returns (bool);
-    function receiveTokens(address from, uint256 amount) external returns (bool);
-}
-
-contract StoragePool is Initializable, GovernanceModule {
+contract StoragePool is Initializable, GovernanceModule, IStoragePool {
     using SafeERC20 for IERC20;
 
     IERC20 public storageToken;
     address public tokenPool;
     uint256 public createPoolLockAmount;
 
-    struct Pool {
-        // Pack small fields together for storage optimization - fits in 2 slots
-        address creator;                    // 20 bytes
-        uint32 id;                         // 4 bytes
-        uint32 maxChallengeResponsePeriod; // 4 bytes
-        uint32 memberCount;                // 4 bytes - total 32 bytes (slot 1)
-        uint32 maxMembers;                 // 4 bytes
-        uint256 requiredTokens;            // 32 bytes (slot 2)
-        uint256 minPingTime;               // 32 bytes (slot 3)
-        string name;
-        string region;
-        address[] memberList;
-        mapping(address => uint256) memberIndex;
-        mapping(address => string[]) memberPeerIds;
-        mapping(string => address) peerIdToMember;
-        mapping(string => uint256) lockedTokens;
-    }
 
-    struct JoinRequest {
-        // Pack small fields together for storage optimization - fits in 2 slots
-        address account;        // 20 bytes
-        uint32 poolId;         // 4 bytes
-        uint32 timestamp;      // 4 bytes
-        uint32 index;          // 4 bytes - total 32 bytes (slot 1)
-        uint128 approvals;     // 16 bytes
-        uint128 rejections;    // 16 bytes - total 32 bytes (slot 2)
-        uint8 status;          // 1 byte - Initialize to 1 instead of 0
-        string peerId;
-        mapping(string => bool) votes;
-    }
 
-    mapping(uint32 => Pool) public pools;
+    mapping(uint32 => IStoragePool.Pool) public pools;
     uint32[] public poolIds;
     mapping(uint32 => uint256) private poolIndex;
     mapping(uint32 => string[]) public joinRequestKeys;
     mapping(uint32 => mapping(string => uint256)) private joinRequestIndex;
-    mapping(uint32 => mapping(string => JoinRequest)) public joinRequests;
+    mapping(uint32 => mapping(string => IStoragePool.JoinRequest)) public joinRequests;
     mapping(address => bool) public isForfeited;
     mapping(string => uint256) public claimableTokens;
 
@@ -149,32 +116,7 @@ contract StoragePool is Initializable, GovernanceModule {
     ============================================================================
     */
 
-    event PoolCreated(uint32 indexed poolId, address indexed creator, string name, string region, uint256 requiredTokens, uint32 maxMembers);
-    event JoinRequestSubmitted(uint32 indexed poolId, address indexed account, string peerId);
-    event JoinRequestResolved(uint32 indexed poolId, address indexed account, string peerId, bool approved, bool tokensForfeited);
-    event MemberAdded(uint32 indexed poolId, address indexed account, string peerId, address indexed addedBy);
-    event MemberRemoved(uint32 indexed poolId, address indexed account, string peerId, bool tokensForfeited, address removedBy);
-    event ForfeitFlagSet(address indexed account);
-    event ForfeitFlagCleared(address indexed account);
-    event PoolParametersUpdated(uint32 indexed poolId, uint256 requiredTokens, uint32 maxMembers);
-    event EmergencyTokensRecovered(uint256 amount);
-    event TokensMarkedClaimable(string indexed peerId, uint256 amount);
-    event TokensClaimed(string indexed peerId, uint256 amount);
 
-    error PNF(); // PoolNotFound
-    error AIP(); // AlreadyInPool
-    error ARQ(); // AlreadyRequested
-    error PNF2(); // PeerNotFound
-    error CR(); // CapacityReached
-    error UF(); // UserFlagged
-    error NM(); // NotMember
-    error AV(); // AlreadyVoted
-    error NAR(); // NoActiveRequest
-    error OCA(); // OnlyCreatorOrAdmin
-    error PNE(); // PoolNotEmpty
-    error PRE(); // PendingRequestsExist
-    error ITA(); // InvalidTokenAmount
-    error IA(); // InsufficientAllowance
 
     function initialize(address _storageToken, address _tokenPool, address initialOwner, address initialAdmin) public reinitializer(1) {
         if (_storageToken == address(0) || _tokenPool == address(0) || initialOwner == address(0) || initialAdmin == address(0)) {
@@ -213,7 +155,7 @@ contract StoragePool is Initializable, GovernanceModule {
 
     // Helper to add member to pool - reduces code duplication
     function _addMemberToPool(uint32 poolId, address account, string memory peerId, uint256 lockedAmount) internal {
-        Pool storage pool = pools[poolId];
+        IStoragePool.Pool storage pool = pools[poolId];
         pool.peerIdToMember[peerId] = account;
         pool.memberPeerIds[account].push(peerId);
         if (pool.memberPeerIds[account].length == 1) {
@@ -236,7 +178,7 @@ contract StoragePool is Initializable, GovernanceModule {
     }
 
     function _removePeerFromPool(uint32 poolId, string memory peerId) internal {
-        Pool storage pool = pools[poolId];
+        IStoragePool.Pool storage pool = pools[poolId];
         address account = pool.peerIdToMember[peerId];
         uint256 amount = pool.lockedTokens[peerId];
         bool forfeited = isForfeited[account];
@@ -299,7 +241,7 @@ contract StoragePool is Initializable, GovernanceModule {
         if (requiredTokens > lockAmount) requiredTokens = lockAmount;
 
         uint32 poolId = uint32(poolIds.length + 1);
-        Pool storage pool = pools[poolId];
+        IStoragePool.Pool storage pool = pools[poolId];
 
         // Batch assign pool properties to minimize storage writes
         pool.id = poolId;
@@ -327,14 +269,14 @@ contract StoragePool is Initializable, GovernanceModule {
     }
 
     function joinPoolRequest(uint32 poolId, string calldata peerId) external whenNotPaused nonReentrant {
-        Pool storage pool = pools[poolId];
+        IStoragePool.Pool storage pool = pools[poolId];
         if (pool.id != poolId) revert PNF();
 
         address sender = msg.sender; // Cache msg.sender
         if (isForfeited[sender]) revert UF();
         if (pool.peerIdToMember[peerId] != address(0)) revert AIP();
 
-        JoinRequest storage existingReq = joinRequests[poolId][peerId];
+        IStoragePool.JoinRequest storage existingReq = joinRequests[poolId][peerId];
         if (existingReq.account != address(0) && existingReq.status == 1) { // Changed from 0 to 1 to avoid zero-to-nonzero writes
             revert ARQ();
         }
@@ -353,7 +295,7 @@ contract StoragePool is Initializable, GovernanceModule {
             IPool(tokenPool).receiveTokens(sender, reqAmount);
         }
 
-        JoinRequest storage req = joinRequests[poolId][peerId];
+        IStoragePool.JoinRequest storage req = joinRequests[poolId][peerId];
         req.account = sender;
         req.poolId = poolId;
         req.timestamp = uint32(block.timestamp);
@@ -370,9 +312,9 @@ contract StoragePool is Initializable, GovernanceModule {
     }
 
     function voteOnJoinRequest(uint32 poolId, string calldata peerId, string calldata voterPeerId, bool approve) external whenNotPaused {
-        JoinRequest storage req = joinRequests[poolId][peerId];
+        IStoragePool.JoinRequest storage req = joinRequests[poolId][peerId];
         if (req.account == address(0) || req.status != 1) revert NAR(); // Changed from 0 to 1
-        Pool storage pool = pools[poolId];
+        IStoragePool.Pool storage pool = pools[poolId];
 
         address sender = msg.sender; // Cache msg.sender
         address voterAccount = pool.peerIdToMember[voterPeerId];
@@ -407,9 +349,9 @@ contract StoragePool is Initializable, GovernanceModule {
     }
 
     function cancelJoinRequest(uint32 poolId, string calldata peerId) external whenNotPaused nonReentrant {
-        JoinRequest storage req = joinRequests[poolId][peerId];
+        IStoragePool.JoinRequest storage req = joinRequests[poolId][peerId];
         if (req.account == address(0) || req.status != 1) revert NAR(); // Changed from 0 to 1
-        Pool storage pool = pools[poolId];
+        IStoragePool.Pool storage pool = pools[poolId];
         if (pool.id != poolId) revert PNF();
 
         address sender = msg.sender; // Cache msg.sender
@@ -428,12 +370,12 @@ contract StoragePool is Initializable, GovernanceModule {
     }
 
     function approveJoinRequest(uint32 poolId, string calldata peerId) external whenNotPaused nonReentrant onlyRole(ProposalTypes.POOL_ADMIN_ROLE) {
-        JoinRequest storage req = joinRequests[poolId][peerId];
+        IStoragePool.JoinRequest storage req = joinRequests[poolId][peerId];
         if (req.account == address(0) || req.status != 1) revert NAR(); // Changed from 0 to 1
 
         address reqAccount = req.account; // Cache req.account
         if (isForfeited[reqAccount]) revert UF();
-        Pool storage pool = pools[poolId];
+        IStoragePool.Pool storage pool = pools[poolId];
 
         // Consolidated capacity check and member addition
         if (pool.maxMembers != 0 && (pool.memberCount + 1) > pool.maxMembers) {
@@ -449,12 +391,12 @@ contract StoragePool is Initializable, GovernanceModule {
     }
 
     function addMember(uint32 poolId, address account, string calldata peerId) external whenNotPaused onlyRole(ProposalTypes.POOL_ADMIN_ROLE) {
-        Pool storage pool = pools[poolId];
+        IStoragePool.Pool storage pool = pools[poolId];
         if (pool.id != poolId) revert PNF();
         if (isForfeited[account]) revert UF();
         if (pool.peerIdToMember[peerId] != address(0)) revert AIP();
 
-        JoinRequest storage existingReq = joinRequests[poolId][peerId];
+        IStoragePool.JoinRequest storage existingReq = joinRequests[poolId][peerId];
         if (existingReq.account != address(0) && existingReq.status == 1) { // Changed from 0 to 1
             revert ARQ();
         }
@@ -469,7 +411,7 @@ contract StoragePool is Initializable, GovernanceModule {
     }
 
     function removeMemberPeerId(uint32 poolId, string calldata peerId) external whenNotPaused nonReentrant {
-        Pool storage pool = pools[poolId];
+        IStoragePool.Pool storage pool = pools[poolId];
         if (pool.id != poolId) revert PNF();
         address memberAccount = pool.peerIdToMember[peerId];
         if (memberAccount == address(0)) revert PNF2();
@@ -483,7 +425,7 @@ contract StoragePool is Initializable, GovernanceModule {
     }
 
     function removeMembersBatch(uint32 poolId, uint256 count) external whenNotPaused nonReentrant {
-        Pool storage pool = pools[poolId];
+        IStoragePool.Pool storage pool = pools[poolId];
         if (pool.id != poolId) revert PNF();
 
         address sender = msg.sender; // Cache msg.sender
@@ -510,7 +452,7 @@ contract StoragePool is Initializable, GovernanceModule {
     }
 
     function deletePool(uint32 poolId) external whenNotPaused nonReentrant {
-        Pool storage pool = pools[poolId];
+        IStoragePool.Pool storage pool = pools[poolId];
         if (pool.id != poolId) revert PNF();
 
         address sender = msg.sender; // Cache msg.sender
@@ -547,7 +489,7 @@ contract StoragePool is Initializable, GovernanceModule {
     }
 
     function setMaxMembers(uint32 poolId, uint32 newMax) external whenNotPaused onlyRole(ProposalTypes.POOL_ADMIN_ROLE) {
-        Pool storage pool = pools[poolId];
+        IStoragePool.Pool storage pool = pools[poolId];
         if (pool.id != poolId) revert PNF();
         uint256 currentUsage = pool.memberCount + joinRequestKeys[poolId].length;
         if (newMax != 0 && newMax < currentUsage) {
@@ -558,7 +500,7 @@ contract StoragePool is Initializable, GovernanceModule {
     }
 
     function setRequiredTokens(uint32 poolId, uint256 newRequired) external whenNotPaused onlyRole(ProposalTypes.POOL_ADMIN_ROLE) {
-        Pool storage pool = pools[poolId];
+        IStoragePool.Pool storage pool = pools[poolId];
         if (pool.id != poolId) revert PNF();
         if (newRequired > createPoolLockAmount) {
             newRequired = createPoolLockAmount;
@@ -608,7 +550,32 @@ contract StoragePool is Initializable, GovernanceModule {
         emit TokensClaimed(peerId, amount);
     }
 
+    // Minimal getters needed by RewardEngine - optimized for size
+    function isPeerIdMemberOfPool(uint32 poolId, string calldata peerId) external view returns (bool isMember, address memberAddress) {
+        memberAddress = pools[poolId].peerIdToMember[peerId];
+        isMember = memberAddress != address(0);
+    }
 
+    function getTotalMembers() external view returns (uint256 total) {
+        for (uint256 i = 0; i < poolIds.length; i++) {
+            total += pools[poolIds[i]].memberCount;
+        }
+    }
+
+    function getMemberReputation(uint32 poolId, address account) external view returns (uint256, uint256, uint256, uint256) {
+        // Placeholder implementation - returns zeros for now as RewardEngine only uses joinDate (3rd parameter)
+        // This can be implemented properly when reputation system is added
+        return (0, 0, 0, 0);
+    }
+
+    function isMemberOfAnyPool(address account) external view returns (bool) {
+        for (uint256 i = 0; i < poolIds.length; i++) {
+            if (pools[poolIds[i]].memberPeerIds[account].length > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     function _authorizeUpgrade(address newImplementation) internal nonReentrant whenNotPaused onlyRole(ProposalTypes.ADMIN_ROLE) override {
         if (!_checkUpgrade(newImplementation)) revert("UpgradeNotAuthorized");
