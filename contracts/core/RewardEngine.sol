@@ -18,6 +18,11 @@ import "./StakingPool.sol";
 contract RewardEngine is GovernanceModule {
     using SafeERC20 for IERC20;
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
     // Events
     event MiningRewardsClaimed(address indexed account, string indexed peerId, uint32 indexed poolId, uint256 amount);
     event StorageRewardsClaimed(address indexed account, string indexed peerId, uint32 indexed poolId, uint256 amount);
