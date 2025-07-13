@@ -231,6 +231,7 @@ main()
 
 // Run with environment variables:
 // TOKEN_ADDRESS=0x... INITIAL_OWNER=0x... INITIAL_ADMIN=0x... DEPLOY_STAKING_POOL=true ETHERSCAN_API_KEY=abc... npx hardhat run scripts/StoragePool/deployStoragePool.ts --network mainnet
-// 
+// set TOKEN_ADDRESS=0x9e12735d77c72c5C3670636D428f2F3815d8A4cB & set INITIAL_OWNER=0x383a6A34C623C02dcf9BB7069FAE4482967fb713 & set INITIAL_ADMIN=0xFa8b02596a84F3b81B4144eA2F30482f8C33D446 & set ETHERESCAN_API_KEY=... & set DEPLOY_STAKING_POOL=true & npx hardhat run scripts/StoragePool/deployStoragePool.ts --network base
+//
 // Or for using existing staking pool:
 // TOKEN_ADDRESS=0x... STAKING_POOL_ADDRESS=0x... npx hardhat run scripts/StoragePool/deployStoragePool.ts --network mainnet
