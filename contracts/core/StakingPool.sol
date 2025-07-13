@@ -11,11 +11,16 @@ import "../governance/libraries/ProposalTypes.sol";
 /// @notice Secure pool for holding tokens used in staking operations
 /// @dev Inherits governance functionality from GovernanceModule
 /// @dev Uses upgradeable pattern to allow for future improvements
-contract StakingPool is 
-    Initializable, 
+contract StakingPool is
+    Initializable,
     GovernanceModule
 {
     using SafeERC20 for IERC20;
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
 
     // Events
     event TokensReceived(address indexed from, uint256 amount);

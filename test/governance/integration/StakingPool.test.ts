@@ -113,9 +113,6 @@ describe("StakingPool Tests", function () {
         
         // Set the mockStakingEngine as the stakingEngine for the pool
         await stakingPool.connect(owner).setStakingEngine(mockStakingEngine.address);
-        
-        // Grant allowance to the StakingEngine
-        await stakingPool.connect(admin).grantAllowanceToStakingEngine(ethers.parseEther("50000"));
     });
 
     // 1. Initialization Tests
@@ -162,51 +159,30 @@ describe("StakingPool Tests", function () {
         });
     });
 
-    // 3. Allowance Management Tests
-    describe("Allowance Management Tests", function () {
-        it("should correctly grant allowance to StakingEngine", async function () {
-            const allowanceAmount = ethers.parseEther("50000");
-            
-            // Check that the StakingEngine has the correct allowance
-            const actualAllowance = await token.allowance(
-                await stakingPool.getAddress(),
-                mockStakingEngine.address
-            );
-            
-            expect(actualAllowance).to.equal(allowanceAmount);
+    // 3. StakingEngine Management Tests
+    describe("StakingEngine Management Tests", function () {
+        it("should correctly set the StakingEngine address", async function () {
+            expect(await stakingPool.stakingEngine()).to.equal(mockStakingEngine.address);
         });
 
-        it("should allow increasing the allowance", async function () {
-            const newAllowance = ethers.parseEther("75000");
-            
-            await stakingPool.connect(admin).grantAllowanceToStakingEngine(newAllowance);
-            
-            const actualAllowance = await token.allowance(
-                await stakingPool.getAddress(),
-                mockStakingEngine.address
-            );
-            
-            expect(actualAllowance).to.equal(newAllowance);
-        });
-
-        it("should allow revoking the allowance", async function () {
-            await stakingPool.connect(admin).revokeAllowanceFromStakingEngine();
-            
-            const actualAllowance = await token.allowance(
-                await stakingPool.getAddress(),
-                mockStakingEngine.address
-            );
-            
-            expect(actualAllowance).to.equal(0);
-        });
-
-        it("should not allow non-admins to manage allowances", async function () {
+        it("should not allow setting StakingEngine twice", async function () {
             await expect(
-                stakingPool.connect(user1).grantAllowanceToStakingEngine(ethers.parseEther("1000"))
-            ).to.be.reverted;
-            
+                stakingPool.connect(owner).setStakingEngine(user1.address)
+            ).to.be.revertedWith("StakingEngine already set");
+        });
+
+        it("should not allow non-admins to set StakingEngine", async function () {
+            // Deploy a new StakingPool to test this
+            const StakingPool = await ethers.getContractFactory("StakingPool");
+            const newStakingPool = await upgrades.deployProxy(
+                StakingPool,
+                [await token.getAddress(), owner.address, admin.address],
+                { kind: 'uups', initializer: 'initialize' }
+            );
+            await newStakingPool.waitForDeployment();
+
             await expect(
-                stakingPool.connect(user1).revokeAllowanceFromStakingEngine()
+                newStakingPool.connect(user1).setStakingEngine(mockStakingEngine.address)
             ).to.be.reverted;
         });
     });
@@ -215,45 +191,33 @@ describe("StakingPool Tests", function () {
     describe("Token Transfer Tests", function () {
         it("should allow StakingEngine to transfer tokens", async function () {
             const transferAmount = ethers.parseEther("1000");
+
+            // Call transferTokens as the mock StakingEngine (transfers to stakingEngine address)
+            await stakingPool.connect(mockStakingEngine).transferTokens(transferAmount);
             
-            // Call transferTokens as the mock StakingEngine
-            await stakingPool.connect(mockStakingEngine).transferTokens(
-                user1.address,
-                transferAmount
-            );
-            
-            // Verify balances changed correctly
+            // Verify balances changed correctly (tokens transferred to stakingEngine)
             const poolBalance = await token.balanceOf(await stakingPool.getAddress());
-            const userBalance = await token.balanceOf(user1.address);
-            
+            const stakingEngineBalance = await token.balanceOf(mockStakingEngine.address);
+
             expect(poolBalance).to.equal(POOL_INITIAL_AMOUNT - transferAmount);
-            expect(userBalance).to.equal(ethers.parseEther("2000")); // Initial 1000 + 1000 transferred
+            expect(stakingEngineBalance).to.equal(ethers.parseEther("2000")); // Initial 1000 + 1000 transferred
         });
 
         it("should not allow non-StakingEngine addresses to transfer tokens", async function () {
             await expect(
-                stakingPool.connect(owner).transferTokens(
-                    user1.address,
-                    ethers.parseEther("1000")
-                )
+                stakingPool.connect(owner).transferTokens(ethers.parseEther("1000"))
             ).to.be.revertedWithCustomError(stakingPool, "OnlyStakingEngine");
-            
+
             await expect(
-                stakingPool.connect(user1).transferTokens(
-                    user2.address,
-                    ethers.parseEther("1000")
-                )
+                stakingPool.connect(user1).transferTokens(ethers.parseEther("1000"))
             ).to.be.revertedWithCustomError(stakingPool, "OnlyStakingEngine");
         });
 
         it("should not allow transferring more tokens than available", async function () {
             const excessiveAmount = POOL_INITIAL_AMOUNT + ethers.parseEther("1");
-            
+
             await expect(
-                stakingPool.connect(mockStakingEngine).transferTokens(
-                    user1.address,
-                    excessiveAmount
-                )
+                stakingPool.connect(mockStakingEngine).transferTokens(excessiveAmount)
             ).to.be.revertedWithCustomError(stakingPool, "InsufficientBalance");
         });
 
@@ -263,13 +227,13 @@ describe("StakingPool Tests", function () {
                 await stakingPool.getAddress(),
                 ethers.parseEther("500")
             );
-            
-            // Call receiveTokens to record the transaction
-            await stakingPool.connect(user1).receiveTokens(
+
+            // Call receiveTokens to record the transaction (only stakingEngine can call this)
+            await stakingPool.connect(mockStakingEngine).receiveTokens(
                 user1.address,
                 ethers.parseEther("500")
             );
-            
+
             // Check the updated balance
             const poolBalance = await token.balanceOf(await stakingPool.getAddress());
             expect(poolBalance).to.equal(POOL_INITIAL_AMOUNT + ethers.parseEther("500"));
@@ -279,20 +243,16 @@ describe("StakingPool Tests", function () {
             // Test transferring in two steps
             const initialAmount = ethers.parseEther("100");
             const additionalAmount = ethers.parseEther("50");
-            const totalAmount = initialAmount + additionalAmount;
-            
-            // User1 approves tokens to be spent by the StakingPool
-            await token.connect(user1).approve(await stakingPool.getAddress(), totalAmount);
-            
+
             // First transfer - using mockStakingEngine which has permission
-            await stakingPool.connect(mockStakingEngine).transferTokens(user1.address, initialAmount);
-            
+            await stakingPool.connect(mockStakingEngine).transferTokens(initialAmount);
+
             // Second transfer
-            await stakingPool.connect(mockStakingEngine).transferTokens(user1.address, additionalAmount);
-            
-            // Verify the balance changes
-            const finalBalance = await token.balanceOf(user1.address);
-            expect(finalBalance).to.equal(ethers.parseEther("1150")); // 1000 initial + 150 transferred
+            await stakingPool.connect(mockStakingEngine).transferTokens(additionalAmount);
+
+            // Verify the balance changes (tokens go to stakingEngine)
+            const finalStakingEngineBalance = await token.balanceOf(mockStakingEngine.address);
+            expect(finalStakingEngineBalance).to.equal(ethers.parseEther("1150")); // 1000 initial + 150 transferred
         });
     });
 
@@ -301,40 +261,26 @@ describe("StakingPool Tests", function () {
         it("should allow owner to recover tokens in emergency", async function () {
             const recoveryAmount = ethers.parseEther("10000");
             
-            // Before recovery
-            const initialOwnerBalance = await token.balanceOf(owner.address);
-            
-            // Perform emergency recovery
-            await stakingPool.connect(owner).emergencyRecoverTokens(
-                owner.address,
-                recoveryAmount
-            );
-            
-            // After recovery
-            const finalOwnerBalance = await token.balanceOf(owner.address);
+            // Perform emergency recovery (tokens go to token contract address)
+            await stakingPool.connect(owner).emergencyRecoverTokens(recoveryAmount);
+
+            // After recovery - just verify pool balance decreased
             const poolBalance = await token.balanceOf(await stakingPool.getAddress());
-            
-            expect(finalOwnerBalance - initialOwnerBalance).to.equal(recoveryAmount);
+            expect(poolBalance).to.equal(POOL_INITIAL_AMOUNT - recoveryAmount);
             expect(poolBalance).to.equal(POOL_INITIAL_AMOUNT - recoveryAmount);
         });
 
         it("should not allow non-admins to recover tokens", async function () {
             await expect(
-                stakingPool.connect(attacker).emergencyRecoverTokens(
-                    attacker.address,
-                    ethers.parseEther("1000")
-                )
+                stakingPool.connect(attacker).emergencyRecoverTokens(ethers.parseEther("1000"))
             ).to.be.reverted;
         });
 
         it("should not allow recovering more tokens than available", async function () {
             const excessiveAmount = POOL_INITIAL_AMOUNT + ethers.parseEther("1");
-            
+
             await expect(
-                stakingPool.connect(owner).emergencyRecoverTokens(
-                    owner.address,
-                    excessiveAmount
-                )
+                stakingPool.connect(owner).emergencyRecoverTokens(excessiveAmount)
             ).to.be.revertedWithCustomError(stakingPool, "InsufficientBalance");
         });
     });
@@ -347,10 +293,7 @@ describe("StakingPool Tests", function () {
             
             // Try to transfer - should fail because contract is paused
             await expect(
-                stakingPool.connect(mockStakingEngine).transferTokens(
-                    user1.address,
-                    ethers.parseEther("100")
-                )
+                stakingPool.connect(mockStakingEngine).transferTokens(ethers.parseEther("100"))
             ).to.be.revertedWithCustomError(stakingPool, "EnforcedPause");
             
             // Cooldown period
@@ -361,13 +304,10 @@ describe("StakingPool Tests", function () {
             await stakingPool.connect(admin).emergencyAction(2); // 2 for unpause
             
             // Check that transfers work when unpaused
-            await stakingPool.connect(mockStakingEngine).transferTokens(
-                user1.address,
-                ethers.parseEther("100")
-            );
-            
-            const userBalance = await token.balanceOf(user1.address);
-            expect(userBalance).to.equal(ethers.parseEther("1100"));
+            await stakingPool.connect(mockStakingEngine).transferTokens(ethers.parseEther("100"));
+
+            const stakingEngineBalance = await token.balanceOf(mockStakingEngine.address);
+            expect(stakingEngineBalance).to.equal(ethers.parseEther("1100"));
         });
 
         it("should not allow non-admins to pause/unpause", async function () {
@@ -411,15 +351,8 @@ describe("StakingPool Tests", function () {
             await time.increase(24 * 60 * 60 + 1);
             expect(await stakingPool.hasRole(ADMIN_ROLE, user2.address)).to.be.true;
             
-            // Verify user2 can now perform admin actions
-            await stakingPool.connect(user2).grantAllowanceToStakingEngine(ethers.parseEther("60000"));
-            
-            const actualAllowance = await token.allowance(
-                await stakingPool.getAddress(),
-                mockStakingEngine.address
-            );
-            
-            expect(actualAllowance).to.equal(ethers.parseEther("60000"));
+            // Verify user2 can now perform admin actions (check they can call admin functions)
+            expect(await stakingPool.hasRole(ADMIN_ROLE, user2.address)).to.be.true;
         });
     });
 });

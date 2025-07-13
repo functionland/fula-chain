@@ -14,14 +14,18 @@ import "./libraries/ProposalTypes.sol";
 /// @notice Multi-sig and common features used across all contracts
 /// @dev Used to manage proposals for common features and delegates custom proposals to corresponding contracts
 /// @dev Handles proposal for Managing Roles, Upgrades, Ownerships
-abstract contract GovernanceModule is 
-    Initializable, 
+abstract contract GovernanceModule is
+    Initializable,
     OwnableUpgradeable,
-    UUPSUpgradeable, 
-    PausableUpgradeable, 
-    AccessControlUpgradeable, 
+    UUPSUpgradeable,
+    PausableUpgradeable,
+    AccessControlUpgradeable,
     ReentrancyGuardUpgradeable
 {
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
     // Events
     event RU(address target, address caller, bytes32 role, bool status); //RoleUpdates
     event EA(uint8 action, uint256 timestamp, address caller); // EmergencyAction 1 pause, 2 unpause

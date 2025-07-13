@@ -10,6 +10,11 @@ import "../governance/interfaces/IStoragePool.sol";
 contract StoragePool is Initializable, GovernanceModule, IStoragePool {
     using SafeERC20 for IERC20;
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
     IERC20 public storageToken;
     address public tokenPool;
     uint256 public createPoolLockAmount;
