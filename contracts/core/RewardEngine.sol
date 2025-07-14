@@ -34,6 +34,8 @@ contract RewardEngine is GovernanceModule {
     event UserTotalRewardsUpdated(address indexed user, uint256 totalClaimed);
     event EmergencyWithdrawal(address indexed token, address indexed recipient, uint256 amount);
     event ERC20Recovered(address indexed token, address indexed recipient, uint256 amount);
+    event CircuitBreakerActivated(address indexed triggeredBy, uint256 blockNumber);
+    event CircuitBreakerReset(address indexed resetBy, uint256 blockNumber, bool isAutoReset);
 
     // Errors
     error InvalidAmount();
@@ -162,6 +164,7 @@ contract RewardEngine is GovernanceModule {
                 // Auto-reset after cooldown (only for state-changing functions)
                 circuitBreakerTripped = false;
                 lastCircuitBreakerResetBlock = block.number;
+                emit CircuitBreakerReset(msg.sender, block.number, true);
             } else {
                 // For view functions, still revert even after cooldown
                 revert CircuitBreakerTripped();
@@ -204,12 +207,14 @@ contract RewardEngine is GovernanceModule {
     function tripCircuitBreaker() external onlyRole(ProposalTypes.ADMIN_ROLE) {
         circuitBreakerTripped = true;
         lastCircuitBreakerResetBlock = block.number;
+        emit CircuitBreakerActivated(msg.sender, block.number);
     }
 
     /// @notice Reset the circuit breaker (admin only)
     function resetCircuitBreaker() external onlyRole(ProposalTypes.ADMIN_ROLE) {
         circuitBreakerTripped = false;
         lastCircuitBreakerResetBlock = block.number;
+        emit CircuitBreakerReset(msg.sender, block.number, false);
     }
 
     /// @notice Emergency withdrawal function for stuck tokens (admin only)
@@ -864,19 +869,6 @@ contract RewardEngine is GovernanceModule {
         }
     }
 
-    /// @notice Get total rewards claimed by a specific address
-    /// @param account The address to query
-    /// @return totalClaimed Total rewards claimed by the address
-    function getTotalRewardsClaimed(address account) external view returns (uint256 totalClaimed) {
-        return totalRewardsClaimed[account];
-    }
-
-    /// @notice Get total rewards distributed by the contract
-    /// @return totalDistributed Total rewards distributed
-    function getTotalRewardsDistributed() external view returns (uint256 totalDistributed) {
-        return totalRewardsDistributed;
-    }
-
     /// @notice Get reward statistics for an address
     /// @param account The address to query
     /// @return totalClaimed Total rewards claimed by the address
@@ -900,10 +892,8 @@ contract RewardEngine is GovernanceModule {
         return (totalClaimed, totalDistributed, claimPercentage);
     }
 
-    /// @notice Get contract version for upgrade compatibility
-    /// @return version Contract version
-    function getVersion() external pure returns (uint256 version) {
-        return 1;
+    function getRawOnlineInterned(uint32 poolId, uint256 timestamp) external view returns (bytes32[] memory) {
+        return onlineStatus[poolId][timestamp];
     }
 
     /// @notice Authorize upgrade through governance proposal system
@@ -919,18 +909,17 @@ contract RewardEngine is GovernanceModule {
     }
 
     /// @notice Execute custom proposals for this contract
-    function _executeCustomProposal(bytes32 proposalId) internal virtual override {
-        ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
+    function _executeCustomProposal(bytes32) internal virtual override {
 
         // Currently no custom proposals to execute
         // This function could be extended in the future if needed
 
-        revert InvalidProposalType(uint8(proposal.proposalType));
+        revert InvalidProposalType(uint8(0));
     }
 
     /// @notice Create custom proposals for this contract
     function _createCustomProposal(
-        uint8 proposalType,
+        uint8,
         uint40 /* id */,
         address /* target */,
         bytes32 /* role */,
@@ -939,7 +928,7 @@ contract RewardEngine is GovernanceModule {
     ) internal virtual override returns (bytes32) {
         // Currently no custom proposals supported
         // This function could be extended in the future if needed
-        revert InvalidProposalType(proposalType);
+        revert InvalidProposalType(uint8(0));
     }
 
     // Helper methods

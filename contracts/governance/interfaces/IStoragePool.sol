@@ -41,6 +41,7 @@ interface IStoragePool {
 
     // Events
     event PoolCreated(uint32 indexed poolId, address indexed creator, string name, string region, uint256 requiredTokens, uint32 maxMembers);
+    event PoolDeleted(uint32 indexed poolId, address indexed creator);
     event JoinRequestSubmitted(uint32 indexed poolId, address indexed account, bytes32 peerId);
     event JoinRequestResolved(uint32 indexed poolId, address indexed account, bytes32 peerId, bool approved, bool tokensForfeited);
     event MemberAdded(uint32 indexed poolId, address indexed account, bytes32 peerId, address indexed addedBy);
@@ -51,6 +52,7 @@ interface IStoragePool {
     event EmergencyTokensRecovered(uint256 amount);
     event TokensMarkedClaimable(bytes32 indexed peerId, uint256 amount);
     event TokensClaimed(bytes32 indexed peerId, uint256 amount);
+    event Voted(uint32 indexed poolId, address indexed account, bytes32 indexed voterPeerId, bytes32 peerIdToVote, bool approve);
 
     // Custom Errors
     error PNF(); // PoolNotFound

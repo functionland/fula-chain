@@ -779,7 +779,7 @@ describe("RewardEngine Tests", function () {
 
             await time.increase(60);
 
-            const initialTotalDistributed = await rewardEngine.getTotalRewardsDistributed();
+            const initialTotalDistributed = await rewardEngine.totalRewardsDistributed();
 
             // Both users claim rewards
             const [rewards1, ,] = await rewardEngine.getEligibleRewards(user1.address, PEER_ID_1, testPoolId);
@@ -792,7 +792,7 @@ describe("RewardEngine Tests", function () {
                 await rewardEngine.connect(user2).claimRewards(PEER_ID_2, testPoolId);
             }
 
-            const finalTotalDistributed = await rewardEngine.getTotalRewardsDistributed();
+            const finalTotalDistributed = await rewardEngine.totalRewardsDistributed();
             expect(finalTotalDistributed).to.be.gte(initialTotalDistributed);
         });
 
@@ -808,14 +808,14 @@ describe("RewardEngine Tests", function () {
 
             await time.increase(60);
 
-            const initialUserTotal = await rewardEngine.getTotalRewardsClaimed(user1.address);
+            const initialUserTotal = await rewardEngine.totalRewardsClaimed(user1.address);
 
             const [rewards, ,] = await rewardEngine.getEligibleRewards(user1.address, PEER_ID_1, testPoolId);
 
             if (rewards > 0) {
                 await rewardEngine.connect(user1).claimRewards(PEER_ID_1, testPoolId);
 
-                const finalUserTotal = await rewardEngine.getTotalRewardsClaimed(user1.address);
+                const finalUserTotal = await rewardEngine.totalRewardsClaimed(user1.address);
                 expect(finalUserTotal - initialUserTotal).to.equal(rewards);
             }
         });
@@ -1184,9 +1184,11 @@ describe("RewardEngine Tests", function () {
             expect(claimedThisMonth).to.be.lte(maxMonthlyReward);
         });
 
-        it("should get contract version", async function () {
-            const version = await rewardEngine.getVersion();
-            expect(version).to.equal(1);
+        it("should verify contract initialization", async function () {
+            // Verify contract is properly initialized by checking key parameters
+            expect(await rewardEngine.monthlyRewardPerPeer()).to.be.gt(0);
+            expect(await rewardEngine.expectedPeriod()).to.be.gt(0);
+            expect(await rewardEngine.rewardSystemStartTime()).to.be.gt(0);
         });
 
         it("should handle recorded timestamps pagination", async function () {
@@ -1217,8 +1219,8 @@ describe("RewardEngine Tests", function () {
         it("should handle upgrade authorization", async function () {
             // This test verifies the upgrade mechanism works
             // In a real scenario, this would deploy a new implementation
-            const version = await rewardEngine.getVersion();
-            expect(version).to.equal(1);
+            // Verify that the contract supports UUPS upgrades by checking it has the required roles
+            expect(await rewardEngine.hasRole(ADMIN_ROLE, owner.address)).to.be.true;
         });
 
         it("should handle pause/unpause through governance", async function () {

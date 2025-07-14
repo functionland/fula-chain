@@ -243,6 +243,7 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
 
         address reqAccount = req.account;
         bool forfeited = isForfeited[reqAccount];
+        emit Voted(poolId, reqAccount, voterPeerId, peerId, approve);
 
         if (req.approvals >= threshold && !forfeited) {
             req.status = 2; // Changed from 1 to 2 for approved status
@@ -394,6 +395,7 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
         poolIds.pop();
         delete poolIndex[poolId];
         delete pools[poolId]; // Clear storage slot for gas refund
+        emit PoolDeleted(poolId, creator);
     }
 
     function setMaxMembers(uint32 poolId, uint32 newMax) external whenNotPaused onlyRole(ProposalTypes.POOL_ADMIN_ROLE) {
