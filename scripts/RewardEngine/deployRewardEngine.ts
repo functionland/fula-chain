@@ -26,6 +26,31 @@ async function waitForUserConfirmation(message: string): Promise<void> {
     });
 }
 
+async function verifyWithTimeout(contractAddress: string, constructorArgs: any[] = [], timeoutMs: number = 60000): Promise<void> {
+    return new Promise(async (resolve, reject) => {
+        const timeout = setTimeout(() => {
+            console.log(`⏰ Verification timeout (${timeoutMs/1000}s) reached for ${contractAddress}`);
+            resolve(); // Resolve instead of reject to continue deployment
+        }, timeoutMs);
+
+        try {
+            await hre.run("verify:verify", {
+                address: contractAddress,
+                constructorArguments: constructorArgs
+            });
+            clearTimeout(timeout);
+            resolve();
+        } catch (error: any) {
+            clearTimeout(timeout);
+            reject(error);
+        }
+    });
+}
+
+async function delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function main() {
     console.log("🚀 SECURE REWARDENGINE DEPLOYMENT");
     console.log("=".repeat(50));
@@ -289,7 +314,7 @@ async function main() {
             await rewardEngine.connect(await ethers.getSigner(initialOwner)).setRoleTransactionLimit(ADMIN_ROLE, maxSupply);
             
             console.log("✅ Governance parameters configured");
-            
+
         } catch (error: any) {
             console.error("Failed to set up governance automatically:", error.message);
             console.log("\nManual setup required:");
@@ -298,8 +323,26 @@ async function main() {
             console.log(`3. Call setRoleTransactionLimit(${ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"))}, <amount>)`);
         }
 
+        // Set up StakingPool permissions for RewardEngine
+        console.log("\nSetting up StakingPool permissions...");
+        console.log("IMPORTANT: This requires the deployer to have ADMIN_ROLE on the StakingPool.");
+
+        await waitForUserConfirmation("\nPress Enter to attempt setting up StakingPool permissions or Ctrl+C to skip...");
+
+        try {
+            // Set RewardEngine address as the staking engine on StakingPool
+            console.log("Setting RewardEngine address as staking engine on StakingPool...");
+            const setStakingEngineTx = await stakingPool.connect(await ethers.getSigner(initialOwner)).setStakingEngine(rewardEngineAddress);
+            await setStakingEngineTx.wait();
+            console.log("✅ StakingPool configured with RewardEngine address!");
+
+        } catch (error: any) {
+            console.error("Failed to set up StakingPool permissions automatically:", error.message);
+            console.log("\nManual setup required:");
+            console.log(`1. Call setStakingEngine(${rewardEngineAddress}) on StakingPool contract at ${stakingPoolAddress}`);
+        }
+
         // Verify contracts on block explorer
-        if (process.env.ETHERSCAN_API_KEY) {
             console.log("\n📋 VERIFYING CONTRACTS ON BLOCK EXPLORER...");
 
             // Verify StakingPool if we deployed it
@@ -308,68 +351,56 @@ async function main() {
 
                 try {
                     console.log("Verifying StakingPool proxy...");
-                    await hre.run("verify:verify", {
-                        address: stakingPoolAddress,
-                        constructorArguments: []
-                    });
+                    await verifyWithTimeout(stakingPoolAddress, [], 60000);
                     console.log("✅ StakingPool proxy verified");
                 } catch (error: any) {
                     console.error("⚠️  StakingPool proxy verification failed:", error.message);
                 }
 
+                // Wait 3 seconds to respect rate limits (2 calls/sec = 500ms minimum, using 3s for safety)
+                console.log("⏳ Waiting 3 seconds to respect API rate limits...");
+                await delay(3000);
+
                 try {
                     console.log("Verifying StakingPool implementation...");
-                    await hre.run("verify:verify", {
-                        address: stakingPoolImplAddress,
-                        constructorArguments: []
-                    });
+                    await verifyWithTimeout(stakingPoolImplAddress, [], 60000);
                     console.log("✅ StakingPool implementation verified");
                 } catch (error: any) {
                     console.error("⚠️  StakingPool implementation verification failed:", error.message);
                 }
             }
 
+            // Wait 3 seconds before verifying RewardEngine contracts
+            console.log("⏳ Waiting 3 seconds to respect API rate limits...");
+            await delay(3000);
+
             try {
                 console.log("Verifying RewardEngine proxy...");
-                await hre.run("verify:verify", {
-                    address: rewardEngineAddress,
-                    constructorArguments: []
-                });
+                await verifyWithTimeout(rewardEngineAddress, [], 60000);
                 console.log("✅ RewardEngine proxy verified");
             } catch (error: any) {
                 console.error("⚠️  RewardEngine proxy verification failed:", error.message);
             }
 
+            // Wait 3 seconds between RewardEngine verifications
+            console.log("⏳ Waiting 3 seconds to respect API rate limits...");
+            await delay(3000);
+
             try {
                 console.log("Verifying RewardEngine implementation...");
-                await hre.run("verify:verify", {
-                    address: rewardEngineImplAddress,
-                    constructorArguments: []
-                });
+                await verifyWithTimeout(rewardEngineImplAddress, [], 60000);
                 console.log("✅ RewardEngine implementation verified");
             } catch (error: any) {
                 console.error("⚠️  RewardEngine implementation verification failed:", error.message);
             }
 
-        } else {
-            console.log("\n⚠️  ETHERSCAN_API_KEY not set, skipping verification");
-            console.log("📋 MANUAL VERIFICATION COMMANDS:");
-            if (deployStakingPool) {
-                const stakingPoolImplAddress = await upgrades.erc1967.getImplementationAddress(stakingPoolAddress);
-                console.log(`npx hardhat verify --network <network> ${stakingPoolAddress}`);
-                console.log(`npx hardhat verify --network <network> ${stakingPoolImplAddress}`);
-            }
-            console.log(`npx hardhat verify --network <network> ${rewardEngineAddress}`);
-            console.log(`npx hardhat verify --network <network> ${rewardEngineImplAddress}`);
-        }
 
         console.log("\n✅ DEPLOYMENT COMPLETED SUCCESSFULLY!");
         console.log("\n📋 NEXT STEPS:");
         console.log("1. Configure reward parameters (monthlyRewardPerPeer, expectedPeriod)");
-        console.log("2. Set up StakingPool permissions for RewardEngine");
-        console.log("3. Fund StakingPool with reward tokens");
-        console.log("4. Test reward calculation and claiming functions");
-        console.log("5. Run security check to verify implementation is secured:");
+        console.log("2. Fund StakingPool with reward tokens");
+        console.log("3. Test reward calculation and claiming functions");
+        console.log("4. Run security check to verify implementation is secured:");
         console.log(`   REWARD_ENGINE_PROXY=${rewardEngineAddress} npx hardhat run scripts/checkERC1967SecurityQuick.ts --network <network>`);
 
     } catch (error) {

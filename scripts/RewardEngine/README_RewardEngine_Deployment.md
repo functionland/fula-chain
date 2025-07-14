@@ -149,12 +149,14 @@ await rewardEngine.setExpectedPeriod(8 * 60 * 60);
 
 ### 2. Set Up StakingPool Permissions
 
-The RewardEngine needs permission to transfer tokens from StakingPool:
+The RewardEngine needs permission to transfer tokens from StakingPool. **This is now handled automatically during deployment.**
 
 ```solidity
-// This should be done during StakingPool setup
+// This is done automatically by the deployment script
 await stakingPool.setStakingEngine(rewardEngineAddress);
 ```
+
+If the automatic setup fails, you can run it manually using the command shown in the deployment output.
 
 ### 3. Fund StakingPool with Reward Tokens
 

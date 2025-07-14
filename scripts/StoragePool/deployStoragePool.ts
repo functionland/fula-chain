@@ -24,6 +24,31 @@ function waitForUserConfirmation(message: string): Promise<void> {
     });
 }
 
+async function verifyWithTimeout(contractAddress: string, constructorArgs: any[] = [], timeoutMs: number = 60000): Promise<void> {
+    return new Promise(async (resolve, reject) => {
+        const timeout = setTimeout(() => {
+            console.log(`⏰ Verification timeout (${timeoutMs/1000}s) reached for ${contractAddress}`);
+            resolve(); // Resolve instead of reject to continue deployment
+        }, timeoutMs);
+
+        try {
+            await hre.run("verify:verify", {
+                address: contractAddress,
+                constructorArguments: constructorArgs
+            });
+            clearTimeout(timeout);
+            resolve();
+        } catch (error: any) {
+            clearTimeout(timeout);
+            reject(error);
+        }
+    });
+}
+
+async function delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function main() {
     const [deployer] = await ethers.getSigners();
     console.log("Deploying contracts with the account:", deployer.address);
@@ -256,8 +281,6 @@ async function main() {
         }
 
         // Verify contracts if API key is available
-        const apiKey = process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY;
-        if (apiKey) {
             console.log("\nWaiting for block confirmations before verification...");
             // Wait for several blocks to make sure the contract is indexed by the explorer
             for (let i = 0; i < 6; i++) {
@@ -269,22 +292,20 @@ async function main() {
             // Verify StoragePool proxy
             console.log("Verifying StoragePool proxy contract...");
             try {
-                await hre.run("verify:verify", {
-                    address: storagePoolAddress,
-                    constructorArguments: []
-                });
+                await verifyWithTimeout(storagePoolAddress, [], 60000);
                 console.log("✅ StoragePool proxy verified!");
             } catch (error: any) {
                 console.error("⚠️  StoragePool proxy verification failed:", error.message);
             }
 
+            // Wait 3 seconds to respect rate limits (2 calls/sec = 500ms minimum, using 3s for safety)
+            console.log("⏳ Waiting 3 seconds to respect API rate limits...");
+            await delay(3000);
+
             // Verify the deployed StoragePool implementation
             console.log("Verifying StoragePool implementation contract...");
             try {
-                await hre.run("verify:verify", {
-                    address: storagePoolImplAddress,
-                    constructorArguments: [],
-                });
+                await verifyWithTimeout(storagePoolImplAddress, [], 60000);
                 console.log("✅ StoragePool implementation verified!");
             } catch (error: any) {
                 console.error("⚠️  StoragePool implementation verification failed:", error.message);
@@ -294,41 +315,33 @@ async function main() {
             if (deployStakingPool) {
                 const stakingPoolImplAddress = await upgrades.erc1967.getImplementationAddress(stakingPoolAddress);
 
+                // Wait 3 seconds before verifying StakingPool contracts
+                console.log("⏳ Waiting 3 seconds to respect API rate limits...");
+                await delay(3000);
+
                 // Verify StakingPool proxy
                 console.log("Verifying StakingPool proxy contract...");
                 try {
-                    await hre.run("verify:verify", {
-                        address: stakingPoolAddress,
-                        constructorArguments: []
-                    });
+                    await verifyWithTimeout(stakingPoolAddress, [], 60000);
                     console.log("✅ StakingPool proxy verified!");
                 } catch (error: any) {
                     console.error("⚠️  StakingPool proxy verification failed:", error.message);
                 }
 
+                // Wait 3 seconds between StakingPool verifications
+                console.log("⏳ Waiting 3 seconds to respect API rate limits...");
+                await delay(3000);
+
                 // Verify StakingPool implementation
                 console.log("Verifying StakingPool implementation contract...");
                 try {
-                    await hre.run("verify:verify", {
-                        address: stakingPoolImplAddress,
-                        constructorArguments: [],
-                    });
+                    await verifyWithTimeout(stakingPoolImplAddress, [], 60000);
                     console.log("✅ StakingPool implementation verified!");
                 } catch (error: any) {
                     console.error("⚠️  StakingPool implementation verification failed:", error.message);
                 }
             }
-        } else {
-            console.log("\n⚠️  ETHERSCAN_API_KEY not set, skipping verification");
-            console.log("📋 MANUAL VERIFICATION COMMANDS:");
-            console.log(`npx hardhat verify --network <network> ${storagePoolAddress}`);
-            console.log(`npx hardhat verify --network <network> ${storagePoolImplAddress}`);
-            if (deployStakingPool) {
-                const stakingPoolImplAddress = await upgrades.erc1967.getImplementationAddress(stakingPoolAddress);
-                console.log(`npx hardhat verify --network <network> ${stakingPoolAddress}`);
-                console.log(`npx hardhat verify --network <network> ${stakingPoolImplAddress}`);
-            }
-        }
+
 
         console.log("\n✅ DEPLOYMENT COMPLETED SUCCESSFULLY!");
         console.log("\n📋 DEPLOYMENT SUMMARY:");

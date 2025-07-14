@@ -245,9 +245,9 @@ async function main() {
         // 6. Set up permissions
         console.log("\nSetting up permissions...");
         
-        // Set StoragePool address as the staking engine on StakingPool
-        await stakingPool.connect(deployer).setStakingEngine(storagePoolAddress);
-        console.log("✅ StakingPool configured with StoragePool address");
+        // Set RewardEngine address as the staking engine on StakingPool
+        await stakingPool.connect(deployer).setStakingEngine(rewardEngineAddress);
+        console.log("✅ StakingPool configured with RewardEngine address");
 
         // 7. Fund contracts and set up test environment
         console.log("\nSetting up test environment...");

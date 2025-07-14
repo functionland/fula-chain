@@ -28,58 +28,58 @@ async function main() {
       {
         name: "StorageToken",
         proxy: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
-        expectedImplementation: "0x13Cd0bd6f577d937AD3268688D4907Afa4209DCb"
+        expectedImplementation: "0x13Cd0bd6f577d937AD3268688D4907Afa4209DCb",
       },
       {
         name: "TokenDistributionEngine",
         proxy: "0x0C85A8E992E3Eb04A22027F7E0BC53392A331aC8",
-        expectedImplementation: "0x74d5409cB179998C8eF8c74e471CB8aE447d8CF0"
+        expectedImplementation: "0x74d5409cB179998C8eF8c74e471CB8aE447d8CF0",
       },
       {
         name: "AirdropContract",
         proxy: "0x0AF8Bf19C18a3c7352f831cf950CA8971202e4Be",
-        expectedImplementation: "0x0E870C8c51e9B457C40fFb3ad22AeD1f30fD0088"
+        expectedImplementation: "0x0E870C8c51e9B457C40fFb3ad22AeD1f30fD0088",
       },
       {
         name: "TestnetMiningRewards",
         proxy: "0x1Def7229f6d6Ca5fbA4f9e28Cd1cf4e2688e545d",
-        expectedImplementation: "0xdc1bB05397CAC751fA353bb39805A6B16cB08119"
+        expectedImplementation: "0xdc1bB05397CAC751fA353bb39805A6B16cB08119",
       },
       {
         name: "StakingEngineLinear",
         proxy: "0x32A2b049b1E7A6c8C26284DE49e7F05A00466a5d",
-        expectedImplementation: "0xC31db852C347322440f9027A5D65d8FD39B18C46"
+        expectedImplementation: "0xC31db852C347322440f9027A5D65d8FD39B18C46",
       },
       {
         name: "StakePool (StakingLinear)",
         proxy: "0xfa9cb36656cf9A2D2BA3a6b0aD810fB9993F7A21",
-        expectedImplementation: "0x860793bb966511d8Ddfb03a0598A1E5b3a83225f"
+        expectedImplementation: "0x860793bb966511d8Ddfb03a0598A1E5b3a83225f",
       },
       {
         name: "RewardPool (StakingLinear)",
         proxy: "0xDB2ab8De23eb8dd6cd12127673be9ae6Ae6edd9A",
-        expectedImplementation: "0x860793bb966511d8Ddfb03a0598A1E5b3a83225f"
+        expectedImplementation: "0x860793bb966511d8Ddfb03a0598A1E5b3a83225f",
       },
       {
         name: "StakingPool (StoragePool)",
-        proxy: "0x4bE8054fF2De1353dAE37518a8C95D0a314c704E",
-        expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be"
+        proxy: "0x905C42bdC77eE14d494fa5877D6069Fd7E8Fe6e9",
+        expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be",
       },
       {
         name: "StoragePool",
-        proxy: "0xFe348d762851497c4E4Cd0cA39386c070e213FD7",
-        expectedImplementation: "0x24FC7aF513f60E752C65e4Bc8135c0e6afD03b04"
+        proxy: "0xe14EEEf31fb4A4769aD0316476476de1DC6a4Fa2",
+        expectedImplementation: "0x829D219B8Cde611AFb5504d2085607Ce22893882",
       },
       {
         name: "StakingPool (RewardEngine)",
-        proxy: "0x2Fe7e91D48C243958a9efd76ADd2793ff52a69B0",
-        expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be"
+        proxy: "0xA2bf96d1501d7d0aaF9fE4d2756a1fb2e1ef1b40",
+        expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be",
       },
       {
         name: "RewardEngine",
-        proxy: "0xD04cAa484AE39f7Bdd6475F77f3298262F1D7E56",
-        expectedImplementation: "0x2D397Af4504D13996b45feFf08DaD72f2A28BAB6"
-      }
+        proxy: "0x699A3bF87a28f73289dffA71c150571aFbf8De79",
+        expectedImplementation: "0x5F3758869FAfE43A466bd66338EC3C132DC622eA",
+      },
     ];
   } else if (networkName === "skale") {
     // SKALE CHAIN CONTRACTS
@@ -87,48 +87,48 @@ async function main() {
       {
         name: "StorageToken",
         proxy: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
-        expectedImplementation: "0x13Cd0bd6f577d937AD3268688D4907Afa4209DCb"
+        expectedImplementation: "0x13Cd0bd6f577d937AD3268688D4907Afa4209DCb",
       },
       {
         name: "TestnetMiningRewards",
         proxy: "0x92217cCaEDBdbc54C76c15feA18823db1558fDc9",
-        expectedImplementation: "0x74d5409cB179998C8eF8c74e471CB8aE447d8CF0"
+        expectedImplementation: "0x74d5409cB179998C8eF8c74e471CB8aE447d8CF0",
       },
       {
         name: "StakingEngineLinear",
         proxy: "0xA002a09Fb3b9E8ac930B72C61De6F3979335bFa2",
-        expectedImplementation: "0xf78670e48DCE9B133F2Bd2D43dbE577Abc18e9A1"
+        expectedImplementation: "0xf78670e48DCE9B133F2Bd2D43dbE577Abc18e9A1",
       },
       {
         name: "StakePool (StakingLinear)",
         proxy: "0x4337124896C11534E3De99da8ff0E4fE22465743",
-        expectedImplementation: "0xb2A51311aAC9aDAe8F9785129c988539b1510c2d"
+        expectedImplementation: "0xb2A51311aAC9aDAe8F9785129c988539b1510c2d",
       },
       {
         name: "RewardPool (StakingLinear)",
         proxy: "0x9f0815CeDdd2f4E8Be37D09d95Fbfe0EFE57f0B9",
-        expectedImplementation: "0xb2A51311aAC9aDAe8F9785129c988539b1510c2d"
+        expectedImplementation: "0xb2A51311aAC9aDAe8F9785129c988539b1510c2d",
       },
       {
         name: "StakingPool (StoragePool)",
-        proxy: "0x4bE8054fF2De1353dAE37518a8C95D0a314c704E",
-        expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be"
+        proxy: "0x829D219B8Cde611AFb5504d2085607Ce22893882",
+        expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be",
       },
       {
         name: "StoragePool",
-        proxy: "0xFe348d762851497c4E4Cd0cA39386c070e213FD7",
-        expectedImplementation: "0x24FC7aF513f60E752C65e4Bc8135c0e6afD03b04"
+        proxy: "0x8698F40C490A65414c9AC3D5652a6ad3a5e42a1b",
+        expectedImplementation: "0xe14EEEf31fb4A4769aD0316476476de1DC6a4Fa2",
       },
       {
         name: "StakingPool (RewardEngine)",
-        proxy: "0x2Fe7e91D48C243958a9efd76ADd2793ff52a69B0",
-        expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be"
+        proxy: "0xA2bf96d1501d7d0aaF9fE4d2756a1fb2e1ef1b40",
+        expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be",
       },
       {
         name: "RewardEngine",
-        proxy: "0xD04cAa484AE39f7Bdd6475F77f3298262F1D7E56",
-        expectedImplementation: "0x2D397Af4504D13996b45feFf08DaD72f2A28BAB6"
-      }
+        proxy: "0x699A3bF87a28f73289dffA71c150571aFbf8De79",
+        expectedImplementation: "0x5F3758869FAfE43A466bd66338EC3C132DC622eA",
+      },
     ];
   } else if (networkName === "iotex-mainnet") {
     // IOTEX MAINNET CONTRACTS
