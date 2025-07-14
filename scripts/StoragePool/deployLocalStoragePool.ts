@@ -93,6 +93,85 @@ async function main() {
     const storagePoolAddress = await storagePool.getAddress();
     console.log("StoragePool deployed to:", storagePoolAddress);
 
+    // CRITICAL SECURITY: Initialize implementation contracts to prevent front-running attacks
+    console.log("\n🔒 SECURING IMPLEMENTATION CONTRACTS...");
+
+    // Secure StoragePool implementation
+    console.log("Securing StoragePool implementation...");
+    try {
+        const storagePoolImplAddress = await upgrades.erc1967.getImplementationAddress(storagePoolAddress);
+        const storagePoolImpl = await ethers.getContractAt("StoragePool", storagePoolImplAddress);
+
+        // Use proxy addresses as dummy values (safer than dead addresses)
+        const initTx = await storagePoolImpl.initialize(
+            tokenAddress,         // _storageToken (use real token address)
+            stakingPoolAddress,   // _tokenPool (use real staking pool address)
+            storagePoolAddress,   // initialOwner (use proxy address as dummy)
+            storagePoolAddress    // initialAdmin (use proxy address as dummy)
+        );
+        await initTx.wait();
+        console.log("✅ StoragePool implementation secured with proxy addresses");
+    } catch (error: any) {
+        if (error.message.includes("already initialized") ||
+            error.message.includes("InvalidInitialization")) {
+            console.log("✅ StoragePool implementation was already secured");
+        } else {
+            console.warn("⚠️  Failed to secure StoragePool implementation automatically");
+            console.warn("Error:", error.message);
+            console.log("Continuing with deployment - manual security may be required...");
+        }
+    }
+
+    // Secure StakingPool implementation
+    console.log("Securing StakingPool implementation...");
+    try {
+        const stakingPoolImplAddress = await upgrades.erc1967.getImplementationAddress(stakingPoolAddress);
+        const stakingPoolImpl = await ethers.getContractAt("StakingPool", stakingPoolImplAddress);
+
+        // Use proxy addresses as dummy values
+        const initTx = await stakingPoolImpl.initialize(
+            tokenAddress,       // _token (use real token address)
+            stakingPoolAddress, // initialOwner (use proxy address as dummy)
+            stakingPoolAddress  // initialAdmin (use proxy address as dummy)
+        );
+        await initTx.wait();
+        console.log("✅ StakingPool implementation secured with proxy addresses");
+    } catch (error: any) {
+        if (error.message.includes("already initialized") ||
+            error.message.includes("InvalidInitialization")) {
+            console.log("✅ StakingPool implementation was already secured");
+        } else {
+            console.warn("⚠️  Failed to secure StakingPool implementation automatically");
+            console.warn("Error:", error.message);
+            console.log("Continuing with deployment - manual security may be required...");
+        }
+    }
+
+    // Secure StorageToken implementation
+    console.log("Securing StorageToken implementation...");
+    try {
+        const tokenImplAddress = await upgrades.erc1967.getImplementationAddress(tokenAddress);
+        const tokenImpl = await ethers.getContractAt("StorageToken", tokenImplAddress);
+
+        // Use proxy address as dummy values and 0 for token amount
+        const initTx = await tokenImpl.initialize(
+            tokenAddress,  // initialOwner (use proxy address as dummy)
+            tokenAddress,  // initialAdmin (use proxy address as dummy)
+            0              // initialMintedTokens (0 = safe)
+        );
+        await initTx.wait();
+        console.log("✅ StorageToken implementation secured with proxy addresses");
+    } catch (error: any) {
+        if (error.message.includes("already initialized") ||
+            error.message.includes("InvalidInitialization")) {
+            console.log("✅ StorageToken implementation was already secured");
+        } else {
+            console.warn("⚠️  Failed to secure StorageToken implementation automatically");
+            console.warn("Error:", error.message);
+            console.log("Continuing with deployment - manual security may be required...");
+        }
+    }
+
     // 4. Set up governance parameters for the pools
     console.log("\nSetting up governance parameters for pools...");
 
@@ -452,6 +531,43 @@ async function main() {
     console.log(`✅ Pool workflow: ${stakingPoolTotalChange >= 0 ? "PASS" : "FAIL"} (No tokens lost in StakingPool)`);
 
     console.log("\n=== COMPREHENSIVE TESTING COMPLETED ===");
+
+    // Get implementation addresses for summary
+    const tokenImplAddress = await upgrades.erc1967.getImplementationAddress(tokenAddress);
+    const stakingPoolImplAddress = await upgrades.erc1967.getImplementationAddress(stakingPoolAddress);
+    const storagePoolImplAddress = await upgrades.erc1967.getImplementationAddress(storagePoolAddress);
+
+    console.log("\n✅ LOCAL DEPLOYMENT COMPLETED SUCCESSFULLY!");
+    console.log("\n📋 DEPLOYMENT SUMMARY:");
+    console.log("StorageToken Proxy:", tokenAddress);
+    console.log("StorageToken Implementation:", tokenImplAddress);
+    console.log("StakingPool Proxy:", stakingPoolAddress);
+    console.log("StakingPool Implementation:", stakingPoolImplAddress);
+    console.log("StoragePool Proxy:", storagePoolAddress);
+    console.log("StoragePool Implementation:", storagePoolImplAddress);
+    console.log("Initial Owner:", initialOwner);
+    console.log("Initial Admin:", initialAdmin);
+
+    console.log("\n🧪 TEST ACCOUNTS:");
+    console.log("Deployer/Owner:", deployer.address);
+    console.log("Admin:", admin.address);
+    console.log("User 1:", user1.address);
+    console.log("User 2:", user2.address);
+
+    console.log("\n📋 VERIFICATION COMMANDS (if needed):");
+    console.log("For StorageToken:");
+    console.log(`npx hardhat verify --network localhost ${tokenAddress}`);
+    console.log(`npx hardhat verify --network localhost ${tokenImplAddress}`);
+    console.log("For StakingPool:");
+    console.log(`npx hardhat verify --network localhost ${stakingPoolAddress}`);
+    console.log(`npx hardhat verify --network localhost ${stakingPoolImplAddress}`);
+    console.log("For StoragePool:");
+    console.log(`npx hardhat verify --network localhost ${storagePoolAddress}`);
+    console.log(`npx hardhat verify --network localhost ${storagePoolImplAddress}`);
+
+    console.log("\n📋 SECURITY VERIFICATION:");
+    console.log(`STORAGE_POOL_PROXY=${storagePoolAddress} STAKING_POOL_PROXY=${stakingPoolAddress} STORAGE_TOKEN_PROXY=${tokenAddress} npx hardhat run scripts/checkERC1967SecurityQuick.ts --network localhost`);
+
   } catch (error: any) {
     console.error("Deployment failed:", error.message);
     if (error.data) {

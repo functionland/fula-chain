@@ -162,6 +162,72 @@ async function main() {
         console.log("StoragePool proxy deployed to:", storagePoolAddress);
         console.log("StoragePool implementation address:", storagePoolImplAddress);
 
+        // CRITICAL SECURITY: Initialize implementation to prevent front-running attacks
+        console.log("\n🔒 SECURING IMPLEMENTATION CONTRACTS...");
+
+        // Secure StoragePool implementation
+        console.log("Securing StoragePool implementation...");
+        try {
+            const storagePoolImpl = await ethers.getContractAt("StoragePool", storagePoolImplAddress);
+
+            // Use proxy addresses as dummy values (safer than dead addresses)
+            const initTx = await storagePoolImpl.initialize(
+                storageTokenAddress,    // _storageToken (use real token address)
+                stakingPoolAddress,     // _tokenPool (use real staking pool address)
+                storagePoolAddress,     // initialOwner (use proxy address as dummy)
+                storagePoolAddress      // initialAdmin (use proxy address as dummy)
+            );
+            await initTx.wait();
+            console.log("✅ StoragePool implementation secured with proxy addresses");
+        } catch (error: any) {
+            if (error.message.includes("already initialized") ||
+                error.message.includes("InvalidInitialization")) {
+                console.log("✅ StoragePool implementation was already secured");
+            } else {
+                console.warn("⚠️  Failed to secure StoragePool implementation automatically");
+                console.warn("Error:", error.message);
+                console.log("\n📋 MANUAL SECURITY REQUIRED:");
+                console.log("The StoragePool implementation may be vulnerable to front-running attacks.");
+                console.log("Please secure it manually by calling:");
+                console.log(`storagePoolImpl.initialize(${storageTokenAddress}, ${stakingPoolAddress}, <dummy_owner>, <dummy_admin>)`);
+                console.log(`Implementation address: ${storagePoolImplAddress}`);
+                console.log("\nContinuing with deployment...");
+            }
+        }
+
+        // Secure StakingPool implementation if we deployed it
+        if (deployStakingPool) {
+            console.log("Securing StakingPool implementation...");
+            try {
+                const stakingPoolImplAddress = await upgrades.erc1967.getImplementationAddress(stakingPoolAddress);
+                const stakingPoolImpl = await ethers.getContractAt("StakingPool", stakingPoolImplAddress);
+
+                // Use proxy addresses as dummy values
+                const initTx = await stakingPoolImpl.initialize(
+                    storageTokenAddress,  // _token (use real token address)
+                    stakingPoolAddress,   // initialOwner (use proxy address as dummy)
+                    stakingPoolAddress    // initialAdmin (use proxy address as dummy)
+                );
+                await initTx.wait();
+                console.log("✅ StakingPool implementation secured with proxy addresses");
+            } catch (error: any) {
+                if (error.message.includes("already initialized") ||
+                    error.message.includes("InvalidInitialization")) {
+                    console.log("✅ StakingPool implementation was already secured");
+                } else {
+                    console.warn("⚠️  Failed to secure StakingPool implementation automatically");
+                    console.warn("Error:", error.message);
+                    console.log("\n📋 MANUAL SECURITY REQUIRED:");
+                    console.log("The StakingPool implementation may be vulnerable to front-running attacks.");
+                    console.log("Please secure it manually by calling:");
+                    console.log(`stakingPoolImpl.initialize(${storageTokenAddress}, <dummy_owner>, <dummy_admin>)`);
+                    const stakingPoolImplAddress = await upgrades.erc1967.getImplementationAddress(stakingPoolAddress);
+                    console.log(`Implementation address: ${stakingPoolImplAddress}`);
+                    console.log("\nContinuing with deployment...");
+                }
+            }
+        }
+
         console.log("\nDeployment Summary:");
         console.log("- Storage Token:", storageTokenAddress);
         console.log("- Staking Pool:", stakingPoolAddress);
@@ -200,49 +266,88 @@ async function main() {
                 await new Promise(resolve => setTimeout(resolve, 15000)); // Wait 15 seconds per block
             }
             
+            // Verify StoragePool proxy
+            console.log("Verifying StoragePool proxy contract...");
+            try {
+                await hre.run("verify:verify", {
+                    address: storagePoolAddress,
+                    constructorArguments: []
+                });
+                console.log("✅ StoragePool proxy verified!");
+            } catch (error: any) {
+                console.error("⚠️  StoragePool proxy verification failed:", error.message);
+            }
+
             // Verify the deployed StoragePool implementation
-            console.log("Verifying StoragePool implementation contract on Etherscan...");
+            console.log("Verifying StoragePool implementation contract...");
             try {
                 await hre.run("verify:verify", {
                     address: storagePoolImplAddress,
                     constructorArguments: [],
                 });
-                console.log("StoragePool implementation contract verified!");
+                console.log("✅ StoragePool implementation verified!");
             } catch (error: any) {
-                console.error("StoragePool verification failed:", error.message);
+                console.error("⚠️  StoragePool implementation verification failed:", error.message);
             }
             
             // If new staking pool was deployed, verify that too
             if (deployStakingPool) {
                 const stakingPoolImplAddress = await upgrades.erc1967.getImplementationAddress(stakingPoolAddress);
-                console.log("Manually initializing the implementation contract to lock it...");
 
-                const stakingPoolImpl = await ethers.getContractAt("StakingPool", stakingPoolImplAddress);
+                // Verify StakingPool proxy
+                console.log("Verifying StakingPool proxy contract...");
+                try {
+                    await hre.run("verify:verify", {
+                        address: stakingPoolAddress,
+                        constructorArguments: []
+                    });
+                    console.log("✅ StakingPool proxy verified!");
+                } catch (error: any) {
+                    console.error("⚠️  StakingPool proxy verification failed:", error.message);
+                }
 
-                // Dummy call to prevent hijack: random address inputs that no one controls
-                await stakingImpl.initialize(storageTokenAdress, stakingPoolAddress, stakingPoolAddress);
-
-                console.log("✅ Implementation contract manually initialized to prevent backdoor");
-
-
-                console.log("Verifying StakingPool implementation contract on Etherscan...");
+                // Verify StakingPool implementation
+                console.log("Verifying StakingPool implementation contract...");
                 try {
                     await hre.run("verify:verify", {
                         address: stakingPoolImplAddress,
                         constructorArguments: [],
                     });
-                    console.log("StakingPool implementation contract verified!");
+                    console.log("✅ StakingPool implementation verified!");
                 } catch (error: any) {
-                    console.error("StakingPool verification failed:", error.message);
+                    console.error("⚠️  StakingPool implementation verification failed:", error.message);
                 }
             }
+        } else {
+            console.log("\n⚠️  ETHERSCAN_API_KEY not set, skipping verification");
+            console.log("📋 MANUAL VERIFICATION COMMANDS:");
+            console.log(`npx hardhat verify --network <network> ${storagePoolAddress}`);
+            console.log(`npx hardhat verify --network <network> ${storagePoolImplAddress}`);
+            if (deployStakingPool) {
+                const stakingPoolImplAddress = await upgrades.erc1967.getImplementationAddress(stakingPoolAddress);
+                console.log(`npx hardhat verify --network <network> ${stakingPoolAddress}`);
+                console.log(`npx hardhat verify --network <network> ${stakingPoolImplAddress}`);
+            }
         }
-        
-        console.log("\nDeployment completed successfully!");
-        console.log("Summary:");
-        console.log("- StoragePool:", storagePoolAddress);
-        console.log("- StakingPool:", stakingPoolAddress);
+
+        console.log("\n✅ DEPLOYMENT COMPLETED SUCCESSFULLY!");
+        console.log("\n📋 DEPLOYMENT SUMMARY:");
+        console.log("- StoragePool Proxy:", storagePoolAddress);
+        console.log("- StoragePool Implementation:", storagePoolImplAddress);
+        console.log("- StakingPool Proxy:", stakingPoolAddress);
+        if (deployStakingPool) {
+            const stakingPoolImplAddress = await upgrades.erc1967.getImplementationAddress(stakingPoolAddress);
+            console.log("- StakingPool Implementation:", stakingPoolImplAddress);
+        }
         console.log("- Storage Token:", storageTokenAddress);
+
+        console.log("\n📋 NEXT STEPS:");
+        console.log("1. Configure StoragePool parameters (createPoolLockAmount, etc.)");
+        console.log("2. Set up proper governance quorum and transaction limits");
+        console.log("3. Test pool creation and member management functions");
+        console.log("4. Run integration tests with StorageToken");
+        console.log("5. Run security verification:");
+        console.log(`   STORAGE_POOL_PROXY=${storagePoolAddress} npx hardhat run scripts/checkERC1967SecurityQuick.ts --network <network>`);
 
     } catch (error: any) {
         console.error("Deployment failed:", error.message);
