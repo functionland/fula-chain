@@ -53,6 +53,7 @@ interface IStoragePool {
     event TokensMarkedClaimable(bytes32 indexed peerId, uint256 amount);
     event TokensClaimed(bytes32 indexed peerId, uint256 amount);
     event Voted(uint32 indexed poolId, address indexed account, bytes32 indexed voterPeerId, bytes32 peerIdToVote, bool approve);
+    event CreatePoolLockAmountUpdated(uint256 oldAmount, uint256 newAmount);
 
     // Custom Errors
     error PNF(); // PoolNotFound

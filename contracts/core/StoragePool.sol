@@ -36,6 +36,10 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
             revert InvalidAddress();
         }
         __GovernanceModule_init(initialOwner, initialAdmin);
+
+        // Grant StoragePool-specific roles
+        _grantRole(ProposalTypes.POOL_ADMIN_ROLE, initialAdmin);
+
         storageToken = IERC20(_storageToken);
         tokenPool = _tokenPool;
     }
@@ -420,6 +424,15 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
         }
         pool.requiredTokens = newRequired;
         emit PoolParametersUpdated(poolId, newRequired, pool.maxMembers);
+    }
+
+    /// @notice Set the amount of tokens required to create a pool
+    /// @param _amount New amount of tokens required for pool creation
+    function setCreatePoolLockAmount(uint256 _amount) external whenNotPaused onlyRole(ProposalTypes.ADMIN_ROLE) {
+        if (_amount > 100_000_000 * 10**18) revert ITA(); // Max 100M tokens
+        uint256 oldAmount = createPoolLockAmount;
+        createPoolLockAmount = _amount;
+        emit CreatePoolLockAmountUpdated(oldAmount, _amount);
     }
 
     function setForfeitFlag(address account, bool flag) external whenNotPaused onlyRole(ProposalTypes.POOL_ADMIN_ROLE) {

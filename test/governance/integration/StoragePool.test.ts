@@ -86,14 +86,8 @@ describe("StoragePool", function () {
     await time.increase(24 * 60 * 60 + 1);
     await storagePool.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, POOL_CREATION_TOKENS * BigInt(10));
 
-    // Grant POOL_ADMIN_ROLE to admin so they can call setRequiredTokens
-    // Owner has ADMIN_ROLE and should be able to grant other roles
-    try {
-      await storagePool.connect(owner).grantRole(POOL_ADMIN_ROLE, admin.address);
-      await time.increase(24 * 60 * 60 + 1);
-    } catch (error) {
-      console.log("Could not grant POOL_ADMIN_ROLE to admin:", error);
-    }
+    // Note: POOL_ADMIN_ROLE is now automatically granted to admin during initialization
+    // No manual role grant needed
 
     // Whitelist accounts in StorageToken
     const addWhitelistType = 5;
@@ -174,14 +168,15 @@ describe("StoragePool", function () {
       poolId = 1;
     });
 
-    it("should revert when no one has POOL_ADMIN_ROLE", async function () {
+    it("should allow admin with POOL_ADMIN_ROLE to set required tokens", async function () {
       const newRequiredTokens = ethers.parseEther("50");
 
-      // Note: setRequiredTokens requires POOL_ADMIN_ROLE which is not granted to anyone by default
-      // This is a limitation of the current contract design
+      // Admin now has POOL_ADMIN_ROLE granted during initialization
       await expect(storagePool.connect(admin).setRequiredTokens(poolId, newRequiredTokens))
-        .to.be.revertedWithCustomError(storagePool, "AccessControlUnauthorizedAccount");
+        .to.emit(storagePool, "PoolParametersUpdated")
+        .withArgs(poolId, 0, 100); // requiredTokens capped to createPoolLockAmount (0), maxMembers unchanged
 
+      // Owner should still revert as they don't have POOL_ADMIN_ROLE
       await expect(storagePool.connect(owner).setRequiredTokens(poolId, newRequiredTokens))
         .to.be.revertedWithCustomError(storagePool, "AccessControlUnauthorizedAccount");
     });
@@ -194,13 +189,13 @@ describe("StoragePool", function () {
       ).to.be.revertedWithCustomError(storagePool, "AccessControlUnauthorizedAccount");
     });
 
-    it("should revert for non-existent pool (access control checked first)", async function () {
+    it("should revert for non-existent pool (pool existence checked after access control)", async function () {
       const newRequiredTokens = ethers.parseEther("50");
 
-      // Access control is checked before pool existence, so we get AccessControlUnauthorizedAccount
+      // Admin has POOL_ADMIN_ROLE, so access control passes but pool doesn't exist
       await expect(
         storagePool.connect(admin).setRequiredTokens(999, newRequiredTokens)
-      ).to.be.revertedWithCustomError(storagePool, "AccessControlUnauthorizedAccount");
+      ).to.be.revertedWithCustomError(storagePool, "PNF");
     });
   });
 
@@ -429,17 +424,32 @@ describe("StoragePool", function () {
       );
     });
 
-    it("should revert when no one has POOL_ADMIN_ROLE", async function () {
-      // Note: setForfeitFlag requires POOL_ADMIN_ROLE which is not granted to anyone by default
+    it("should allow admin with POOL_ADMIN_ROLE to set forfeit flag", async function () {
+      // Admin now has POOL_ADMIN_ROLE granted during initialization
       await expect(storagePool.connect(admin).setForfeitFlag(member1.address, true))
-        .to.be.revertedWithCustomError(storagePool, "AccessControlUnauthorizedAccount");
+        .to.emit(storagePool, "ForfeitFlagSet")
+        .withArgs(member1.address);
 
-      await expect(storagePool.connect(owner).setForfeitFlag(member1.address, true))
+      // Verify the flag was set
+      expect(await storagePool.isForfeited(member1.address)).to.be.true;
+
+      // Owner should still revert as they don't have POOL_ADMIN_ROLE
+      await expect(storagePool.connect(owner).setForfeitFlag(member1.address, false))
         .to.be.revertedWithCustomError(storagePool, "AccessControlUnauthorizedAccount");
     });
 
-    // Note: Additional setForfeitFlag tests cannot be performed because
-    // no account has POOL_ADMIN_ROLE by default in the current contract design
+    it("should clear forfeit flag", async function () {
+      // First set the flag
+      await storagePool.connect(admin).setForfeitFlag(member1.address, true);
+      expect(await storagePool.isForfeited(member1.address)).to.be.true;
+
+      // Then clear it
+      await expect(storagePool.connect(admin).setForfeitFlag(member1.address, false))
+        .to.emit(storagePool, "ForfeitFlagCleared")
+        .withArgs(member1.address);
+
+      expect(await storagePool.isForfeited(member1.address)).to.be.false;
+    });
   });
 
   describe("Direct Storage Access Tests (Replacing Removed Getters)", function () {
@@ -757,12 +767,11 @@ The following changes were made to update tests for the new StoragePool contract
     - Storage cost functionality (removed)
     - Some getter methods (replaced with direct storage access)
 
-11. ⚠️ IDENTIFIED: Contract design limitations:
+11. ✅ RESOLVED: Contract role management:
     - setRequiredTokens() and setForfeitFlag() require POOL_ADMIN_ROLE
-    - No account has POOL_ADMIN_ROLE by default after initialization
-    - No account has DEFAULT_ADMIN_ROLE to grant POOL_ADMIN_ROLE
-    - These methods are effectively unusable without manual role setup
-    - Tests document this limitation rather than working around it
+    - POOL_ADMIN_ROLE is now automatically granted to initialAdmin during initialization
+    - Admin can immediately use all POOL_ADMIN_ROLE functions after deployment
+    - Tests updated to reflect the correct behavior
 
 ============================================================================
 */
