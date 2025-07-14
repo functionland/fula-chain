@@ -69,29 +69,7 @@ describe("RewardEngine Tests", function () {
         await time.increase(24 * 60 * 60 + 1);
         await storageToken.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, TOTAL_SUPPLY);
 
-        // Deploy StoragePoolLib library first
-        const StoragePoolLib = await ethers.getContractFactory("StoragePoolLib");
-        const storagePoolLib = await StoragePoolLib.deploy();
-        await storagePoolLib.waitForDeployment();
-
-        // Deploy StoragePool with library linking
-        const StoragePool = await ethers.getContractFactory("StoragePool", {
-            libraries: {
-                StoragePoolLib: await storagePoolLib.getAddress(),
-            },
-        });
-        storagePool = await upgrades.deployProxy(
-            StoragePool,
-            [await storageToken.getAddress(), owner.address, admin.address],
-            {
-                kind: 'uups',
-                initializer: 'initialize',
-                unsafeAllowLinkedLibraries: true
-            }
-        ) as Contract;
-        await storagePool.waitForDeployment();
-
-        // Deploy StakingPool
+        // Deploy StakingPool first (needed for StoragePool initialization)
         const StakingPool = await ethers.getContractFactory("StakingPool");
         stakingPool = await upgrades.deployProxy(
             StakingPool,
@@ -99,6 +77,15 @@ describe("RewardEngine Tests", function () {
             { kind: 'uups', initializer: 'initialize' }
         ) as Contract;
         await stakingPool.waitForDeployment();
+
+        // Deploy StoragePool (no longer uses StoragePoolLib)
+        const StoragePool = await ethers.getContractFactory("StoragePool");
+        storagePool = await upgrades.deployProxy(
+            StoragePool,
+            [await storageToken.getAddress(), await stakingPool.getAddress(), owner.address, admin.address],
+            { kind: 'uups', initializer: 'initialize' }
+        ) as Contract;
+        await storagePool.waitForDeployment();
 
         // Deploy RewardEngine
         const RewardEngine = await ethers.getContractFactory("RewardEngine");
@@ -193,12 +180,13 @@ describe("RewardEngine Tests", function () {
 
         // Create a test pool (using owner who has POOL_CREATOR_ROLE)
         await storageToken.connect(owner).approve(await storagePool.getAddress(), POOL_CREATION_TOKENS);
-        await storagePool.connect(owner).createDataPool(
+        await storagePool.connect(owner).createPool(
             TEST_POOL_NAME,
             TEST_POOL_REGION,
             TEST_POOL_REQUIRED_TOKENS,
-            TEST_POOL_MIN_PING,
             TEST_POOL_MAX_CHALLENGE_PERIOD,
+            TEST_POOL_MIN_PING,
+            0, // maxMembers (0 = unlimited)
             CREATOR_PEER_ID
         );
 
@@ -284,10 +272,13 @@ describe("RewardEngine Tests", function () {
         await storageToken.connect(member).approve(await storagePool.getAddress(), TEST_POOL_REQUIRED_TOKENS);
 
         // Submit join request
-        await storagePool.connect(member).submitJoinRequest(poolId, peerId);
+        await storagePool.connect(member).joinPoolRequest(poolId, peerId);
 
-        // Pool creator votes to approve using peerId instead of index
-        await storagePool.connect(owner).voteOnJoinRequest(poolId, peerId, true);
+        // Determine the correct creator peer ID for this pool
+        const creatorPeerId = poolId === 1 ? CREATOR_PEER_ID : "12D3KooWCreator2";
+
+        // Pool creator votes to approve using their peerId for this specific pool
+        await storagePool.connect(owner).voteOnJoinRequest(poolId, peerId, creatorPeerId, true);
 
         // Verify member was added
         const isMember = await storagePool.isPeerIdMemberOfPool(poolId, peerId);
@@ -768,7 +759,7 @@ describe("RewardEngine Tests", function () {
             // Should revert due to insufficient balance
             await expect(
                 rewardEngine.connect(user1).claimRewards(PEER_ID_1, testPoolId)
-            ).to.be.revertedWithCustomError(rewardEngine, "NoRewardsToClaim");
+            ).to.be.revertedWithCustomError(rewardEngine, "InsufficientRewards");
         });
 
         it("should track total rewards distributed", async function () {
@@ -1020,12 +1011,13 @@ describe("RewardEngine Tests", function () {
             // Create second pool (advance time to avoid timelock)
             await time.increase(24 * 60 * 60 + 1);
             await storageToken.connect(poolCreator).approve(await storagePool.getAddress(), POOL_CREATION_TOKENS);
-            await storagePool.connect(poolCreator).createDataPool(
+            await storagePool.connect(poolCreator).createPool(
                 "Second Pool",
                 "EU-West",
                 TEST_POOL_REQUIRED_TOKENS,
-                TEST_POOL_MIN_PING,
                 TEST_POOL_MAX_CHALLENGE_PERIOD,
+                TEST_POOL_MIN_PING,
+                0, // maxMembers (0 = unlimited)
                 "12D3KooWCreator2"
             );
 
@@ -1061,8 +1053,8 @@ describe("RewardEngine Tests", function () {
             // Check initial rewards (verify they exist before leaving)
             await rewardEngine.calculateEligibleMiningRewards(user1.address, PEER_ID_1, testPoolId);
 
-            // Member leaves pool
-            await storagePool.connect(user1).leavePool(testPoolId);
+            // Member leaves pool by removing their peer ID
+            await storagePool.connect(user1).removeMemberPeerId(testPoolId, PEER_ID_1);
 
             // Should not be able to calculate rewards after leaving
             await expect(
