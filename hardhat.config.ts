@@ -31,12 +31,27 @@ const config: HardhatUserConfig = {
             // gas: 2100000,
         },
         base: {
-            url: "https://base-mainnet.g.alchemy.com/v2/_LnQrpSkygkgsX96sfS_fMl78FeAHnhw",
+            url: "https://mainnet.base.org",
             accounts: vars.has("PK") ? [vars.get("PK")] : [],
             chainId: 8453,
             gasPrice: "auto",
+            timeout: 60000,
             // Base can sometimes need higher gas estimates
             // gas: 3000000,
+        },
+        "base-alt": {
+            url: "https://base.blockpi.network/v1/rpc/public",
+            accounts: vars.has("PK") ? [vars.get("PK")] : [],
+            chainId: 8453,
+            gasPrice: "auto",
+            timeout: 60000,
+        },
+        "base-alt2": {
+            url: "https://base.llamarpc.com",
+            accounts: vars.has("PK") ? [vars.get("PK")] : [],
+            chainId: 8453,
+            gasPrice: "auto",
+            timeout: 60000,
         },
         "iotex-mainnet": {
             url: "https://babel-api.mainnet.iotex.io",
