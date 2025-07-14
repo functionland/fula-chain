@@ -29,99 +29,7 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
     mapping(uint32 => mapping(string => IStoragePool.JoinRequest)) public joinRequests;
     mapping(address => bool) public isForfeited;
     mapping(string => uint256) public claimableTokens;
-
-    /*
-    ============================================================================
-    DIRECT STORAGE ACCESS GUIDE - Replacing Removed Getter Functions
-    ============================================================================
-
-    The following getter functions were removed for gas optimization.
-    Use these direct storage access patterns to get the same data:
-
-    1. REPLACE getPendingJoinRequests(uint32 poolId):
-       Returns: (address[] accounts, string[] peerIds, uint128[] approvals, uint128[] rejections)
-
-       Direct access:
-       string[] memory peerIds = joinRequestKeys[poolId];
-       for (uint256 i = 0; i < peerIds.length; i++) {
-           string memory peerId = peerIds[i];
-           JoinRequest memory req = joinRequests[poolId][peerId];
-           address account = req.account;
-           uint128 approvals = req.approvals;
-           uint128 rejections = req.rejections;
-       }
-
-    2. REPLACE isPeerInPool(uint32 poolId, string peerId):
-       Returns: bool
-
-       Direct access:
-       bool isPeerInPool = pools[poolId].peerIdToMember[peerId] != address(0);
-
-    3. REPLACE isJoinRequestPending(uint32 poolId, string peerId):
-       Returns: bool
-
-       Direct access:
-       JoinRequest memory req = joinRequests[poolId][peerId];
-       bool isPending = (req.account != address(0) && req.status == 1);
-
-    4. REPLACE getLockedTokens(uint32 poolId, string peerId):
-       Returns: uint256 (locked tokens for peer, or required tokens if pending)
-
-       Direct access:
-       if (pools[poolId].peerIdToMember[peerId] != address(0)) {
-           uint256 lockedTokens = pools[poolId].lockedTokens[peerId];
-       } else {
-           JoinRequest memory req = joinRequests[poolId][peerId];
-           if (req.account != address(0) && req.status == 1) {
-               uint256 lockedTokens = pools[poolId].requiredTokens;
-           } else {
-               uint256 lockedTokens = 0;
-           }
-       }
-
-    5. REPLACE calculateRequiredLockedTokens(address user):
-       Returns: uint256 total (sum of all locked tokens for user across all pools)
-
-       Direct access:
-       uint256 total = 0;
-       uint32[] memory allPoolIds = poolIds;
-       for (uint256 i = 0; i < allPoolIds.length; i++) {
-           uint32 poolId = allPoolIds[i];
-           string[] memory userPeerIds = pools[poolId].memberPeerIds[user];
-           for (uint256 j = 0; j < userPeerIds.length; j++) {
-               string memory peerId = userPeerIds[j];
-               total += pools[poolId].lockedTokens[peerId];
-           }
-       }
-
-    6. REPLACE getUserLockedTokens(address wallet):
-       Returns: (uint256 lockedAmount, uint256 claimableAmount)
-
-       Direct access:
-       uint256 lockedAmount = 0;
-       uint256 claimableAmount = 0;
-       uint32[] memory allPoolIds = poolIds;
-       for (uint256 i = 0; i < allPoolIds.length; i++) {
-           uint32 poolId = allPoolIds[i];
-           string[] memory userPeerIds = pools[poolId].memberPeerIds[wallet];
-           for (uint256 j = 0; j < userPeerIds.length; j++) {
-               string memory peerId = userPeerIds[j];
-               lockedAmount += pools[poolId].lockedTokens[peerId];
-               claimableAmount += claimableTokens[peerId];
-           }
-       }
-
-    7. REPLACE getPool(uint32 poolId):
-       Returns: (name, region, creator, requiredTokens, memberCount, maxMembers, maxChallengeResponsePeriod, minPingTime)
-
-       Direct access:
-       Pool memory pool = pools[poolId];
-       // Access any field directly: pool.name, pool.region, pool.creator, etc.
-
-    ============================================================================
-    */
-
-
+    mapping(string => uint32) public joinTimestamp;
 
     function initialize(address _storageToken, address _tokenPool, address initialOwner, address initialAdmin) public reinitializer(1) {
         if (_storageToken == address(0) || _tokenPool == address(0) || initialOwner == address(0) || initialAdmin == address(0)) {
@@ -166,6 +74,7 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
         if (pool.memberPeerIds[account].length == 1) {
             pool.memberList.push(account);
             pool.memberIndex[account] = pool.memberList.length - 1;
+            joinTimestamp[peerId] = uint32(block.timestamp);
         }
         pool.memberCount += 1;
         pool.lockedTokens[peerId] = lockedAmount;
@@ -213,6 +122,7 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
             memberList[idx] = lastAddr;
             pool.memberIndex[lastAddr] = idx;
             memberList.pop();
+            delete joinTimestamp[peerId];
             delete pool.memberIndex[account];
         }
 
@@ -268,6 +178,7 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
             pool.memberList.push(sender);
             pool.memberIndex[sender] = pool.memberList.length - 1;
             pool.memberCount = 1;
+            joinTimestamp[peerId] = uint32(block.timestamp);
             pool.lockedTokens[peerId] = isPrivileged ? 0 : lockAmount;
         }
         emit PoolCreated(poolId, sender, name, region, requiredTokens, maxMembers);
@@ -567,12 +478,6 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
         }
     }
 
-    function getMemberReputation(uint32 poolId, address account) external view returns (uint256, uint256, uint256, uint256) {
-        // Placeholder implementation - returns zeros for now as RewardEngine only uses joinDate (3rd parameter)
-        // This can be implemented properly when reputation system is added
-        return (0, 0, 0, 0);
-    }
-
     function isMemberOfAnyPool(address account) external view returns (bool) {
         for (uint256 i = 0; i < poolIds.length; i++) {
             if (pools[poolIds[i]].memberPeerIds[account].length > 0) {
@@ -594,4 +499,41 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
         ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
         revert InvalidProposalType(uint8(proposal.proposalType));
     }
+
+    // Required Getters
+
+    //    Currently the below information can be fetched directly from storage variables
+    //    - pools(poolId) → All pool basic data except nested mappings/arrays
+    //    - joinRequests(poolId, peerId) → Full JoinRequest data except votes
+    //    - joinRequestKeys(poolId, index) → List of peerIds with pending join requests
+    //    - poolIds(index) → List of all pool IDs
+    //    - isForfeited(address) and claimableTokens(peerId) → forfeiture & claimable balances
+    
+    //  Get Member List
+    function getPoolMembers(uint32 poolId) external view returns (address[] memory) {
+        return pools[poolId].memberList;
+    }
+
+    // Get Member Peer IDs
+    function getMemberPeerIds(uint32 poolId, address member) external view returns (string[] memory) {
+        return pools[poolId].memberPeerIds[member];
+    }
+
+    // Get Peer Mapping Info
+    function getPeerIdInfo(uint32 poolId, string calldata peerId) external view returns (address member, uint256 lockedTokens) {
+        IStoragePool.Pool storage pool = pools[poolId];
+        member = pool.peerIdToMember[peerId];
+        lockedTokens = pool.lockedTokens[peerId];
+    }
+
+    // Get Member Index to Confirm membership without iterating
+    function getMemberIndex(uint32 poolId, address member) external view returns (uint256) {
+        return pools[poolId].memberIndex[member];
+    }
+
+    // Get Vote Status
+    function getVote(uint32 poolId, string calldata peerId, string calldata voterPeerId) external view returns (bool) {
+        return joinRequests[poolId][peerId].votes[voterPeerId];
+    }
+
 }
