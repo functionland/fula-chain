@@ -41,11 +41,8 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
     }
 
     function _safeTransferOrMarkClaimable(bytes32 peerId, address to, uint256 amount) internal {
-        try storageToken.transfer(to, amount) returns (bool success) {
-            if (!success) {
-                claimableTokens[peerId] += amount;
-                emit TokensMarkedClaimable(peerId, amount);
-            }
+        try this.safeTransferWrapper(to, amount) {
+            // success
         } catch {
             claimableTokens[peerId] += amount;
             emit TokensMarkedClaimable(peerId, amount);
@@ -253,13 +250,11 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
 
             _removeJoinRequest(poolId, peerId);
             emit JoinRequestResolved(poolId, reqAccount, peerId, true, false);
-            delete joinRequests[poolId][peerId];
         } else if (req.rejections >= threshold || forfeited) {
             req.status = 3; // Changed from 2 to 3 for rejected status
             _removeJoinRequest(poolId, peerId);
             _processTokenRefund(peerId, reqAccount, pool.requiredTokens, forfeited);
             emit JoinRequestResolved(poolId, reqAccount, peerId, false, forfeited);
-            delete joinRequests[poolId][peerId];
         }
     }
 
@@ -281,7 +276,6 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
         bool forfeited = isForfeited[reqAccount];
         _processTokenRefund(peerId, reqAccount, pool.requiredTokens, forfeited);
         emit JoinRequestResolved(poolId, reqAccount, peerId, false, forfeited);
-        delete joinRequests[poolId][peerId];
     }
 
     function approveJoinRequest(uint32 poolId, bytes32 peerId) external whenNotPaused nonReentrant onlyRole(ProposalTypes.POOL_ADMIN_ROLE) {
@@ -302,7 +296,6 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
 
         _removeJoinRequest(poolId, peerId);
         emit JoinRequestResolved(poolId, reqAccount, peerId, true, false);
-        delete joinRequests[poolId][peerId];
     }
 
     function addMember(uint32 poolId, address account, bytes32 peerId) external whenNotPaused onlyRole(ProposalTypes.POOL_ADMIN_ROLE) {
@@ -533,6 +526,14 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
     // Get Vote Status
     function getVote(uint32 poolId, bytes32 peerId, bytes32 voterPeerId) external view returns (bool) {
         return joinRequests[poolId][peerId].votes[voterPeerId];
+    }
+
+    // Helper
+    
+    function safeTransferWrapper(address to, uint256 amount) external {
+        // Wrap in external call to catch non-reverting failures
+        require(msg.sender == address(this), "Unauthorized");
+        storageToken.safeTransfer(to, amount); // this will revert on failure
     }
 
 }
