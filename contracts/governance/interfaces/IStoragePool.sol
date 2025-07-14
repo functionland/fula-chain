@@ -21,9 +21,9 @@ interface IStoragePool {
         string region;
         address[] memberList;
         mapping(address => uint256) memberIndex;
-        mapping(address => string[]) memberPeerIds;
-        mapping(string => address) peerIdToMember;
-        mapping(string => uint256) lockedTokens;
+        mapping(address => bytes32[]) memberPeerIds;
+        mapping(bytes32 => address) peerIdToMember;
+        mapping(bytes32 => uint256) lockedTokens;
     }
 
     struct JoinRequest {
@@ -35,22 +35,22 @@ interface IStoragePool {
         uint128 approvals;     // 16 bytes
         uint128 rejections;    // 16 bytes - total 32 bytes (slot 2)
         uint8 status;          // 1 byte - Initialize to 1 instead of 0
-        string peerId;
-        mapping(string => bool) votes;
+        bytes32 peerId;
+        mapping(bytes32 => bool) votes;
     }
 
     // Events
     event PoolCreated(uint32 indexed poolId, address indexed creator, string name, string region, uint256 requiredTokens, uint32 maxMembers);
-    event JoinRequestSubmitted(uint32 indexed poolId, address indexed account, string peerId);
-    event JoinRequestResolved(uint32 indexed poolId, address indexed account, string peerId, bool approved, bool tokensForfeited);
-    event MemberAdded(uint32 indexed poolId, address indexed account, string peerId, address indexed addedBy);
-    event MemberRemoved(uint32 indexed poolId, address indexed account, string peerId, bool tokensForfeited, address removedBy);
+    event JoinRequestSubmitted(uint32 indexed poolId, address indexed account, bytes32 peerId);
+    event JoinRequestResolved(uint32 indexed poolId, address indexed account, bytes32 peerId, bool approved, bool tokensForfeited);
+    event MemberAdded(uint32 indexed poolId, address indexed account, bytes32 peerId, address indexed addedBy);
+    event MemberRemoved(uint32 indexed poolId, address indexed account, bytes32 peerId, bool tokensForfeited, address removedBy);
     event ForfeitFlagSet(address indexed account);
     event ForfeitFlagCleared(address indexed account);
     event PoolParametersUpdated(uint32 indexed poolId, uint256 requiredTokens, uint32 maxMembers);
     event EmergencyTokensRecovered(uint256 amount);
-    event TokensMarkedClaimable(string indexed peerId, uint256 amount);
-    event TokensClaimed(string indexed peerId, uint256 amount);
+    event TokensMarkedClaimable(bytes32 indexed peerId, uint256 amount);
+    event TokensClaimed(bytes32 indexed peerId, uint256 amount);
 
     // Custom Errors
     error PNF(); // PoolNotFound
@@ -70,18 +70,18 @@ interface IStoragePool {
 
     // External Functions
     function initialize(address _storageToken, address _tokenPool, address initialOwner, address initialAdmin) external;
-    function createPool(string calldata name, string calldata region, uint256 requiredTokens, uint32 maxChallengeResponsePeriod, uint256 minPingTime, uint32 maxMembers, string calldata peerId) external;
-    function joinPoolRequest(uint32 poolId, string calldata peerId) external;
-    function voteOnJoinRequest(uint32 poolId, string calldata peerId, string calldata voterPeerId, bool approve) external;
-    function cancelJoinRequest(uint32 poolId, string calldata peerId) external;
-    function approveJoinRequest(uint32 poolId, string calldata peerId) external;
-    function addMember(uint32 poolId, address account, string calldata peerId) external;
-    function removeMemberPeerId(uint32 poolId, string calldata peerId) external;
+    function createPool(string calldata name, string calldata region, uint256 requiredTokens, uint32 maxChallengeResponsePeriod, uint256 minPingTime, uint32 maxMembers, bytes32 peerId) external;
+    function joinPoolRequest(uint32 poolId, bytes32 peerId) external;
+    function voteOnJoinRequest(uint32 poolId, bytes32 peerId, bytes32 voterPeerId, bool approve) external;
+    function cancelJoinRequest(uint32 poolId, bytes32 peerId) external;
+    function approveJoinRequest(uint32 poolId, bytes32 peerId) external;
+    function addMember(uint32 poolId, address account, bytes32 peerId) external;
+    function removeMemberPeerId(uint32 poolId, bytes32 peerId) external;
     function removeMembersBatch(uint32 poolId, uint256 count) external;
     function deletePool(uint32 poolId) external;
     function setMaxMembers(uint32 poolId, uint32 newMax) external;
     function setRequiredTokens(uint32 poolId, uint256 newRequired) external;
     function setForfeitFlag(address account, bool flag) external;
     function emergencyRecoverTokens(uint256 amount) external;
-    function claimTokens(string calldata peerId) external;
+    function claimTokens(bytes32 peerId) external;
 }

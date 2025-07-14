@@ -14,6 +14,11 @@ const ProposalTypes = {
   POOL_ADMIN_ROLE: ethers.keccak256(ethers.toUtf8Bytes("POOL_ADMIN_ROLE"))
 };
 
+// Helper function to convert string peer IDs to bytes32
+function stringToBytes32(str: string): string {
+  return ethers.keccak256(ethers.toUtf8Bytes(str));
+}
+
 describe("StoragePool", function () {
   let storagePool: StoragePool;
   let storageToken: StorageToken;
@@ -164,7 +169,7 @@ describe("StoragePool", function () {
         7 * 24 * 60 * 60,
         100,
         100,
-        "QmTestPeerId"
+        stringToBytes32("QmTestPeerId")
       );
       poolId = 1;
     });
@@ -212,7 +217,7 @@ describe("StoragePool", function () {
       const minPingTime = 100;
       const maxChallengeResponsePeriod = 7 * 24 * 60 * 60;
       const maxMembers = 100;
-      const creatorPeerId = "QmTestPeerId";
+      const creatorPeerId = stringToBytes32("QmTestPeerId");
 
       await expect(storagePool.connect(poolCreator).createPool(
         poolName,
@@ -245,7 +250,7 @@ describe("StoragePool", function () {
         7 * 24 * 60 * 60,
         50,
         50,
-        ""
+        ethers.ZeroHash
       );
 
       const pool = await storagePool.pools(1);
@@ -260,7 +265,7 @@ describe("StoragePool", function () {
         7 * 24 * 60 * 60,
         50,
         50,
-        ""
+        ethers.ZeroHash
       )).to.be.revertedWithCustomError(storagePool, "InvalidAddress");
     });
   });
@@ -277,7 +282,7 @@ describe("StoragePool", function () {
         7 * 24 * 60 * 60,
         100,
         100,
-        "QmTestPeerId"
+        stringToBytes32("QmTestPeerId")
       );
       poolId = 1;
 
@@ -287,7 +292,7 @@ describe("StoragePool", function () {
     });
 
     it("should successfully submit join request", async function () {
-      const memberPeerId = "QmMember1PeerId";
+      const memberPeerId = stringToBytes32("QmMember1PeerId");
 
       await expect(storagePool.connect(member1).joinPoolRequest(poolId, memberPeerId))
         .to.emit(storagePool, "JoinRequestSubmitted")
@@ -301,15 +306,15 @@ describe("StoragePool", function () {
 
     it("should revert when joining non-existent pool", async function () {
       await expect(
-        storagePool.connect(member1).joinPoolRequest(999, "QmMember1PeerId")
+        storagePool.connect(member1).joinPoolRequest(999, stringToBytes32("QmMember1PeerId"))
       ).to.be.revertedWithCustomError(storagePool, "PNF");
     });
   });
 
   describe("voteOnJoinRequest", function () {
     let poolId: number;
-    const memberPeerId = "QmMember1PeerId";
-    const creatorPeerId = "QmTestPeerId";
+    const memberPeerId = stringToBytes32("QmMember1PeerId");
+    const creatorPeerId = stringToBytes32("QmTestPeerId");
 
     beforeEach(async function () {
       await storageToken.connect(poolCreator).approve(await storagePool.getAddress(), POOL_CREATION_TOKENS);
@@ -345,8 +350,8 @@ describe("StoragePool", function () {
 
   describe("removeMemberPeerId", function () {
     let poolId: number;
-    const memberPeerId = "QmMember1PeerId";
-    const creatorPeerId = "QmTestPeerId";
+    const memberPeerId = stringToBytes32("QmMember1PeerId");
+    const creatorPeerId = stringToBytes32("QmTestPeerId");
 
     beforeEach(async function () {
       await storageToken.connect(poolCreator).approve(await storagePool.getAddress(), POOL_CREATION_TOKENS);
@@ -388,7 +393,7 @@ describe("StoragePool", function () {
         7 * 24 * 60 * 60,
         100,
         100,
-        "QmTestPeerId"
+        stringToBytes32("QmTestPeerId")
       );
       poolId = 1;
     });
@@ -404,7 +409,7 @@ describe("StoragePool", function () {
   describe("claimTokens", function () {
     it("should revert when no tokens to claim", async function () {
       await expect(
-        storagePool.connect(member1).claimTokens("QmNonExistentPeerId")
+        storagePool.connect(member1).claimTokens(stringToBytes32("QmNonExistentPeerId"))
       ).to.be.revertedWithCustomError(storagePool, "ITA");
     });
   });
@@ -420,7 +425,7 @@ describe("StoragePool", function () {
         7 * 24 * 60 * 60,
         100,
         100,
-        "QmTestPeerId"
+        stringToBytes32("QmTestPeerId")
       );
     });
 
@@ -439,9 +444,9 @@ describe("StoragePool", function () {
 
   describe("Direct Storage Access Tests (Replacing Removed Getters)", function () {
     let poolId: number;
-    const memberPeerId = "QmMember1PeerId";
-    const member2PeerId = "QmMember2PeerId";
-    const creatorPeerId = "QmTestPeerId";
+    const memberPeerId = stringToBytes32("QmMember1PeerId");
+    const member2PeerId = stringToBytes32("QmMember2PeerId");
+    const creatorPeerId = stringToBytes32("QmTestPeerId");
 
     beforeEach(async function () {
       await storageToken.connect(poolCreator).approve(await storagePool.getAddress(), POOL_CREATION_TOKENS);
@@ -554,7 +559,7 @@ describe("StoragePool", function () {
         7 * 24 * 60 * 60,
         50,
         50,
-        "QmTestPeerId2"
+        stringToBytes32("QmTestPeerId2")
       );
 
       const secondPoolId = await storagePool.poolIds(1);
@@ -598,8 +603,8 @@ describe("StoragePool", function () {
 
   describe("Token Balance Verification", function () {
     let poolId: number;
-    const memberPeerId = "QmMember1PeerId";
-    const creatorPeerId = "QmTestPeerId";
+    const memberPeerId = stringToBytes32("QmMember1PeerId");
+    const creatorPeerId = stringToBytes32("QmTestPeerId");
 
     beforeEach(async function () {
       // Create a pool with actual token requirements by setting createPoolLockAmount

@@ -409,11 +409,11 @@ contract RewardEngine is GovernanceModule {
         uint32 poolId
     ) external view returns (uint256 effectiveStartTime) {
         // Verify the account and peerId are members of the pool
-        (bool isMember, address memberAddress) = storagePool.isPeerIdMemberOfPool(poolId, peerId);
-        if (!isMember || memberAddress != account) revert NotPoolMember();
+        uint256 memberIndex = storagePool.getMemberIndex(poolId, account);
+        if (memberIndex == 0) revert NotPoolMember();
 
         // Get member join date
-        (, , uint256 joinDate, ) = storagePool.getMemberReputation(poolId, account);
+        uint256 joinDate = storagePool.joinTimestamp(toBytes32Checked(peerId));
         uint256 lastClaimed = lastClaimedRewards[account][peerId][poolId];
 
         if (lastClaimed > 0) {
@@ -448,8 +448,8 @@ contract RewardEngine is GovernanceModule {
         uint256 totalReward
     ) {
         // Verify membership
-        (bool isMember, address memberAddress) = storagePool.isPeerIdMemberOfPool(poolId, peerId);
-        if (!isMember || memberAddress != account) revert NotPoolMember();
+        uint256 memberIndex = storagePool.getMemberIndex(poolId, account);
+        if (memberIndex == 0) revert NotPoolMember();
 
         startTime = this.getEffectiveRewardStartTime(account, peerId, poolId);
         endTime = block.timestamp;
@@ -461,9 +461,8 @@ contract RewardEngine is GovernanceModule {
         (onlinePeriods, totalPeriods) = this.getOnlineStatusSince(peerId, poolId, startTime);
 
         // Calculate reward per period with consolidated overflow and division protection
-        uint256 totalMembers = storagePool.getTotalMembers();
-        if (totalMembers > 0 && totalPeriods > 0) {
-            rewardPerPeriod = _calculateRewardPerPeriod(totalMembers);
+        if ( totalPeriods > 0) {
+            rewardPerPeriod = _calculateRewardPerPeriod();
             totalReward = _calculateTotalReward(rewardPerPeriod, onlinePeriods, totalPeriods);
         }
 
@@ -481,11 +480,11 @@ contract RewardEngine is GovernanceModule {
         uint32 poolId
     ) external view returns (uint256 eligibleRewards) {
         // Verify the account and peerId are members of the pool
-        (bool isMember, address memberAddress) = storagePool.isPeerIdMemberOfPool(poolId, peerId);
-        if (!isMember || memberAddress != account) revert NotPoolMember();
+        uint256 memberIndex = storagePool.getMemberIndex(poolId, account);
+        if (memberIndex == 0) revert NotPoolMember();
 
         // Get member join date and last claimed timestamp
-        (, , uint256 joinDate, ) = storagePool.getMemberReputation(poolId, account);
+        uint256 joinDate = storagePool.joinTimestamp(toBytes32Checked(peerId));
         uint256 lastClaimed = lastClaimedRewards[account][peerId][poolId];
 
         // Determine the start time for reward calculation
@@ -514,11 +513,7 @@ contract RewardEngine is GovernanceModule {
             return 0;
         }
 
-        // Calculate base mining reward per period using consolidated function
-        uint256 totalMembers = storagePool.getTotalMembers();
-        if (totalMembers == 0) return 0;
-
-        uint256 rewardPerMemberPerPeriod = _calculateRewardPerPeriod(totalMembers);
+        uint256 rewardPerMemberPerPeriod = _calculateRewardPerPeriod();
         if (rewardPerMemberPerPeriod == 0) return 0;
 
         // Calculate eligible rewards using consolidated function
@@ -550,8 +545,8 @@ contract RewardEngine is GovernanceModule {
         uint32 poolId
     ) external view returns (uint256 eligibleRewards) {
         // Verify the account and peerId are members of the pool
-        (bool isMember, address memberAddress) = storagePool.isPeerIdMemberOfPool(poolId, peerId);
-        if (!isMember || memberAddress != account) revert NotPoolMember();
+         uint256 memberIndex = storagePool.getMemberIndex(poolId, account);
+        if (memberIndex == 0) revert NotPoolMember();
 
         // Storage rewards are set to 0 as placeholder for now
         return 0;
@@ -586,8 +581,8 @@ contract RewardEngine is GovernanceModule {
         address account = msg.sender;
 
         // Verify the account and peerId are members of the pool
-        (bool isMember, address memberAddress) = storagePool.isPeerIdMemberOfPool(poolId, peerId);
-        if (!isMember || memberAddress != account) revert NotPoolMember();
+        uint256 memberIndex = storagePool.getMemberIndex(poolId, account);
+        if (memberIndex == 0) revert NotPoolMember();
 
         // Calculate eligible rewards
         (uint256 miningRewards, uint256 storageRewards, uint256 totalRewards) =
@@ -834,7 +829,7 @@ contract RewardEngine is GovernanceModule {
 
     /// @notice Internal function to safely calculate reward per period with overflow protection
     /// @return rewardPerPeriod Safe reward per period calculation
-    function _calculateRewardPerPeriod(uint256 /* totalMembers */) internal view returns (uint256 rewardPerPeriod) {
+    function _calculateRewardPerPeriod() internal view returns (uint256 rewardPerPeriod) {
         // Simplified calculation: use monthly reward per peer directly
         // Calculate reward per period based on monthly amount
         uint256 periodsPerMonth = SECONDS_PER_MONTH / expectedPeriod;
@@ -946,4 +941,14 @@ contract RewardEngine is GovernanceModule {
         // This function could be extended in the future if needed
         revert InvalidProposalType(proposalType);
     }
+
+    // Helper methods
+    function toBytes32Checked(string memory source) public pure returns (bytes32 result) {
+        bytes memory temp = bytes(source);
+        require(temp.length <= 32, "String too long for bytes32");
+        assembly {
+            result := mload(add(source, 32))
+        }
+    }
+
 }

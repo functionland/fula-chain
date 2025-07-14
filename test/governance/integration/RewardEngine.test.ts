@@ -5,6 +5,11 @@ import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 import { ZeroAddress, BytesLike, Contract } from "ethers";
 import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 
+// Helper function to convert string peer IDs to bytes32
+function stringToBytes32(str: string): string {
+  return ethers.keccak256(ethers.toUtf8Bytes(str));
+}
+
 // Define roles
 const OWNER_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("OWNER_ROLE"));
 const ADMIN_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
@@ -187,7 +192,7 @@ describe("RewardEngine Tests", function () {
             TEST_POOL_MAX_CHALLENGE_PERIOD,
             TEST_POOL_MIN_PING,
             0, // maxMembers (0 = unlimited)
-            CREATOR_PEER_ID
+            stringToBytes32(CREATOR_PEER_ID)
         );
 
         testPoolId = 1; // First pool created
@@ -271,17 +276,17 @@ describe("RewardEngine Tests", function () {
         // Approve tokens for joining
         await storageToken.connect(member).approve(await storagePool.getAddress(), TEST_POOL_REQUIRED_TOKENS);
 
-        // Submit join request
-        await storagePool.connect(member).joinPoolRequest(poolId, peerId);
+        // Submit join request (StoragePool expects bytes32)
+        await storagePool.connect(member).joinPoolRequest(poolId, stringToBytes32(peerId));
 
         // Determine the correct creator peer ID for this pool
         const creatorPeerId = poolId === 1 ? CREATOR_PEER_ID : "12D3KooWCreator2";
 
-        // Pool creator votes to approve using their peerId for this specific pool
-        await storagePool.connect(owner).voteOnJoinRequest(poolId, peerId, creatorPeerId, true);
+        // Pool creator votes to approve using their peerId for this specific pool (both need bytes32)
+        await storagePool.connect(owner).voteOnJoinRequest(poolId, stringToBytes32(peerId), stringToBytes32(creatorPeerId), true);
 
-        // Verify member was added
-        const isMember = await storagePool.isPeerIdMemberOfPool(poolId, peerId);
+        // Verify member was added (StoragePool expects bytes32)
+        const isMember = await storagePool.isPeerIdMemberOfPool(poolId, stringToBytes32(peerId));
         expect(isMember[0]).to.be.true;
     }
 
@@ -1018,7 +1023,7 @@ describe("RewardEngine Tests", function () {
                 TEST_POOL_MAX_CHALLENGE_PERIOD,
                 TEST_POOL_MIN_PING,
                 0, // maxMembers (0 = unlimited)
-                "12D3KooWCreator2"
+                stringToBytes32("12D3KooWCreator2")
             );
 
             const secondPoolId = 2;
@@ -1053,8 +1058,8 @@ describe("RewardEngine Tests", function () {
             // Check initial rewards (verify they exist before leaving)
             await rewardEngine.calculateEligibleMiningRewards(user1.address, PEER_ID_1, testPoolId);
 
-            // Member leaves pool by removing their peer ID
-            await storagePool.connect(user1).removeMemberPeerId(testPoolId, PEER_ID_1);
+            // Member leaves pool by removing their peer ID (StoragePool expects bytes32)
+            await storagePool.connect(user1).removeMemberPeerId(testPoolId, stringToBytes32(PEER_ID_1));
 
             // Should not be able to calculate rewards after leaving
             await expect(
