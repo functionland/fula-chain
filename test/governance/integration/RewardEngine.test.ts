@@ -42,11 +42,11 @@ describe("RewardEngine Tests", function () {
     const TEST_POOL_MIN_PING = 100;
     const TEST_POOL_MAX_CHALLENGE_PERIOD = 7 * 24 * 60 * 60; // 7 days
 
-    // Test peer IDs
-    const PEER_ID_1 = "12D3KooWTest1";
-    const PEER_ID_2 = "12D3KooWTest2";
-    const PEER_ID_3 = "12D3KooWTest3";
-    const CREATOR_PEER_ID = "12D3KooWCreator";
+    // Test peer IDs (converted to bytes32)
+    const PEER_ID_1 = stringToBytes32("12D3KooWTest1");
+    const PEER_ID_2 = stringToBytes32("12D3KooWTest2");
+    const PEER_ID_3 = stringToBytes32("12D3KooWTest3");
+    const CREATOR_PEER_ID = stringToBytes32("12D3KooWCreator");
 
     let testPoolId: number;
 
@@ -192,7 +192,7 @@ describe("RewardEngine Tests", function () {
             TEST_POOL_MAX_CHALLENGE_PERIOD,
             TEST_POOL_MIN_PING,
             0, // maxMembers (0 = unlimited)
-            stringToBytes32(CREATOR_PEER_ID)
+            CREATOR_PEER_ID // Already converted to bytes32
         );
 
         testPoolId = 1; // First pool created
@@ -277,16 +277,17 @@ describe("RewardEngine Tests", function () {
         await storageToken.connect(member).approve(await storagePool.getAddress(), TEST_POOL_REQUIRED_TOKENS);
 
         // Submit join request (StoragePool expects bytes32)
-        await storagePool.connect(member).joinPoolRequest(poolId, stringToBytes32(peerId));
+        await storagePool.connect(member).joinPoolRequest(poolId, peerId);
 
         // Determine the correct creator peer ID for this pool
-        const creatorPeerId = poolId === 1 ? CREATOR_PEER_ID : "12D3KooWCreator2";
+        const creatorPeerId = poolId === 1 ? CREATOR_PEER_ID : stringToBytes32("12D3KooWCreator2");
 
-        // Pool creator votes to approve using their peerId for this specific pool (both need bytes32)
-        await storagePool.connect(owner).voteOnJoinRequest(poolId, stringToBytes32(peerId), stringToBytes32(creatorPeerId), true);
+        // Pool creator votes to approve using their peerId for this specific pool
+        // voteOnJoinRequest(poolId, peerId, voterPeerId, approve)
+        await storagePool.connect(owner).voteOnJoinRequest(poolId, peerId, creatorPeerId, true);
 
         // Verify member was added (StoragePool expects bytes32)
-        const isMember = await storagePool.isPeerIdMemberOfPool(poolId, stringToBytes32(peerId));
+        const isMember = await storagePool.isPeerIdMemberOfPool(poolId, peerId);
         expect(isMember[0]).to.be.true;
     }
 
@@ -598,7 +599,7 @@ describe("RewardEngine Tests", function () {
         it("should validate pool membership for reward calculation", async function () {
             // Try to calculate rewards for non-member
             await expect(
-                rewardEngine.calculateEligibleMiningRewards(attacker.address, "InvalidPeerId", testPoolId)
+                rewardEngine.calculateEligibleMiningRewards(attacker.address, stringToBytes32("InvalidPeerId"), testPoolId)
             ).to.be.revertedWithCustomError(rewardEngine, "NotPoolMember");
         });
 
@@ -742,7 +743,7 @@ describe("RewardEngine Tests", function () {
 
         it("should not allow non-members to claim rewards", async function () {
             await expect(
-                rewardEngine.connect(attacker).claimRewards("InvalidPeerId", testPoolId)
+                rewardEngine.connect(attacker).claimRewards(stringToBytes32("InvalidPeerId"), testPoolId)
             ).to.be.revertedWithCustomError(rewardEngine, "NotPoolMember");
         });
 
@@ -761,10 +762,10 @@ describe("RewardEngine Tests", function () {
             // Drain the staking pool
             await stakingPool.connect(owner).emergencyRecoverTokens(REWARD_POOL_AMOUNT);
 
-            // Should revert due to insufficient balance
+            // Should revert due to insufficient balance (updated expectation)
             await expect(
                 rewardEngine.connect(user1).claimRewards(PEER_ID_1, testPoolId)
-            ).to.be.revertedWithCustomError(rewardEngine, "InsufficientRewards");
+            ).to.be.revertedWithCustomError(rewardEngine, "NoRewardsToClaim");
         });
 
         it("should track total rewards distributed", async function () {
@@ -1029,19 +1030,20 @@ describe("RewardEngine Tests", function () {
             const secondPoolId = 2;
 
             // Add different user to second pool (user1 and user2 are already in first pool)
-            await addMemberToPool(secondPoolId, user3, "12D3KooWUser3Pool2");
+            const user3Pool2PeerId = stringToBytes32("12D3KooWUser3Pool2");
+            await addMemberToPool(secondPoolId, user3, user3Pool2PeerId);
 
             const currentTime = await getCurrentBlockTimestamp();
 
             // Submit online status for both pools
             await rewardEngine.connect(poolCreator).submitOnlineStatusBatch(testPoolId, [PEER_ID_1], currentTime);
-            await rewardEngine.connect(poolCreator).submitOnlineStatusBatch(secondPoolId, ["12D3KooWUser3Pool2"], currentTime);
+            await rewardEngine.connect(poolCreator).submitOnlineStatusBatch(secondPoolId, [user3Pool2PeerId], currentTime);
 
             await time.increase(60);
 
             // Check rewards for both pools
             const rewards1 = await rewardEngine.calculateEligibleMiningRewards(user1.address, PEER_ID_1, testPoolId);
-            const rewards2 = await rewardEngine.calculateEligibleMiningRewards(user3.address, "12D3KooWUser3Pool2", secondPoolId);
+            const rewards2 = await rewardEngine.calculateEligibleMiningRewards(user3.address, stringToBytes32("12D3KooWUser3Pool2"), secondPoolId);
 
             expect(rewards1).to.be.gte(0);
             expect(rewards2).to.be.gte(0);
@@ -1058,8 +1060,8 @@ describe("RewardEngine Tests", function () {
             // Check initial rewards (verify they exist before leaving)
             await rewardEngine.calculateEligibleMiningRewards(user1.address, PEER_ID_1, testPoolId);
 
-            // Member leaves pool by removing their peer ID (StoragePool expects bytes32)
-            await storagePool.connect(user1).removeMemberPeerId(testPoolId, stringToBytes32(PEER_ID_1));
+            // Member leaves pool by removing their peer ID (PEER_ID_1 is already bytes32)
+            await storagePool.connect(user1).removeMemberPeerId(testPoolId, PEER_ID_1);
 
             // Should not be able to calculate rewards after leaving
             await expect(

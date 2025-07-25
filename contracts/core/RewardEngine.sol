@@ -24,8 +24,8 @@ contract RewardEngine is GovernanceModule {
     }
 
     // Events
-    event MiningRewardsClaimed(address indexed account, string indexed peerId, uint32 indexed poolId, uint256 amount);
-    event StorageRewardsClaimed(address indexed account, string indexed peerId, uint32 indexed poolId, uint256 amount);
+    event MiningRewardsClaimed(address indexed account, bytes32 indexed peerId, uint32 indexed poolId, uint256 amount);
+    event StorageRewardsClaimed(address indexed account, bytes32 indexed peerId, uint32 indexed poolId, uint256 amount);
     event OnlineStatusSubmitted(uint32 indexed poolId, address indexed submitter, uint256 count, uint256 timestamp);
     event MonthlyRewardPerPeerUpdated(uint256 oldAmount, uint256 newAmount);
     event ExpectedPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
@@ -71,15 +71,8 @@ contract RewardEngine is GovernanceModule {
     uint256 public expectedPeriod;
     uint256 public rewardSystemStartTime; // When the reward system became active
 
-    // Peer ID interning for efficient storage and comparison
-    // string peerId => bytes32 internedId
-    mapping(string => bytes32) public peerIdToInterned;
-    // bytes32 internedId => string peerId (for reverse lookup)
-    mapping(bytes32 => string) public internedToPeerId;
-    uint256 private nextPeerIdCounter;
-
     // Online status tracking - optimized for zero-loop batch operations
-    // poolId => timestamp => array of interned peerIds that were online
+    // poolId => timestamp => array of peerIds that were online
     mapping(uint32 => mapping(uint256 => bytes32[])) public onlineStatus;
 
     // Linked-list for efficient timestamp storage - O(1) insertions
@@ -94,7 +87,7 @@ contract RewardEngine is GovernanceModule {
 
     // Claimed rewards tracking to prevent double claiming
     // account => peerId => poolId => lastClaimedTimestamp
-    mapping(address => mapping(string => mapping(uint32 => uint256))) public lastClaimedRewards;
+    mapping(address => mapping(bytes32 => mapping(uint32 => uint256))) public lastClaimedRewards;
 
     // Track last submission timestamp per period to handle multiple submissions
     // poolId => period => lastSubmissionTimestamp
@@ -102,7 +95,7 @@ contract RewardEngine is GovernanceModule {
 
     // Track monthly rewards per peer ID to enforce caps
     // peerId => poolId => month => claimedAmount
-    mapping(string => mapping(uint32 => mapping(uint256 => uint256))) public monthlyRewardsClaimed;
+    mapping(bytes32 => mapping(uint32 => mapping(uint256 => uint256))) public monthlyRewardsClaimed;
 
     // Circuit breaker state
     bool public circuitBreakerTripped;
@@ -143,9 +136,6 @@ contract RewardEngine is GovernanceModule {
         monthlyRewardPerPeer = DEFAULT_MONTHLY_REWARD_PER_PEER;
         expectedPeriod = DEFAULT_EXPECTED_PERIOD;
         rewardSystemStartTime = block.timestamp; // Set when the reward system becomes active
-
-        // Initialize peer ID counter
-        nextPeerIdCounter = 1;
 
         // Initialize circuit breaker
         circuitBreakerTripped = false;
@@ -310,7 +300,7 @@ contract RewardEngine is GovernanceModule {
     /// @param timestamp The timestamp for this status update
     function submitOnlineStatusBatch(
         uint32 poolId,
-        string[] calldata peerIds,
+        bytes32[] calldata peerIds,
         uint256 timestamp
     ) external whenNotPaused nonReentrant notTripped {
         if (peerIds.length == 0 || peerIds.length > MAX_BATCH_SIZE) revert BatchTooLarge();
@@ -336,15 +326,9 @@ contract RewardEngine is GovernanceModule {
         // Normalize timestamp to period boundary for consistent storage
         uint256 normalizedTimestamp = _normalizeToPeriodBoundary(timestamp);
 
-        // Intern peer IDs for efficient storage and comparison
-        bytes32[] memory internedPeerIds = new bytes32[](peerIds.length);
-        for (uint256 i = 0; i < peerIds.length; i++) {
-            internedPeerIds[i] = _internPeerId(peerIds[i]);
-        }
-
         // Zero-loop batch recording - store entire array at once
         // No validation needed here - pool membership will be verified during reward calculation
-        onlineStatus[poolId][normalizedTimestamp] = internedPeerIds;
+        onlineStatus[poolId][normalizedTimestamp] = peerIds;
 
         // Record timestamp in linked list if it's new (O(1) insertion)
         if (!timestampExists[poolId][normalizedTimestamp]) {
@@ -361,7 +345,7 @@ contract RewardEngine is GovernanceModule {
     /// @return onlineCount Number of online status records found
     /// @return totalExpected Total expected status reports in the period
     function getOnlineStatusSince(
-        string memory peerId,
+        bytes32 peerId,
         uint32 poolId,
         uint256 sinceTime
     ) external view returns (uint256 onlineCount, uint256 totalExpected) {
@@ -410,7 +394,7 @@ contract RewardEngine is GovernanceModule {
     /// @return effectiveStartTime The timestamp from which rewards should be calculated
     function getEffectiveRewardStartTime(
         address account,
-        string memory peerId,
+        bytes32 peerId,
         uint32 poolId
     ) external view returns (uint256 effectiveStartTime) {
         // Verify the account and peerId are members of the pool
@@ -418,7 +402,7 @@ contract RewardEngine is GovernanceModule {
         if (memberIndex == 0) revert NotPoolMember();
 
         // Get member join date
-        uint256 joinDate = storagePool.joinTimestamp(toBytes32Checked(peerId));
+        uint256 joinDate = storagePool.joinTimestamp(peerId);
         uint256 lastClaimed = lastClaimedRewards[account][peerId][poolId];
 
         if (lastClaimed > 0) {
@@ -442,7 +426,7 @@ contract RewardEngine is GovernanceModule {
     /// @return totalReward Total calculated reward
     function getRewardCalculationDetails(
         address account,
-        string memory peerId,
+        bytes32 peerId,
         uint32 poolId
     ) external view returns (
         uint256 startTime,
@@ -481,7 +465,7 @@ contract RewardEngine is GovernanceModule {
     /// @return eligibleRewards Amount of eligible mining rewards
     function calculateEligibleMiningRewards(
         address account,
-        string memory peerId,
+        bytes32 peerId,
         uint32 poolId
     ) external view returns (uint256 eligibleRewards) {
         // Verify the account and peerId are members of the pool
@@ -489,7 +473,7 @@ contract RewardEngine is GovernanceModule {
         if (memberIndex == 0) revert NotPoolMember();
 
         // Get member join date and last claimed timestamp
-        uint256 joinDate = storagePool.joinTimestamp(toBytes32Checked(peerId));
+        uint256 joinDate = storagePool.joinTimestamp(peerId);
         uint256 lastClaimed = lastClaimedRewards[account][peerId][poolId];
 
         // Determine the start time for reward calculation
@@ -546,7 +530,7 @@ contract RewardEngine is GovernanceModule {
     /// @return eligibleRewards Amount of eligible storage rewards (currently 0 as placeholder)
     function calculateEligibleStorageRewards(
         address account,
-        string memory peerId,
+        bytes32 peerId,
         uint32 poolId
     ) external view returns (uint256 eligibleRewards) {
         // Verify the account and peerId are members of the pool
@@ -566,7 +550,7 @@ contract RewardEngine is GovernanceModule {
     /// @return totalRewards Total eligible rewards
     function getEligibleRewards(
         address account,
-        string memory peerId,
+        bytes32 peerId,
         uint32 poolId
     ) external view returns (uint256 miningRewards, uint256 storageRewards, uint256 totalRewards) {
         miningRewards = this.calculateEligibleMiningRewards(account, peerId, poolId);
@@ -580,7 +564,7 @@ contract RewardEngine is GovernanceModule {
     /// @param peerId The peer ID to claim rewards for
     /// @param poolId The pool ID
     function claimRewards(
-        string memory peerId,
+        bytes32 peerId,
         uint32 poolId
     ) external whenNotPaused nonReentrant notTripped {
         address account = msg.sender;
@@ -643,7 +627,7 @@ contract RewardEngine is GovernanceModule {
     /// @return timeSinceLastClaim Time elapsed since last claim
     function getClaimedRewardsInfo(
         address account,
-        string memory peerId,
+        bytes32 peerId,
         uint32 poolId
     ) external view returns (uint256 lastClaimedTimestamp, uint256 timeSinceLastClaim) {
         lastClaimedTimestamp = lastClaimedRewards[account][peerId][poolId];
@@ -661,7 +645,7 @@ contract RewardEngine is GovernanceModule {
     /// @return totalUnclaimed Total unclaimed rewards
     function getUnclaimedRewards(
         address account,
-        string memory peerId,
+        bytes32 peerId,
         uint32 poolId
     ) external view returns (uint256 unclaimedMining, uint256 unclaimedStorage, uint256 totalUnclaimed) {
         return this.getEligibleRewards(account, peerId, poolId);
@@ -691,34 +675,15 @@ contract RewardEngine is GovernanceModule {
         return (timestamp / expectedPeriod) * expectedPeriod;
     }
 
-    /// @notice Internal function to intern a peer ID for efficient storage
-    /// @param peerId The peer ID to intern
-    /// @return internedId The interned bytes32 representation
-    function _internPeerId(string memory peerId) internal returns (bytes32 internedId) {
-        internedId = peerIdToInterned[peerId];
-        if (internedId == bytes32(0)) {
-            // Create new interned ID
-            internedId = bytes32(nextPeerIdCounter++);
-            peerIdToInterned[peerId] = internedId;
-            internedToPeerId[internedId] = peerId;
-        }
-        return internedId;
-    }
-
     /// @notice Internal function to check if a peerId was online at a specific timestamp
     /// @param poolId The pool ID
     /// @param timestamp The timestamp to check
     /// @param peerId The peer ID to check
     /// @return isOnline True if the peerId was online at the timestamp
-    function _isPeerOnlineAtTimestamp(uint32 poolId, uint256 timestamp, string memory peerId) internal view returns (bool isOnline) {
-        bytes32 internedPeerId = peerIdToInterned[peerId];
-        if (internedPeerId == bytes32(0)) {
-            return false; // Peer ID was never interned, so it was never online
-        }
-
+    function _isPeerOnlineAtTimestamp(uint32 poolId, uint256 timestamp, bytes32 peerId) internal view returns (bool isOnline) {
         bytes32[] memory onlinePeers = onlineStatus[poolId][timestamp];
         for (uint256 i = 0; i < onlinePeers.length; i++) {
-            if (onlinePeers[i] == internedPeerId) {
+            if (onlinePeers[i] == peerId) {
                 return true;
             }
         }
@@ -744,26 +709,19 @@ contract RewardEngine is GovernanceModule {
     /// @param poolId The pool ID
     /// @param timestamp The timestamp to check
     /// @return peerIds Array of peerIds that were online at the timestamp
-    function getOnlinePeerIds(uint32 poolId, uint256 timestamp) external view returns (string[] memory peerIds) {
-        bytes32[] memory internedPeerIds = onlineStatus[poolId][timestamp];
-        peerIds = new string[](internedPeerIds.length);
-
-        for (uint256 i = 0; i < internedPeerIds.length; i++) {
-            peerIds[i] = internedToPeerId[internedPeerIds[i]];
-        }
-
-        return peerIds;
+    function getOnlinePeerIds(uint32 poolId, uint256 timestamp) external view returns (bytes32[] memory peerIds) {
+        return onlineStatus[poolId][timestamp];
     }
 
     /// @notice Get all online peerIds for the latest submission in a pool
     /// @param poolId The pool ID
     /// @return peerIds Array of peerIds that were online in the latest submission
-    function getLatestOnlinePeerIds(uint32 poolId) external view returns (string[] memory peerIds) {
+    function getLatestOnlinePeerIds(uint32 poolId) external view returns (bytes32[] memory peerIds) {
         // Get the latest timestamp (first in the linked list)
         uint256 latestTimestamp = timestampHead[poolId];
 
         if (latestTimestamp == 0) {
-            return new string[](0); // No submissions yet
+            return new bytes32[](0); // No submissions yet
         }
 
         return this.getOnlinePeerIds(poolId, latestTimestamp);
@@ -774,7 +732,7 @@ contract RewardEngine is GovernanceModule {
     /// @param timestamp The timestamp to check
     /// @param peerId The peer ID to check
     /// @return isOnline True if the peerId was online at the timestamp
-    function isPeerOnlineAtTimestamp(uint32 poolId, uint256 timestamp, string memory peerId) external view returns (bool isOnline) {
+    function isPeerOnlineAtTimestamp(uint32 poolId, uint256 timestamp, bytes32 peerId) external view returns (bool isOnline) {
         return _isPeerOnlineAtTimestamp(poolId, timestamp, peerId);
     }
 
@@ -931,13 +889,6 @@ contract RewardEngine is GovernanceModule {
         revert InvalidProposalType(uint8(0));
     }
 
-    // Helper methods
-    function toBytes32Checked(string memory source) public pure returns (bytes32 result) {
-        bytes memory temp = bytes(source);
-        require(temp.length <= 32, "String too long for bytes32");
-        assembly {
-            result := mload(add(source, 32))
-        }
-    }
+
 
 }
