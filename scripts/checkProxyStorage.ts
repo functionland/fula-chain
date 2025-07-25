@@ -72,13 +72,13 @@ async function main() {
       },
       {
         name: "StakingPool (RewardEngine)",
-        proxy: "0x2374122915c4802a855c44468c01a5ff6eaE4Bc1",
+        proxy: "0x0530bB970F5f271189Cff5ceEEf379b6E2d1A484",
         expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be",
       },
       {
         name: "RewardEngine",
-        proxy: "0xB934cc71987a4369a046E9514FD47800C8c1A7d4",
-        expectedImplementation: "0x5F3758869FAfE43A466bd66338EC3C132DC622eA",
+        proxy: "0x02651083A2a5B5cEe6125659c2759EBFaCC7A90A",
+        expectedImplementation: "0x431163AED51A0B8122b5ebbf35C12bA3D56F1891",
       },
     ];
   } else if (networkName === "skale") {
