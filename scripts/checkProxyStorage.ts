@@ -121,13 +121,13 @@ async function main() {
       },
       {
         name: "StakingPool (RewardEngine)",
-        proxy: "0x2374122915c4802a855c44468c01a5ff6eaE4Bc1",
+        proxy: "0xA5F24fac04f8b131002aB56a1d5DEcB2206347Ea",
         expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be",
       },
       {
         name: "RewardEngine",
-        proxy: "0xB934cc71987a4369a046E9514FD47800C8c1A7d4",
-        expectedImplementation: "0x5F3758869FAfE43A466bd66338EC3C132DC622eA",
+        proxy: "0xa8CFA5758e706294eCbB8a4b104Df63fFB7e807B",
+        expectedImplementation: "0x0937003aF28cf7d30FeC6345a37A28f9C46C2353",
       },
     ];
   } else if (networkName === "iotex-mainnet") {

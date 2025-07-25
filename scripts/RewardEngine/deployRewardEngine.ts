@@ -401,7 +401,9 @@ async function main() {
         console.log("2. Fund StakingPool with reward tokens");
         console.log("3. Test reward calculation and claiming functions");
         console.log("4. Run security check to verify implementation is secured:");
-        console.log(`   REWARD_ENGINE_PROXY=${rewardEngineAddress} npx hardhat run scripts/checkERC1967SecurityQuick.ts --network <network>`);
+        console.log(
+          `   npx hardhat run scripts/checkProxyStorage.ts --network <network>`
+        );
 
     } catch (error) {
         console.error("❌ Deployment failed:", error);
