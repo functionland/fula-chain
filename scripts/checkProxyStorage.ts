@@ -62,23 +62,23 @@ async function main() {
       },
       {
         name: "StakingPool (StoragePool)",
-        proxy: "0x4d44aF4d59b276FD1228FE36552e940A03e78030",
+        proxy: "0xa8CFA5758e706294eCbB8a4b104Df63fFB7e807B",
         expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be",
       },
       {
         name: "StoragePool",
-        proxy: "0xf293A6902662DcB09E310254A5e418cb28D71b6b",
-        expectedImplementation: "0xf4355A5871762648a751546b163ee598A3381223",
+        proxy: "0xb093fF4B3B3B87a712107B26566e0cCE5E752b4D",
+        expectedImplementation: "0x767E69ea8A7Fc5f9fBF8F399BEC424FAf813a9Ad",
       },
       {
         name: "StakingPool (RewardEngine)",
-        proxy: "0x0530bB970F5f271189Cff5ceEEf379b6E2d1A484",
+        proxy: "0xE11Ad2af1560616df68A506f21Dc5E3E6B26dc7e",
         expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be",
       },
       {
         name: "RewardEngine",
-        proxy: "0x02651083A2a5B5cEe6125659c2759EBFaCC7A90A",
-        expectedImplementation: "0x431163AED51A0B8122b5ebbf35C12bA3D56F1891",
+        proxy: "0x31029f90405fd3D9cB0835c6d21b9DFF058Df45A",
+        expectedImplementation: "0xf9176Ffde541bF0aa7884298Ce538c471Ad0F015",
       },
     ];
   } else if (networkName === "skale") {
@@ -111,23 +111,23 @@ async function main() {
       },
       {
         name: "StakingPool (StoragePool)",
-        proxy: "0x4d44aF4d59b276FD1228FE36552e940A03e78030",
+        proxy: "0x8d4E248d55E998Dae011c30811CA6F850Efcb7c1",
         expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be",
       },
       {
         name: "StoragePool",
-        proxy: "0xf293A6902662DcB09E310254A5e418cb28D71b6b",
-        expectedImplementation: "0xf4355A5871762648a751546b163ee598A3381223",
+        proxy: "0xf9176Ffde541bF0aa7884298Ce538c471Ad0F015",
+        expectedImplementation: "0xE11Ad2af1560616df68A506f21Dc5E3E6B26dc7e",
       },
       {
         name: "StakingPool (RewardEngine)",
-        proxy: "0xA5F24fac04f8b131002aB56a1d5DEcB2206347Ea",
+        proxy: "0x4708416A87935EFcf883c0594BA4980d47A8Db9E",
         expectedImplementation: "0xa3FB8C0c90F54B167c463E9927E69a7D5b8eD4be",
       },
       {
         name: "RewardEngine",
-        proxy: "0xa8CFA5758e706294eCbB8a4b104Df63fFB7e807B",
-        expectedImplementation: "0x0937003aF28cf7d30FeC6345a37A28f9C46C2353",
+        proxy: "0xF7c64248294C45Eb3AcdD282b58675F1831fb047",
+        expectedImplementation: "0x81A56F820516B5Dbc3545884EA43578086922edF",
       },
     ];
   } else if (networkName === "iotex-mainnet") {
