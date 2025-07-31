@@ -75,8 +75,9 @@ contract StoragePool is Initializable, GovernanceModule, IStoragePool {
         if (pool.memberPeerIds[account].length == 1) {
             pool.memberList.push(account);
             pool.memberIndex[account] = pool.memberList.length - 1;
-            joinTimestamp[peerId] = uint32(block.timestamp);
         }
+        // Set join timestamp for each peer ID individually (not just the first one)
+        joinTimestamp[peerId] = uint32(block.timestamp);
         pool.memberCount += 1;
         pool.lockedTokens[peerId] = lockedAmount;
     }

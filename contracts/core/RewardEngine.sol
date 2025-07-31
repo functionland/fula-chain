@@ -323,19 +323,15 @@ contract RewardEngine is GovernanceModule {
         // Allow updates but track the latest submission time
         lastPeriodSubmission[poolId][period] = block.timestamp;
 
-        // Normalize timestamp to period boundary for consistent storage
-        uint256 normalizedTimestamp = _normalizeToPeriodBoundary(timestamp);
-
-        // Zero-loop batch recording - store entire array at once
-        // No validation needed here - pool membership will be verified during reward calculation
-        onlineStatus[poolId][normalizedTimestamp] = peerIds;
+        // Store the raw timestamp so period checks relative to joinDate work correctly
+        onlineStatus[poolId][timestamp] = peerIds;
 
         // Record timestamp in linked list if it's new (O(1) insertion)
-        if (!timestampExists[poolId][normalizedTimestamp]) {
-            _insertTimestampLinked(poolId, normalizedTimestamp);
+        if (!timestampExists[poolId][timestamp]) {
+            _insertTimestampLinked(poolId, timestamp);
         }
 
-        emit OnlineStatusSubmitted(poolId, msg.sender, peerIds.length, normalizedTimestamp);
+        emit OnlineStatusSubmitted(poolId, msg.sender, peerIds.length, timestamp);
     }
 
     /// @notice Get online status for a specific peerId since a given time
@@ -398,19 +394,19 @@ contract RewardEngine is GovernanceModule {
         uint32 poolId
     ) external view returns (uint256 effectiveStartTime) {
         // Verify the account and peerId are members of the pool
-        uint256 memberIndex = storagePool.getMemberIndex(poolId, account);
-        if (memberIndex == 0) revert NotPoolMember();
+        (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
+        if (memberAddress == address(0) || memberAddress != account) revert NotPoolMember();
 
         // Get member join date
         uint256 joinDate = storagePool.joinTimestamp(peerId);
         uint256 lastClaimed = lastClaimedRewards[account][peerId][poolId];
 
         if (lastClaimed > 0) {
-            // User has claimed before - start from last claim
+            // User has claimed before – start from last claimed period boundary
             return lastClaimed;
         } else {
-            // First time claiming - start from the later of join date or reward system start
-            return joinDate > rewardSystemStartTime ? joinDate : rewardSystemStartTime;
+            // First time claiming – start from join date (periods are anchored at join date)
+            return joinDate;
         }
     }
 
@@ -437,22 +433,41 @@ contract RewardEngine is GovernanceModule {
         uint256 totalReward
     ) {
         // Verify membership
-        uint256 memberIndex = storagePool.getMemberIndex(poolId, account);
-        if (memberIndex == 0) revert NotPoolMember();
+        (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
+        if (memberAddress == address(0) || memberAddress != account) revert NotPoolMember();
 
-        startTime = this.getEffectiveRewardStartTime(account, peerId, poolId);
+        // Get member join date and last claimed timestamp
+        uint256 joinDate = storagePool.joinTimestamp(peerId);
+        uint256 lastClaimed = lastClaimedRewards[account][peerId][poolId];
+
+        // Determine calculation start time (raw)
+        if (lastClaimed > 0) {
+            startTime = lastClaimed;
+        } else {
+            startTime = joinDate;
+        }
+
+
+        
         endTime = block.timestamp;
 
         if (startTime >= endTime) {
             return (startTime, endTime, 0, 0, 0, 0);
         }
 
-        (onlinePeriods, totalPeriods) = this.getOnlineStatusSince(peerId, poolId, startTime);
+        // Calculate eligible periods using new period-based logic
+        onlinePeriods = _calculateEligiblePeriodsFromJoinDate(peerId, poolId, joinDate, startTime, endTime);
+        
+        // Calculate total periods that have passed (complete periods only)
+        uint256 timeElapsed = endTime - startTime;
+        totalPeriods = timeElapsed / expectedPeriod;
 
-        // Calculate reward per period with consolidated overflow and division protection
-        if ( totalPeriods > 0) {
-            rewardPerPeriod = _calculateRewardPerPeriod();
-            totalReward = _calculateTotalReward(rewardPerPeriod, onlinePeriods, totalPeriods);
+        // Calculate reward per period
+        rewardPerPeriod = _calculateRewardPerPeriod();
+        
+        // Calculate total reward (no ratio - just count of eligible periods)
+        if (onlinePeriods > 0 && rewardPerPeriod > 0) {
+            totalReward = rewardPerPeriod * onlinePeriods;
         }
 
         return (startTime, endTime, totalPeriods, onlinePeriods, rewardPerPeriod, totalReward);
@@ -469,44 +484,42 @@ contract RewardEngine is GovernanceModule {
         uint32 poolId
     ) external view returns (uint256 eligibleRewards) {
         // Verify the account and peerId are members of the pool
-        uint256 memberIndex = storagePool.getMemberIndex(poolId, account);
-        if (memberIndex == 0) revert NotPoolMember();
+        (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
+        if (memberAddress == address(0) || memberAddress != account) revert NotPoolMember();
 
         // Get member join date and last claimed timestamp
         uint256 joinDate = storagePool.joinTimestamp(peerId);
         uint256 lastClaimed = lastClaimedRewards[account][peerId][poolId];
 
         // Determine the start time for reward calculation
-        uint256 sinceTime;
+        // Always start from join date for period calculations, not reward system start
+        uint256 calculationStartTime;
         if (lastClaimed > 0) {
-            // User has claimed before - calculate from last claim
-            sinceTime = lastClaimed;
+            // User has claimed before - start from last claimed period boundary
+            calculationStartTime = lastClaimed;
         } else {
-            // First time claiming - calculate from the later of join date or reward system start
-            // This prevents claiming rewards from before the reward system was active
-            sinceTime = joinDate > rewardSystemStartTime ? joinDate : rewardSystemStartTime;
+            // First time claiming - start from join date
+            calculationStartTime = joinDate;
         }
 
         // Ensure we don't calculate rewards from the future
-        if (sinceTime >= block.timestamp) {
+        if (calculationStartTime >= block.timestamp) {
             return 0;
         }
 
-        // Get online status since the calculated start time
-        // Note: Users only get rewards for periods they were marked as online
-        // If status reporting is missed for multiple periods, no rewards are given for those periods
-        // This incentivizes consistent status reporting and prevents retroactive reward claims
-        (uint256 onlineCount, uint256 totalExpected) = this.getOnlineStatusSince(peerId, poolId, sinceTime);
-
-        if (onlineCount == 0 || totalExpected == 0) {
+        // Calculate eligible periods based on fixed periods from join date
+        uint256 eligiblePeriods = _calculateEligiblePeriodsFromJoinDate(peerId, poolId, joinDate, calculationStartTime, block.timestamp);
+        
+        if (eligiblePeriods == 0) {
             return 0;
         }
 
-        uint256 rewardPerMemberPerPeriod = _calculateRewardPerPeriod();
-        if (rewardPerMemberPerPeriod == 0) return 0;
+        // Calculate reward per period
+        uint256 rewardPerPeriod = _calculateRewardPerPeriod();
+        if (rewardPerPeriod == 0) return 0;
 
-        // Calculate eligible rewards using consolidated function
-        eligibleRewards = _calculateTotalReward(rewardPerMemberPerPeriod, onlineCount, totalExpected);
+        // Calculate total eligible rewards (no ratio - just count of complete periods)
+        eligibleRewards = rewardPerPeriod * eligiblePeriods;
 
         // Apply monthly cap per peer ID
         uint256 currentMonth = _getCurrentMonth();
@@ -534,8 +547,8 @@ contract RewardEngine is GovernanceModule {
         uint32 poolId
     ) external view returns (uint256 eligibleRewards) {
         // Verify the account and peerId are members of the pool
-         uint256 memberIndex = storagePool.getMemberIndex(poolId, account);
-        if (memberIndex == 0) revert NotPoolMember();
+         (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
+        if (memberAddress == address(0) || memberAddress != account) revert NotPoolMember();
 
         // Storage rewards are set to 0 as placeholder for now
         return 0;
@@ -570,8 +583,8 @@ contract RewardEngine is GovernanceModule {
         address account = msg.sender;
 
         // Verify the account and peerId are members of the pool
-        uint256 memberIndex = storagePool.getMemberIndex(poolId, account);
-        if (memberIndex == 0) revert NotPoolMember();
+        (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
+        if (memberAddress == address(0) || memberAddress != account) revert NotPoolMember();
 
         // Calculate eligible rewards
         (uint256 miningRewards, uint256 storageRewards, uint256 totalRewards) =
@@ -585,7 +598,10 @@ contract RewardEngine is GovernanceModule {
         if (stakingPoolTokenBalance < totalRewards) revert InsufficientRewards();
 
         // 2. EFFECTS - Update state BEFORE external calls (proper CEI pattern)
-        lastClaimedRewards[account][peerId][poolId] = block.timestamp;
+        // Store the last complete period boundary for next calculation
+        uint256 joinDate = storagePool.joinTimestamp(peerId);
+        uint256 lastCompletePeriodEnd = _getLastCompletePeriodEnd(joinDate, block.timestamp);
+        lastClaimedRewards[account][peerId][poolId] = lastCompletePeriodEnd;
 
         // Update monthly rewards tracking for cap enforcement
         uint256 currentMonth = _getCurrentMonth();
@@ -825,6 +841,145 @@ contract RewardEngine is GovernanceModule {
             // Safe to multiply first for better precision
             return (rewardPerPeriod * onlinePeriods) / totalPeriods;
         }
+    }
+
+    /// @notice Calculate eligible periods from join date with online status check
+    /// @param peerId The peer ID
+    /// @param poolId The pool ID  
+    /// @param joinDate The user's join date
+    /// @param calculationStartTime Start time for calculation (join date or last claimed)
+    /// @param currentTime Current timestamp
+    /// @return eligiblePeriods Number of complete periods with online status
+    function _calculateEligiblePeriodsFromJoinDate(
+        bytes32 peerId,
+        uint32 poolId,
+        uint256 joinDate,
+        uint256 calculationStartTime,
+        uint256 currentTime
+    ) internal view returns (uint256 eligiblePeriods) {
+        if (calculationStartTime >= currentTime || expectedPeriod == 0) {
+            return 0;
+        }
+
+        // Calculate periods based on fixed boundaries from join date
+        // Period boundaries are: joinDate, joinDate + expectedPeriod, joinDate + 2*expectedPeriod, etc.
+        
+        uint256 eligibleCount = 0;
+        
+        // Find the first period that starts at or after calculationStartTime
+        uint256 firstPeriodIndex = 0;
+        if (calculationStartTime > joinDate) {
+            firstPeriodIndex = (calculationStartTime - joinDate) / expectedPeriod;
+            // If calculationStartTime is not exactly on a period boundary, start from next period
+            if ((calculationStartTime - joinDate) % expectedPeriod != 0) {
+                firstPeriodIndex++;
+            }
+        }
+        
+        // Check each complete period from firstPeriodIndex onwards
+        uint256 periodIndex = firstPeriodIndex;
+        uint256 maxPeriods = 1000; // Safety limit to prevent infinite loops and overflow
+        uint256 periodsChecked = 0;
+
+        while (periodsChecked < maxPeriods) {
+            uint256 periodStart = joinDate + (periodIndex * expectedPeriod);
+            uint256 periodEnd = periodStart + expectedPeriod;
+
+            // Stop if this period hasn't completed yet
+            if (periodEnd > currentTime) {
+                break;
+            }
+
+            // Check if user has at least one online status in this period
+            if (_hasOnlineStatusInPeriod(peerId, poolId, periodStart, periodEnd)) {
+                eligibleCount++;
+            }
+
+            periodIndex++;
+            periodsChecked++;
+        }
+        
+        return eligibleCount;
+    }
+
+    /// @notice Check if peerId has online status in a specific period
+    /// @param peerId The peer ID
+    /// @param poolId The pool ID
+    /// @param periodStart Start of the period (inclusive)
+    /// @param periodEnd End of the period (exclusive)
+    /// @return hasStatus True if peerId has at least one online status in the period
+    function _hasOnlineStatusInPeriod(
+        bytes32 peerId,
+        uint32 poolId,
+        uint256 periodStart,
+        uint256 periodEnd
+    ) internal view returns (bool hasStatus) {
+        // Iterate through all recorded timestamps for this pool
+        uint256 currentTimestamp = timestampHead[poolId];
+        uint256 iterations = 0;
+        uint256 maxIterations = 1000; // Safety limit to prevent infinite loops
+
+        while (currentTimestamp != 0 && iterations < maxIterations) {
+            // Check if timestamp falls within the period
+            // Note: We need to be more flexible here - any online status timestamp
+            // that falls within this period should count, regardless of normalization
+            if (currentTimestamp >= periodStart && currentTimestamp < periodEnd) {
+                // Check if this peerId was online at this timestamp
+                if (_isPeerOnlineAtTimestamp(poolId, currentTimestamp, peerId)) {
+                    return true; // Found at least one online status in this period
+                }
+            }
+            currentTimestamp = timestampNext[poolId][currentTimestamp];
+            iterations++;
+        }
+
+        return false; // No online status found in this period
+    }
+
+    /// @notice Check if peerId has any online status since a given time
+    /// @param peerId The peer ID
+    /// @param poolId The pool ID
+    /// @param sinceTime Start time to check from (inclusive)
+    /// @param untilTime End time to check until (exclusive)
+    /// @return hasStatus True if peerId has at least one online status in the time range
+    function _hasAnyOnlineStatusSince(
+        bytes32 peerId,
+        uint32 poolId,
+        uint256 sinceTime,
+        uint256 untilTime
+    ) internal view returns (bool hasStatus) {
+        // Iterate through all recorded timestamps for this pool
+        uint256 currentTimestamp = timestampHead[poolId];
+        
+        while (currentTimestamp != 0) {
+            // Check if timestamp falls within the time range
+            if (currentTimestamp >= sinceTime && currentTimestamp < untilTime) {
+                // Check if this peerId was online at this timestamp
+                if (_isPeerOnlineAtTimestamp(poolId, currentTimestamp, peerId)) {
+                    return true; // Found at least one online status in this time range
+                }
+            }
+            currentTimestamp = timestampNext[poolId][currentTimestamp];
+        }
+        
+        return false; // No online status found in this time range
+    }
+
+    /// @notice Get the last complete period end timestamp based on join date
+    /// @param joinDate The user's join date
+    /// @param currentTime Current timestamp
+    /// @return lastPeriodEnd The end timestamp of the last complete period
+    function _getLastCompletePeriodEnd(uint256 joinDate, uint256 currentTime) internal view returns (uint256 lastPeriodEnd) {
+        if (currentTime <= joinDate || expectedPeriod == 0) {
+            return joinDate;
+        }
+        
+        // Calculate how many complete periods have passed since join date
+        uint256 timeElapsed = currentTime - joinDate;
+        uint256 completePeriods = timeElapsed / expectedPeriod;
+        
+        // Return the end of the last complete period
+        return joinDate + (completePeriods * expectedPeriod);
     }
 
     /// @notice Get reward statistics for an address
