@@ -37,7 +37,12 @@ const config: HardhatUserConfig = {
     },
     base: {
       url: "https://mainnet.base.org",
-      accounts: vars.has("PK") ? [vars.get("PK")] : [],
+      accounts: (() => {
+        const accounts = [];
+        if (vars.has("PK")) accounts.push(vars.get("PK"));
+        if (vars.has("ADMIN_PK")) accounts.push(vars.get("ADMIN_PK"));
+        return accounts;
+      })(),
       chainId: 8453,
       gasPrice: "auto",
       timeout: 60000,
@@ -66,7 +71,12 @@ const config: HardhatUserConfig = {
     },
     skale: {
       url: "https://mainnet.skalenodes.com/v1/elated-tan-skat",
-      accounts: vars.has("PK") ? [vars.get("PK")] : [],
+      accounts: (() => {
+        const accounts = [];
+        if (vars.has("PK")) accounts.push(vars.get("PK"));
+        if (vars.has("ADMIN_PK")) accounts.push(vars.get("ADMIN_PK"));
+        return accounts;
+      })(),
       chainId: 2046399126,
     },
 

@@ -47,18 +47,18 @@ async function main() {
       },
       {
         name: "StakingEngineLinear",
-        proxy: "0x32A2b049b1E7A6c8C26284DE49e7F05A00466a5d",
-        expectedImplementation: "0xC31db852C347322440f9027A5D65d8FD39B18C46",
+        proxy: "0x3EDD28f66C14d113A955ABFeC9f3D061A795c727",
+        expectedImplementation: "0xcbd997045285523d4147ecc243596634da01d041",
       },
       {
         name: "StakePool (StakingLinear)",
-        proxy: "0xfa9cb36656cf9A2D2BA3a6b0aD810fB9993F7A21",
-        expectedImplementation: "0x860793bb966511d8Ddfb03a0598A1E5b3a83225f",
+        proxy: "0x55A95011136c511749FD68e9f40601670Bd866D4",
+        expectedImplementation: "0x78b9a077d62bef41fba5e7ff6ea192efb2041973",
       },
       {
         name: "RewardPool (StakingLinear)",
-        proxy: "0xDB2ab8De23eb8dd6cd12127673be9ae6Ae6edd9A",
-        expectedImplementation: "0x860793bb966511d8Ddfb03a0598A1E5b3a83225f",
+        proxy: "0x2D91737D21106598d0288afD04E5a284780d8Ffd",
+        expectedImplementation: "0x78b9a077d62bef41fba5e7ff6ea192efb2041973",
       },
       {
         name: "StakingPool (StoragePool)",

@@ -297,7 +297,7 @@ main()
     });
 
 // Run with environment variables:
-// TOKEN_ADDRESS=0x... INITIAL_OWNER=0x... INITIAL_ADMIN=0x... APPROVAL_AMOUNT="100000000" DEPLOY_POOLS=true ETHERSCAN_API_KEY=abc... npx hardhat run scripts/deployStakingEngineLinear.ts --network mainnet
+// TOKEN_ADDRESS=0x... INITIAL_OWNER=0x... INITIAL_ADMIN=0x... APPROVAL_AMOUNT="100000000" DEPLOY_POOLS=true ETHERSCAN_API_KEY=abc... npx hardhat run scripts/StakingEngineLinear/deployStakingEngineLinear.ts --network mainnet
 // 
 // Or for using existing pools:
-// TOKEN_ADDRESS=0x... STAKE_POOL_ADDRESS=0x... REWARD_POOL_ADDRESS=0x... npx hardhat run scripts/deployStakingEngineLinear.ts --network mainnet
+// TOKEN_ADDRESS=0x... STAKE_POOL_ADDRESS=0x... REWARD_POOL_ADDRESS=0x... npx hardhat run scripts/StakingEngineLinear/deployStakingEngineLinear.ts --network mainnet

@@ -42,5 +42,5 @@ main()
     });
 
 // Command to deploy new implementation:
-// npx hardhat run scripts/upgradeStakingEngineLinear.ts --network sepolia
+// npx hardhat run scripts/StakingEngineLinear/upgradeStakingEngineLinear.ts --network sepolia
 // Note: Contract verification is handled automatically if ETHERSCAN_API_KEY environment variable is set

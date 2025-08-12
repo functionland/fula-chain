@@ -177,6 +177,9 @@ async function main() {
             ADD_WHITELIST_TYPE, 0, rewardPoolAddress, ZERO_HASH, 0, ZERO_ADDRESS
         );
         const whitelistReceipt = await whitelistProposalTx.wait();
+        if (!whitelistReceipt) {
+            throw new Error("Failed to get whitelist proposal receipt");
+        }
         const proposalCreatedLog = whitelistReceipt.logs.find(log => {
             try {
                 const parsed = storageToken.interface.parseLog(log);
@@ -209,6 +212,9 @@ async function main() {
             ADD_WHITELIST_TYPE, 0, deployer, ZERO_HASH, 0, ZERO_ADDRESS
         );
         const whitelistReceipt2 = await whitelistProposalTx2.wait();
+        if (!whitelistReceipt2) {
+            throw new Error("Failed to get second whitelist proposal receipt");
+        }
         const proposalCreatedLog2 = whitelistReceipt2.logs.find(log => {
             try {
                 const parsed = storageToken.interface.parseLog(log);
@@ -276,7 +282,7 @@ main()
 
 
     // npx hardhat node
-// npx hardhat run scripts/deployLocalStakingEngineLinear.ts --network localhost
+// npx hardhat run scripts/StakingEngineLinear/deployLocalStakingEngineLinear.ts --network localhost
 /*
 Advance the time fo rtesting:
 npx hardhat console --network localhost

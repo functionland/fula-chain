@@ -148,17 +148,17 @@ contract StakingEngineLinear is
 
     // --- New variables for global queries ---
     // List of all staker addresses (unique, append-only)
-    address[] private allStakerAddresses;
-    mapping(address => bool) private isKnownStaker;
+    address[] internal allStakerAddresses;
+    mapping(address => bool) internal isKnownStaker;
     // For each lock period, a list of staker addresses (unique, append-only)
-    mapping(uint256 => address[]) private stakerAddressesByPeriod;
-    mapping(uint256 => mapping(address => bool)) private isStakerInPeriod;
+    mapping(uint256 => address[]) internal stakerAddressesByPeriod;
+    mapping(uint256 => mapping(address => bool)) internal isStakerInPeriod;
     // List of all referrer addresses (unique, append-only)
-    address[] private allReferrerAddresses;
-    mapping(address => bool) private isKnownReferrer;
+    address[] internal allReferrerAddresses;
+    mapping(address => bool) internal isKnownReferrer;
     // For each lock period, a list of referrer addresses (unique, append-only)
-    mapping(uint256 => address[]) private referrerAddressesByPeriod;
-    mapping(uint256 => mapping(address => bool)) private isReferrerInPeriod;
+    mapping(uint256 => address[]) internal referrerAddressesByPeriod;
+    mapping(uint256 => mapping(address => bool)) internal isReferrerInPeriod;
 
     // Added state variables for upgrade management
     address public pendingImplementation;
@@ -191,10 +191,10 @@ contract StakingEngineLinear is
     event UpgradeProposed(address indexed proposer, address indexed implementation, uint256 proposalTime);
     event UpgradeApproved(address indexed approver, address indexed implementation);
     event UpgradeCancelled(address indexed canceller, address indexed implementation);
+    event  APYCannotBeSatisfied(uint8 stakingPeriod, uint256 projectedAPY, uint256 minimumAPY);
 
     error OperationFailed(uint256 code);
     error TotalStakedTooLow(uint256 totalStaked, uint256 required);
-    error APYCannotBeSatisfied(uint8 stakingPeriod, uint256 projectedAPY, uint256 minimumAPY);
     error InvalidStorageTokenAddress();
     error NoReferrerRewardsAvailable();
     error InvalidTokenAddress();
@@ -476,7 +476,7 @@ contract StakingEngineLinear is
         }
         
         if (projectedAPY < minimumAPY) {
-            revert APYCannotBeSatisfied(uint8(lockPeriod / (30 days)), projectedAPY, minimumAPY);
+            emit APYCannotBeSatisfied(uint8(lockPeriod / (30 days)), projectedAPY, minimumAPY);
         }
 
         // Update rewards before processing the stake
@@ -657,7 +657,7 @@ contract StakingEngineLinear is
      * @param lockPeriod The lock period (90, 180, or 365 days)
      * @param referrer Optional address of the referrer
      */
-    function stakeTokenWithReferrer(uint256 amount, uint256 lockPeriod, address referrer) external nonReentrant whenNotPaused {
+    function stakeTokenWithReferrer(uint256 amount, uint256 lockPeriod, address referrer) external virtual nonReentrant whenNotPaused {
         if (token.allowance(msg.sender, address(this)) < amount) {
             revert InsufficientApproval();
         }
@@ -702,7 +702,7 @@ contract StakingEngineLinear is
      * @param amount The amount to stake
      * @param lockPeriod The lock period (90, 180, or 365 days)
      */
-    function stakeToken(uint256 amount, uint256 lockPeriod) external nonReentrant whenNotPaused {
+    function stakeToken(uint256 amount, uint256 lockPeriod) external virtual nonReentrant whenNotPaused {
         if (token.allowance(msg.sender, address(this)) < amount) {
             revert InsufficientApproval();
         }
@@ -1123,27 +1123,6 @@ contract StakingEngineLinear is
     }
 
     /**
-     * @notice Approves and executes a pending implementation upgrade
-     * @dev Can only be called by owner
-     */
-    function approveUpgrade(address newImplementation) external onlyRole(ProposalTypes.OWNER_ROLE) {
-        if (pendingImplementation == address(0)) revert NoUpgradeProposalPending();
-        if (pendingImplementation != newImplementation) revert InvalidImplementationAddress();
-        if (block.timestamp < upgradeProposalTime + UPGRADE_TIMELOCK) revert UpgradeTimelockNotExpired();
-
-        emit UpgradeApproved(msg.sender, newImplementation);
-
-        // Clear the upgrade proposal data after approval
-        address implementation = pendingImplementation;
-        pendingImplementation = address(0);
-        upgradeProposer = address(0);
-        upgradeProposalTime = 0;
-
-        // Perform the upgrade
-        _authorizeUpgrade(implementation);
-    }
-
-    /**
      * @notice Cancels a pending implementation upgrade
      * @dev Can be called by owner or the admin who proposed the upgrade
      */
@@ -1171,11 +1150,20 @@ contract StakingEngineLinear is
      */
     function _authorizeUpgrade(address newImplementation) 
         internal
-        whenNotPaused
         onlyRole(ProposalTypes.OWNER_ROLE)
         override 
     {
         // The authorization is handled by the approveUpgrade function
         // This internal function is called automatically during the upgrade process
+        if (pendingImplementation == address(0)) revert NoUpgradeProposalPending();
+        if (pendingImplementation != newImplementation) revert InvalidImplementationAddress();
+        if (block.timestamp < upgradeProposalTime + UPGRADE_TIMELOCK) revert UpgradeTimelockNotExpired();
+
+        emit UpgradeApproved(msg.sender, newImplementation);
+
+        // Clear the upgrade proposal data after approval
+        pendingImplementation = address(0);
+        upgradeProposer = address(0);
+        upgradeProposalTime = 0;
     }
 }

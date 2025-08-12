@@ -9,6 +9,7 @@
     "hardhat": "hardhat",
     "build": "hardhat compile",
     "hardhat:setpk": "yarn hardhat vars set PK",
+    "hardhat:setadminpk": "yarn hardhat vars set ADMIN_PK",
     "hardhat:setbase": "yarn hardhat vars set BASESCAN_API_KEY",
     "deploy:localhost": "yarn hardhat run scripts/localhost.ts",
     "test:governance": "set REPORT_GAS=true && yarn hardhat test test/governance/GovernanceModule.test.ts",
