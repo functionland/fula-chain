@@ -12,6 +12,9 @@ import "../governance/GovernanceModule.sol";
 contract TokenDistributionEngine is ERC20Upgradeable, GovernanceModule {
     using SafeERC20 for IERC20;
 
+    // Additional Flag Constants for TokenDistributionEngine
+    uint8 constant BATCH_INIT_USED = 8;
+
     PackedVars private packedVars;
 
     // @notice Wallet details in the cap
@@ -84,6 +87,8 @@ contract TokenDistributionEngine is ERC20Upgradeable, GovernanceModule {
     error WalletExistsInCap(address wallet, uint256 capId);
     error InvalidCapId(uint256 capId);
     error WalletNotInCap(address wallet, uint256 capId);
+    error BatchInitializationAlreadyUsed();
+    error InvalidBatchData();
 
     /// @notice Initialize the contract
     /// @param _storageToken Address of the token to distribute
@@ -125,6 +130,134 @@ contract TokenDistributionEngine is ERC20Upgradeable, GovernanceModule {
         }
     }
 
+    /// @notice Batch initialization for deployment - can only be used once during deployment
+    /// @param caps Array of vesting cap data
+    /// @param wallets Array of wallet data for each cap
+    /// @param tgeTimestamp TGE timestamp (March 18, 2025 at 9:00 EST = 1742486400)
+    struct BatchCapData {
+        uint256 capId;
+        bytes32 name;
+        uint256 totalAllocation;
+        uint256 cliff; // in days
+        uint256 vestingTerm; // in months
+        uint256 vestingPlan; // in months
+        uint256 initialRelease; // percentage
+    }
+    
+    struct BatchWalletData {
+        uint256 capId;
+        address wallet;
+        bytes32 name;
+        uint256 amount;
+    }
+    
+    function batchInitializeAndStartTGE(
+        BatchCapData[] calldata caps,
+        BatchWalletData[] calldata wallets,
+        uint256 tgeTimestamp
+    ) 
+        external 
+        nonReentrant 
+        whenNotPaused
+        onlyRole(ProposalTypes.ADMIN_ROLE) 
+    {
+        PackedVars storage vars = packedVars;
+        
+        // Can only be used once and before TGE is initiated
+        if ((vars.flags & BATCH_INIT_USED) != 0) revert BatchInitializationAlreadyUsed();
+        if ((vars.flags & TGE_INITIATED) != 0) revert TGEAlreadyInitiated();
+        if (caps.length == 0 || wallets.length == 0) revert InvalidBatchData();
+        
+        // Mark batch initialization as used
+        vars.flags |= BATCH_INIT_USED;
+        
+        // Add all vesting caps
+        for (uint256 i = 0; i < caps.length; i++) {
+            BatchCapData calldata capData = caps[i];
+            
+            if (vestingCaps[capData.capId].totalAllocation != 0) revert CapExists(capData.capId);
+            if (capData.totalAllocation <= 0) revert InvalidAllocation();
+            if (capData.initialRelease > 100) revert InitialReleaseTooLarge();
+            if (capData.vestingPlan >= capData.vestingTerm) revert OutOfRangeVestingPlan();
+            
+            vestingCaps[capData.capId] = VestingCap({
+                totalAllocation: capData.totalAllocation,
+                name: capData.name,
+                cliff: capData.cliff * 1 days,
+                vestingTerm: capData.vestingTerm * 30 days,
+                vestingPlan: capData.vestingPlan * 30 days,
+                initialRelease: capData.initialRelease,
+                startDate: tgeTimestamp,
+                allocatedToWallets: 0,
+                wallets: new address[](0)
+            });
+            
+            capIds.push(capData.capId);
+            emit VestingCapAction(capData.capId, capData.name, 1);
+        }
+        
+        // Add all wallets to their respective caps
+        for (uint256 i = 0; i < wallets.length; i++) {
+            BatchWalletData calldata walletData = wallets[i];
+            
+            VestingCap storage cap = vestingCaps[walletData.capId];
+            if (cap.totalAllocation == 0) revert InvalidCapId(walletData.capId);
+            if (walletData.amount <= 0) revert InvalidAllocation();
+            if (walletData.wallet == address(0)) revert InvalidAddress();
+            if (vestingWallets[walletData.wallet][walletData.capId].amount > 0) revert WalletExistsInCap(walletData.wallet, walletData.capId);
+            
+            // Check cap allocation limits
+            if (cap.allocatedToWallets + walletData.amount > cap.totalAllocation) {
+                revert AllocationTooHigh(walletData.wallet, walletData.amount, cap.totalAllocation - cap.allocatedToWallets, walletData.capId);
+            }
+            
+            // Create wallet info
+            vestingWallets[walletData.wallet][walletData.capId] = VestingWalletInfo({
+                capId: walletData.capId,
+                name: walletData.name,
+                amount: walletData.amount,
+                claimed: 0
+            });
+            
+            // Update cap
+            cap.allocatedToWallets += walletData.amount;
+            cap.wallets.push(walletData.wallet);
+            
+            emit DistributionWalletAdded(
+                walletData.wallet, 
+                walletData.amount, 
+                tgeTimestamp, 
+                cap.cliff, 
+                cap.vestingTerm
+            );
+        }
+        
+        // Calculate total required tokens and initiate TGE
+        uint256 totalRequiredTokens = 0;
+        for (uint256 i = 0; i < capIds.length; i++) {
+            VestingCap storage cap = vestingCaps[capIds[i]];
+            totalRequiredTokens += cap.totalAllocation;
+            
+            // Verify cap allocation matches wallet allocations
+            if (cap.totalAllocation < cap.allocatedToWallets) {
+                revert AllocationTooHigh(
+                    address(0), 
+                    cap.allocatedToWallets, 
+                    cap.totalAllocation, 
+                    capIds[i]
+                );
+            }
+        }
+        
+        // Set TGE initiated flag
+        vars.flags |= TGE_INITIATED;
+        
+        // Update activity timestamp
+        _updateActivityTimestamp();
+        
+        emit TGEInitiated(totalRequiredTokens, tgeTimestamp);
+    }
+
     /// @notice Initiate Token Generation Event to start Vesting and Distribution of pre-allocated tokens
     function initiateTGE() 
         external 
@@ -160,12 +293,6 @@ contract TokenDistributionEngine is ERC20Upgradeable, GovernanceModule {
                     );
                 }
             }
-        }
-
-        // Verify contract has sufficient tokens
-        uint256 contractBalance = storageToken.balanceOf(address(this));
-        if (contractBalance < totalRequiredTokens) {
-            revert InsufficientContractBalance(totalRequiredTokens, contractBalance);
         }
 
         // Set TGE initiated flag

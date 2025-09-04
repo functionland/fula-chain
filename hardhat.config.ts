@@ -28,7 +28,7 @@ const config: HardhatUserConfig = {
   networks: {
     // Mainnets
     ethereum: {
-      url: "https://eth-mainnet.g.alchemy.com/v2/_LnQrpSkygkgsX96sfS_fMl78FeAHnhw",
+      url: "https://go.getblock.us/fd7b8edc55f744339da0893dc88175ec",
       accounts: vars.has("PK") ? [vars.get("PK")] : [],
       chainId: 1,
       gasPrice: "auto",
