@@ -1804,4 +1804,147 @@ describe("RewardEngine Tests", function () {
             ).to.not.be.reverted;
         });
     });
+
+    // 13. Long-term Reward Testing (365 Days)
+    describe("Long-term Reward Testing (365 Days)", function () {
+        beforeEach(async function () {
+            // Add member to the test pool for long-term testing
+            await addMemberToPool(testPoolId, user1, PEER_ID_1);
+        });
+
+        it("should correctly earn and claim rewards over 365 days with claims every 30 days", async function () {
+            // This test simulates 365 days of mining with claims every 30 days
+            // Expected: 8000 tokens per 30-day month
+            
+            const expectedPeriod = Number(await rewardEngine.expectedPeriod()); // 8 hours = 28800 seconds
+            const monthlyReward = await rewardEngine.monthlyRewardPerPeer(); // 8000 tokens
+            const periodsPerMonth = (30 * 24 * 60 * 60) / expectedPeriod; // ~90 periods per month
+            const rewardPerPeriod = monthlyReward / BigInt(Math.floor(periodsPerMonth));
+            
+            console.log(`Expected period: ${expectedPeriod} seconds (${expectedPeriod / 3600} hours)`);
+            console.log(`Monthly reward: ${ethers.formatEther(monthlyReward)} tokens`);
+            console.log(`Periods per month: ${periodsPerMonth}`);
+            console.log(`Reward per period: ${ethers.formatEther(rewardPerPeriod)} tokens`);
+
+            const totalDays = 365;
+            const claimIntervalDays = 30;
+            const secondsPerDay = 24 * 60 * 60;
+            
+            let currentDay = 0;
+            let totalExpectedRewards = BigInt(0);
+            let totalClaimedRewards = BigInt(0);
+            
+            // Track user's token balance
+            let initialBalance = await storageToken.balanceOf(user1.address);
+            console.log(`Initial balance: ${ethers.formatEther(initialBalance)} tokens`);
+
+            // Simulate 365 days of operation
+            while (currentDay < totalDays) {
+                const daysToProcess = Math.min(claimIntervalDays, totalDays - currentDay);
+                console.log(`\nProcessing days ${currentDay + 1} to ${currentDay + daysToProcess}`);
+
+                // Submit online status for each complete period in this interval by advancing time forward
+                let periodsInInterval = 0;
+                const intervalSeconds = daysToProcess * secondsPerDay;
+                const periodsToSimulate = Math.floor(intervalSeconds / expectedPeriod);
+
+                for (let p = 0; p < periodsToSimulate; p++) {
+                    // Use current block timestamp to satisfy timestamp constraints
+                    const ts = await getCurrentBlockTimestamp();
+                    await rewardEngine.connect(owner).submitOnlineStatusBatch(
+                        testPoolId,
+                        [PEER_ID_1],
+                        ts
+                    );
+                    periodsInInterval++;
+
+                    // Advance time by one full expected period to complete it
+                    await time.increase(expectedPeriod + 1);
+                }
+                
+                // Calculate expected rewards for this interval
+                const expectedRewardsForInterval = rewardPerPeriod * BigInt(periodsInInterval);
+                totalExpectedRewards += expectedRewardsForInterval;
+                
+                console.log(`Periods in interval: ${periodsInInterval}`);
+                console.log(`Expected rewards for interval: ${ethers.formatEther(expectedRewardsForInterval)} tokens`);
+                
+                // Check claimable rewards before claiming
+                const claimableRewards = await rewardEngine.calculateEligibleMiningRewards(
+                    user1.address,
+                    PEER_ID_1,
+                    testPoolId
+                );
+                console.log(`Claimable rewards: ${ethers.formatEther(claimableRewards)} tokens`);
+                
+                // Claim rewards if available
+                if (claimableRewards > 0) {
+                    const balanceBeforeClaim = await storageToken.balanceOf(user1.address);
+                    
+                    await rewardEngine.connect(user1).claimRewards(PEER_ID_1, testPoolId);
+                    
+                    const balanceAfterClaim = await storageToken.balanceOf(user1.address);
+                    const actualClaimedAmount = balanceAfterClaim - balanceBeforeClaim;
+                    
+                    totalClaimedRewards += actualClaimedAmount;
+                    
+                    console.log(`Balance before claim: ${ethers.formatEther(balanceBeforeClaim)} tokens`);
+                    console.log(`Balance after claim: ${ethers.formatEther(balanceAfterClaim)} tokens`);
+                    console.log(`Actually claimed: ${ethers.formatEther(actualClaimedAmount)} tokens`);
+                    
+                    // Verify the claimed amount matches what was expected to be claimable
+                    expect(actualClaimedAmount).to.equal(claimableRewards);
+                    
+                    // Verify balance increased by the correct amount
+                    expect(balanceAfterClaim).to.equal(balanceBeforeClaim + claimableRewards);
+                }
+                
+                currentDay += daysToProcess;
+                console.log(`Completed day ${currentDay} of ${totalDays}`);
+            }
+            
+            // Final verification
+            const finalBalance = await storageToken.balanceOf(user1.address);
+            const totalEarned = finalBalance - initialBalance;
+            
+            console.log(`\n=== FINAL RESULTS ===`);
+            console.log(`Total days processed: ${totalDays}`);
+            console.log(`Initial balance: ${ethers.formatEther(initialBalance)} tokens`);
+            console.log(`Final balance: ${ethers.formatEther(finalBalance)} tokens`);
+            console.log(`Total earned: ${ethers.formatEther(totalEarned)} tokens`);
+            console.log(`Total claimed rewards: ${ethers.formatEther(totalClaimedRewards)} tokens`);
+            
+            // Verify that total earned matches total claimed
+            expect(totalEarned).to.equal(totalClaimedRewards);
+            
+            // Calculate expected annual rewards (365 days = ~12.17 months)
+            const monthsInYear = 365 / 30; // ~12.17 months
+            const expectedAnnualRewards = monthlyReward * BigInt(Math.floor(monthsInYear * 100)) / BigInt(100);
+            
+            console.log(`Expected annual rewards: ${ethers.formatEther(expectedAnnualRewards)} tokens`);
+            console.log(`Months in year: ${monthsInYear}`);
+            
+            // Allow for some variance due to period boundaries and rounding
+            const tolerance = ethers.parseEther("100"); // 100 token tolerance
+            const difference = totalEarned > expectedAnnualRewards ? 
+                totalEarned - expectedAnnualRewards : 
+                expectedAnnualRewards - totalEarned;
+            
+            console.log(`Difference from expected: ${ethers.formatEther(difference)} tokens`);
+            
+            // Verify the total earned is within reasonable bounds
+            // Should be approximately 8000 * 12.17 = ~97,360 tokens for 365 days
+            expect(difference).to.be.lte(tolerance);
+            
+            // Verify no more rewards are claimable
+            const remainingRewards = await rewardEngine.calculateEligibleMiningRewards(
+                user1.address,
+                PEER_ID_1,
+                testPoolId
+            );
+            expect(remainingRewards).to.equal(0);
+            
+            console.log(`Test completed successfully!`);
+        }).timeout(300000); // 5 minute timeout for long test
+    });
 });
