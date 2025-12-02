@@ -280,3 +280,8 @@ main()
 // 1. Call createProposal with type=Upgrade and target=newImplementationAddress
 // 2. Get approvals from ADMIN_ROLE holders
 // 3. Execute after timelock period
+
+
+// SKALE: set PROXY_ADDRESS=0xF7c64248294C45Eb3AcdD282b58675F1831fb047 && set TOKEN_ADDRESS=0x9e12735d77c72c5C3670636D428f2F3815d8A4cB && set STORAGE_POOL_ADDRESS=0xf9176Ffde541bF0aa7884298Ce538c471Ad0F015 && set STAKING_POOL_ADDRESS=0x4708416A87935EFcf883c0594BA4980d47A8Db9E && npx hardhat run scripts/RewardEngine/upgradeRewardEngineImplementation.ts --network skale
+
+// BASE: set PROXY_ADDRESS=0x31029f90405fd3D9cB0835c6d21b9DFF058Df45A && set TOKEN_ADDRESS=0x9e12735d77c72c5C3670636D428f2F3815d8A4cB && set STORAGE_POOL_ADDRESS=0xb093fF4B3B3B87a712107B26566e0cCE5E752b4D && set STAKING_POOL_ADDRESS=0xE11Ad2af1560616df68A506f21Dc5E3E6B26dc7e && npx hardhat run scripts/RewardEngine/upgradeRewardEngineImplementation.ts --network base
