@@ -630,11 +630,24 @@ contract RewardEngine is GovernanceModule {
             peerId, poolId, joinDate, calculationStartTime, block.timestamp, maxPeriodsToProcess
         );
 
-        if (eligiblePeriods == 0) revert NoRewardsToClaim();
+        // Always update lastClaimedRewards to advance through offline periods
+        // This allows users to skip through offline months without reverting
+        if (newLastClaimedTime > calculationStartTime) {
+            lastClaimedRewards[account][peerId][poolId] = newLastClaimedTime;
+        }
+
+        // If no eligible periods (all offline), emit event and return without reverting
+        if (eligiblePeriods == 0) {
+            emit MiningRewardsClaimed(account, peerId, poolId, 0);
+            return;
+        }
 
         // Calculate rewards for the limited periods
         uint256 rewardPerPeriod = _calculateRewardPerPeriod();
-        if (rewardPerPeriod == 0) revert NoRewardsToClaim();
+        if (rewardPerPeriod == 0) {
+            emit MiningRewardsClaimed(account, peerId, poolId, 0);
+            return;
+        }
 
         uint256 miningRewards = rewardPerPeriod * eligiblePeriods;
         uint256 storageRewards = 0; // Placeholder for future storage rewards
@@ -643,7 +656,10 @@ contract RewardEngine is GovernanceModule {
         // Apply monthly cap per peer ID
         uint256 currentMonth = _getCurrentMonth();
         uint256 alreadyClaimed = monthlyRewardsClaimed[peerId][poolId][currentMonth];
-        if (alreadyClaimed >= MAX_MONTHLY_REWARD_PER_PEER) revert NoRewardsToClaim();
+        if (alreadyClaimed >= MAX_MONTHLY_REWARD_PER_PEER) {
+            emit MiningRewardsClaimed(account, peerId, poolId, 0);
+            return;
+        }
         if (totalRewards + alreadyClaimed > MAX_MONTHLY_REWARD_PER_PEER) {
             totalRewards = MAX_MONTHLY_REWARD_PER_PEER - alreadyClaimed;
             miningRewards = totalRewards; // Adjust mining rewards accordingly
@@ -652,10 +668,6 @@ contract RewardEngine is GovernanceModule {
         // Additional check: ensure StakingPool can actually transfer the tokens
         uint256 stakingPoolTokenBalance = token.balanceOf(address(stakingPool));
         if (stakingPoolTokenBalance < totalRewards) revert InsufficientRewards();
-
-        // 2. EFFECTS - Update state BEFORE external calls (proper CEI pattern)
-        // Store the calculated end time for next claim (not the full period end)
-        lastClaimedRewards[account][peerId][poolId] = newLastClaimedTime;
 
         // Update monthly rewards tracking for cap enforcement
         monthlyRewardsClaimed[peerId][poolId][currentMonth] += totalRewards;

@@ -2392,4 +2392,252 @@ describe("RewardEngine Tests", function () {
             console.log(`\nRun the individual scenario tests to see actual results!`);
         });
     });
+
+    // 16. Offline Gap Test - Ensure going offline between months doesn't break claiming
+    describe("Offline Gap Between Months Test", function () {
+        beforeEach(async function () {
+            // Add member to the test pool
+            await addMemberToPool(testPoolId, user1, PEER_ID_1);
+        });
+
+        it("should handle offline gaps with 90 periods per claim (4 separate claims)", async function () {
+            console.log("\n========== OFFLINE GAP TEST (90 periods per claim) ==========");
+            console.log("Month 1: User is ONLINE for all periods");
+            console.log("Month 2: User is OFFLINE (no online status submitted)");
+            console.log("Month 3: User is OFFLINE (no online status submitted)");
+            console.log("Month 4: User is ONLINE for all periods");
+            console.log("User claims with EXACTLY 90 periods per transaction");
+            console.log("Expected: 4 claims needed (Month1=8000, Month2=0, Month3=0, Month4=8000)");
+            console.log("=============================================================\n");
+
+            const expectedPeriod = Number(await rewardEngine.expectedPeriod()); // 8 hours
+            const monthlyReward = await rewardEngine.monthlyRewardPerPeer(); // 8000 tokens
+            const periodsPerMonth = Math.floor((30 * 24 * 60 * 60) / expectedPeriod); // ~90 periods
+            const rewardPerPeriod = monthlyReward / BigInt(periodsPerMonth);
+
+            console.log(`Expected period: ${expectedPeriod} seconds (${expectedPeriod / 3600} hours)`);
+            console.log(`Periods per month: ${periodsPerMonth}`);
+            console.log(`Reward per period: ${ethers.formatEther(rewardPerPeriod)} tokens`);
+
+            // ========== MONTH 1: User is ONLINE ==========
+            console.log(`\n--- MONTH 1: User is ONLINE ---`);
+            for (let i = 0; i < periodsPerMonth; i++) {
+                const ts = await getCurrentBlockTimestamp();
+                await rewardEngine.connect(owner).submitOnlineStatusBatch(
+                    testPoolId,
+                    [PEER_ID_1],
+                    ts
+                );
+                await time.increase(expectedPeriod + 1);
+            }
+            console.log(`✅ Month 1: Submitted ${periodsPerMonth} online statuses`);
+
+            // ========== MONTH 2: User is OFFLINE (just advance time, no online status) ==========
+            console.log(`\n--- MONTH 2: User is OFFLINE ---`);
+            await time.increase(30 * 24 * 60 * 60); // Advance 30 days without submitting online status
+            console.log(`⏭️ Month 2: Advanced 30 days (no online status submitted)`);
+
+            // ========== MONTH 3: User is OFFLINE (just advance time, no online status) ==========
+            console.log(`\n--- MONTH 3: User is OFFLINE ---`);
+            await time.increase(30 * 24 * 60 * 60); // Advance 30 days without submitting online status
+            console.log(`⏭️ Month 3: Advanced 30 days (no online status submitted)`);
+
+            // ========== MONTH 4: User is ONLINE ==========
+            console.log(`\n--- MONTH 4: User is ONLINE ---`);
+            for (let i = 0; i < periodsPerMonth; i++) {
+                const ts = await getCurrentBlockTimestamp();
+                await rewardEngine.connect(owner).submitOnlineStatusBatch(
+                    testPoolId,
+                    [PEER_ID_1],
+                    ts
+                );
+                await time.increase(expectedPeriod + 1);
+            }
+            console.log(`✅ Month 4: Submitted ${periodsPerMonth} online statuses`);
+
+            // Check claim status after 4 months
+            const [totalUnclaimedPeriods, , , , ] = 
+                await rewardEngine.getClaimStatus(user1.address, PEER_ID_1, testPoolId);
+
+            console.log(`\n--- After 4 months (before any claims) ---`);
+            console.log(`Total unclaimed periods (online only): ${totalUnclaimedPeriods}`);
+            // Should be 180 (90 from month 1 + 90 from month 4)
+            expect(totalUnclaimedPeriods).to.equal(BigInt(periodsPerMonth * 2));
+
+            // ========== CLAIM 1: Month 1 - Should get ~8000 tokens ==========
+            console.log(`\n--- CLAIM 1: Month 1 (with limit=${periodsPerMonth}) ---`);
+            const balanceBefore1 = await storageToken.balanceOf(user1.address);
+            await rewardEngine.connect(user1).claimRewardsWithLimit(PEER_ID_1, testPoolId, periodsPerMonth);
+            const balanceAfter1 = await storageToken.balanceOf(user1.address);
+            const claimed1 = balanceAfter1 - balanceBefore1;
+
+            const expectedMonth1Reward = rewardPerPeriod * BigInt(periodsPerMonth);
+            console.log(`Claim 1 result: ${ethers.formatEther(claimed1)} tokens`);
+            expect(claimed1).to.equal(expectedMonth1Reward);
+            console.log(`✅ CLAIM 1 PASSED: Got ${ethers.formatEther(claimed1)} tokens for Month 1`);
+
+            // ========== CLAIM 2: Month 2 (offline) - Should get 0 tokens and NOT revert ==========
+            console.log(`\n--- CLAIM 2: Month 2 OFFLINE (with limit=${periodsPerMonth}) ---`);
+            const balanceBefore2 = await storageToken.balanceOf(user1.address);
+            await rewardEngine.connect(user1).claimRewardsWithLimit(PEER_ID_1, testPoolId, periodsPerMonth);
+            const balanceAfter2 = await storageToken.balanceOf(user1.address);
+            const claimed2 = balanceAfter2 - balanceBefore2;
+
+            console.log(`Claim 2 result: ${ethers.formatEther(claimed2)} tokens`);
+            expect(claimed2).to.equal(BigInt(0));
+            console.log(`✅ CLAIM 2 PASSED: Got 0 tokens for offline Month 2 (no revert, timestamp advanced)`);
+
+            // ========== CLAIM 3: Month 3 (offline) - Should get 0 tokens ==========
+            console.log(`\n--- CLAIM 3: Month 3 OFFLINE (with limit=${periodsPerMonth}) ---`);
+            const balanceBefore3 = await storageToken.balanceOf(user1.address);
+            await rewardEngine.connect(user1).claimRewardsWithLimit(PEER_ID_1, testPoolId, periodsPerMonth);
+            const balanceAfter3 = await storageToken.balanceOf(user1.address);
+            const claimed3 = balanceAfter3 - balanceBefore3;
+
+            console.log(`Claim 3 result: ${ethers.formatEther(claimed3)} tokens`);
+            expect(claimed3).to.equal(BigInt(0));
+            console.log(`✅ CLAIM 3 PASSED: Got 0 tokens for offline Month 3 (no revert, timestamp advanced)`);
+
+            // ========== CLAIM 4: Month 4 - Should get ~8000 tokens ==========
+            // Advance to next calendar month to reset monthly cap
+            await time.increase(30 * 24 * 60 * 60 + 1);
+            
+            console.log(`\n--- CLAIM 4: Month 4 (with limit=${periodsPerMonth}) ---`);
+            const balanceBefore4 = await storageToken.balanceOf(user1.address);
+            await rewardEngine.connect(user1).claimRewardsWithLimit(PEER_ID_1, testPoolId, periodsPerMonth);
+            const balanceAfter4 = await storageToken.balanceOf(user1.address);
+            const claimed4 = balanceAfter4 - balanceBefore4;
+
+            const expectedMonth4Reward = rewardPerPeriod * BigInt(periodsPerMonth);
+            console.log(`Claim 4 result: ${ethers.formatEther(claimed4)} tokens`);
+            expect(claimed4).to.equal(expectedMonth4Reward);
+            console.log(`✅ CLAIM 4 PASSED: Got ${ethers.formatEther(claimed4)} tokens for Month 4`);
+
+            // ========== FINAL VERIFICATION ==========
+            const totalClaimed = claimed1 + claimed2 + claimed3 + claimed4;
+            console.log(`\n========== FINAL RESULTS ==========`);
+            console.log(`Claim 1 (Month 1): ${ethers.formatEther(claimed1)} tokens`);
+            console.log(`Claim 2 (Month 2 offline): ${ethers.formatEther(claimed2)} tokens`);
+            console.log(`Claim 3 (Month 3 offline): ${ethers.formatEther(claimed3)} tokens`);
+            console.log(`Claim 4 (Month 4): ${ethers.formatEther(claimed4)} tokens`);
+            console.log(`Total: ${ethers.formatEther(totalClaimed)} tokens`);
+            console.log(`====================================\n`);
+
+            const expectedTotal = expectedMonth1Reward + expectedMonth4Reward;
+            expect(totalClaimed).to.equal(expectedTotal);
+            console.log(`✅ TEST PASSED: 4 claims completed successfully!`);
+            console.log(`   - Offline months (2 & 3) returned 0 tokens but did NOT revert`);
+            console.log(`   - lastClaimedRewards timestamp was advanced through offline periods`);
+        }).timeout(300000); // 5 minute timeout
+
+        it("should correctly report zero rewards for offline periods", async function () {
+            console.log("\n========== OFFLINE PERIODS ZERO REWARDS TEST ==========");
+            
+            const expectedPeriod = Number(await rewardEngine.expectedPeriod());
+            const periodsPerMonth = Math.floor((30 * 24 * 60 * 60) / expectedPeriod);
+
+            // User joins but never submits online status
+            // Just advance time for 2 months
+            await time.increase(60 * 24 * 60 * 60); // 60 days
+
+            // Check rewards - should be 0 since user was never online
+            const eligibleRewards = await rewardEngine.calculateEligibleMiningRewards(
+                user1.address, PEER_ID_1, testPoolId
+            );
+            
+            console.log(`User was offline for 2 months`);
+            console.log(`Eligible rewards: ${ethers.formatEther(eligibleRewards)} tokens`);
+            
+            expect(eligibleRewards).to.equal(0);
+
+            // Trying to claim should revert with NoRewardsToClaim
+            await expect(
+                rewardEngine.connect(user1).claimRewards(PEER_ID_1, testPoolId)
+            ).to.be.revertedWithCustomError(rewardEngine, "NoRewardsToClaim");
+
+            console.log(`✅ Correctly reverted with NoRewardsToClaim for offline user`);
+        });
+
+        it("should handle alternating online/offline months correctly", async function () {
+            console.log("\n========== ALTERNATING ONLINE/OFFLINE TEST ==========");
+            console.log("Month 1: ONLINE");
+            console.log("Month 2: OFFLINE");
+            console.log("Month 3: ONLINE");
+            console.log("===================================================\n");
+
+            const expectedPeriod = Number(await rewardEngine.expectedPeriod());
+            const monthlyReward = await rewardEngine.monthlyRewardPerPeer();
+            const periodsPerMonth = Math.floor((30 * 24 * 60 * 60) / expectedPeriod);
+            const rewardPerPeriod = monthlyReward / BigInt(periodsPerMonth);
+
+            // Month 1: ONLINE
+            console.log(`--- Month 1: ONLINE ---`);
+            for (let i = 0; i < periodsPerMonth; i++) {
+                const ts = await getCurrentBlockTimestamp();
+                await rewardEngine.connect(owner).submitOnlineStatusBatch(testPoolId, [PEER_ID_1], ts);
+                await time.increase(expectedPeriod + 1);
+            }
+
+            // Month 2: OFFLINE
+            console.log(`--- Month 2: OFFLINE ---`);
+            await time.increase(30 * 24 * 60 * 60);
+
+            // Month 3: ONLINE
+            console.log(`--- Month 3: ONLINE ---`);
+            for (let i = 0; i < periodsPerMonth; i++) {
+                const ts = await getCurrentBlockTimestamp();
+                await rewardEngine.connect(owner).submitOnlineStatusBatch(testPoolId, [PEER_ID_1], ts);
+                await time.increase(expectedPeriod + 1);
+            }
+
+            // Check total unclaimed periods - should be 2 months worth (months 1 and 3)
+            const totalEligible = await rewardEngine.calculateEligibleMiningRewards(
+                user1.address, PEER_ID_1, testPoolId
+            );
+            
+            console.log(`\nTotal eligible rewards: ${ethers.formatEther(totalEligible)} tokens`);
+            // Due to monthly cap, view function shows capped amount
+            
+            // Claim Month 1
+            console.log(`\n--- Claiming Month 1 ---`);
+            const balanceBefore1 = await storageToken.balanceOf(user1.address);
+            await rewardEngine.connect(user1).claimRewardsWithLimit(PEER_ID_1, testPoolId, periodsPerMonth);
+            const balanceAfter1 = await storageToken.balanceOf(user1.address);
+            const claimed1 = balanceAfter1 - balanceBefore1;
+            console.log(`Claim 1: ${ethers.formatEther(claimed1)} tokens`);
+            
+            const expectedMonth1 = rewardPerPeriod * BigInt(periodsPerMonth);
+            expect(claimed1).to.equal(expectedMonth1);
+
+            // Advance to next calendar month to reset cap
+            await time.increase(30 * 24 * 60 * 60 + 1);
+
+            // Claim Month 3 (skipping offline Month 2)
+            // Use 180 periods to cover Month 2 (offline) + Month 3 (online)
+            console.log(`\n--- Claiming Month 3 (skipping offline Month 2) ---`);
+            const balanceBefore2 = await storageToken.balanceOf(user1.address);
+            await rewardEngine.connect(user1).claimRewardsWithLimit(PEER_ID_1, testPoolId, 180);
+            const balanceAfter2 = await storageToken.balanceOf(user1.address);
+            const claimed2 = balanceAfter2 - balanceBefore2;
+            console.log(`Claim 2: ${ethers.formatEther(claimed2)} tokens`);
+            
+            const expectedMonth3 = rewardPerPeriod * BigInt(periodsPerMonth);
+            expect(claimed2).to.equal(expectedMonth3);
+
+            const totalClaimed = claimed1 + claimed2;
+            const expectedTotal = rewardPerPeriod * BigInt(periodsPerMonth * 2); // 2 online months
+            
+            console.log(`\n========== RESULTS ==========`);
+            console.log(`Month 1 (online): ${ethers.formatEther(claimed1)} tokens`);
+            console.log(`Month 2 (offline): 0 tokens (skipped)`);
+            console.log(`Month 3 (online): ${ethers.formatEther(claimed2)} tokens`);
+            console.log(`Total claimed: ${ethers.formatEther(totalClaimed)} tokens`);
+            console.log(`Expected (2 online months): ${ethers.formatEther(expectedTotal)} tokens`);
+            console.log(`==============================\n`);
+
+            expect(totalClaimed).to.equal(expectedTotal);
+
+            console.log(`✅ TEST PASSED: Alternating online/offline months handled correctly!`);
+        }).timeout(300000); // 5 minute timeout
+    });
 });
