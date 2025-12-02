@@ -1947,4 +1947,449 @@ describe("RewardEngine Tests", function () {
             console.log(`Test completed successfully!`);
         }).timeout(300000); // 5 minute timeout for long test
     });
+
+    // 14. Claim Periods Limit Testing
+    describe("Claim Periods Limit Testing", function () {
+        beforeEach(async function () {
+            // Add member to the test pool
+            await addMemberToPool(testPoolId, user1, PEER_ID_1);
+        });
+
+        it("should return correct claim status information", async function () {
+            const expectedPeriod = Number(await rewardEngine.expectedPeriod());
+            
+            // Submit online status for multiple periods
+            const periodsToCreate = 10;
+            for (let i = 0; i < periodsToCreate; i++) {
+                const ts = await getCurrentBlockTimestamp();
+                await rewardEngine.connect(owner).submitOnlineStatusBatch(
+                    testPoolId,
+                    [PEER_ID_1],
+                    ts
+                );
+                await time.increase(expectedPeriod + 1);
+            }
+
+            // Get claim status
+            const [totalUnclaimedPeriods, defaultPeriodsPerClaim, maxPeriodsPerClaim, estimatedClaimsNeeded, hasMoreToClaim] = 
+                await rewardEngine.getClaimStatus(user1.address, PEER_ID_1, testPoolId);
+
+            console.log(`Total unclaimed periods: ${totalUnclaimedPeriods}`);
+            console.log(`Default periods per claim: ${defaultPeriodsPerClaim}`);
+            console.log(`Max periods per claim: ${maxPeriodsPerClaim}`);
+            console.log(`Estimated claims needed: ${estimatedClaimsNeeded}`);
+            console.log(`Has more to claim: ${hasMoreToClaim}`);
+
+            expect(totalUnclaimedPeriods).to.equal(periodsToCreate);
+            expect(defaultPeriodsPerClaim).to.equal(90); // DEFAULT_CLAIM_PERIODS_PER_TX
+            expect(maxPeriodsPerClaim).to.equal(1000); // MAX_CLAIM_PERIODS_LIMIT
+            expect(estimatedClaimsNeeded).to.equal(1); // 10 periods < 90 default
+            expect(hasMoreToClaim).to.equal(false);
+        });
+
+        it("should allow claiming with custom period limit using claimRewardsWithLimit", async function () {
+            const expectedPeriod = Number(await rewardEngine.expectedPeriod());
+            const monthlyReward = await rewardEngine.monthlyRewardPerPeer();
+            const periodsPerMonth = Math.floor((30 * 24 * 60 * 60) / expectedPeriod);
+            const rewardPerPeriod = monthlyReward / BigInt(periodsPerMonth);
+
+            // Submit online status for 10 periods
+            const periodsToCreate = 10;
+            for (let i = 0; i < periodsToCreate; i++) {
+                const ts = await getCurrentBlockTimestamp();
+                await rewardEngine.connect(owner).submitOnlineStatusBatch(
+                    testPoolId,
+                    [PEER_ID_1],
+                    ts
+                );
+                await time.increase(expectedPeriod + 1);
+            }
+
+            // Claim only 3 periods at a time
+            const maxPeriodsPerClaim = 3;
+            let totalClaimed = BigInt(0);
+            let claimCount = 0;
+
+            while (true) {
+                const [totalUnclaimedPeriods, , , ,] = await rewardEngine.getClaimStatus(
+                    user1.address, PEER_ID_1, testPoolId
+                );
+                
+                if (totalUnclaimedPeriods === BigInt(0)) break;
+
+                const balanceBefore = await storageToken.balanceOf(user1.address);
+                await rewardEngine.connect(user1).claimRewardsWithLimit(PEER_ID_1, testPoolId, maxPeriodsPerClaim);
+                const balanceAfter = await storageToken.balanceOf(user1.address);
+                
+                const claimed = balanceAfter - balanceBefore;
+                totalClaimed += claimed;
+                claimCount++;
+
+                console.log(`Claim ${claimCount}: claimed ${ethers.formatEther(claimed)} tokens, remaining periods: ${totalUnclaimedPeriods - BigInt(Math.min(maxPeriodsPerClaim, Number(totalUnclaimedPeriods)))}`);
+            }
+
+            // Should have required multiple claims
+            expect(claimCount).to.equal(Math.ceil(periodsToCreate / maxPeriodsPerClaim)); // 10/3 = 4 claims
+
+            // Total claimed should match expected
+            const expectedTotal = rewardPerPeriod * BigInt(periodsToCreate);
+            expect(totalClaimed).to.equal(expectedTotal);
+
+            console.log(`Total claims needed: ${claimCount}`);
+            console.log(`Total claimed: ${ethers.formatEther(totalClaimed)} tokens`);
+        });
+
+        it("should use default limit when invalid maxPeriods is provided", async function () {
+            const expectedPeriod = Number(await rewardEngine.expectedPeriod());
+
+            // Submit online status for a few periods
+            for (let i = 0; i < 5; i++) {
+                const ts = await getCurrentBlockTimestamp();
+                await rewardEngine.connect(owner).submitOnlineStatusBatch(
+                    testPoolId,
+                    [PEER_ID_1],
+                    ts
+                );
+                await time.increase(expectedPeriod + 1);
+            }
+
+            // Claim with 0 (invalid) - should use default
+            await expect(
+                rewardEngine.connect(user1).claimRewardsWithLimit(PEER_ID_1, testPoolId, 0)
+            ).to.not.be.reverted;
+
+            // Verify rewards were claimed
+            const remainingRewards = await rewardEngine.calculateEligibleMiningRewards(
+                user1.address, PEER_ID_1, testPoolId
+            );
+            expect(remainingRewards).to.equal(0);
+        });
+
+        it("should cap maxPeriods at MAX_CLAIM_PERIODS_LIMIT when exceeding limit", async function () {
+            const expectedPeriod = Number(await rewardEngine.expectedPeriod());
+
+            // Submit online status for a few periods
+            for (let i = 0; i < 5; i++) {
+                const ts = await getCurrentBlockTimestamp();
+                await rewardEngine.connect(owner).submitOnlineStatusBatch(
+                    testPoolId,
+                    [PEER_ID_1],
+                    ts
+                );
+                await time.increase(expectedPeriod + 1);
+            }
+
+            // Claim with value exceeding MAX_CLAIM_PERIODS_LIMIT (1000) - should use default
+            await expect(
+                rewardEngine.connect(user1).claimRewardsWithLimit(PEER_ID_1, testPoolId, 2000)
+            ).to.not.be.reverted;
+
+            // Verify rewards were claimed
+            const remainingRewards = await rewardEngine.calculateEligibleMiningRewards(
+                user1.address, PEER_ID_1, testPoolId
+            );
+            expect(remainingRewards).to.equal(0);
+        });
+
+        it("should correctly handle batched claims over many periods", async function () {
+            const expectedPeriod = Number(await rewardEngine.expectedPeriod());
+            const monthlyReward = await rewardEngine.monthlyRewardPerPeer();
+            const periodsPerMonth = Math.floor((30 * 24 * 60 * 60) / expectedPeriod);
+            const rewardPerPeriod = monthlyReward / BigInt(periodsPerMonth);
+
+            // Create 100 periods (more than default 90)
+            const periodsToCreate = 100;
+            console.log(`Creating ${periodsToCreate} periods...`);
+            
+            for (let i = 0; i < periodsToCreate; i++) {
+                const ts = await getCurrentBlockTimestamp();
+                await rewardEngine.connect(owner).submitOnlineStatusBatch(
+                    testPoolId,
+                    [PEER_ID_1],
+                    ts
+                );
+                await time.increase(expectedPeriod + 1);
+            }
+
+            // Check claim status - should indicate multiple claims needed with default
+            const [totalUnclaimedPeriods, defaultPeriodsPerClaim, , estimatedClaimsNeeded, hasMoreToClaim] = 
+                await rewardEngine.getClaimStatus(user1.address, PEER_ID_1, testPoolId);
+
+            console.log(`Total unclaimed periods: ${totalUnclaimedPeriods}`);
+            console.log(`Default periods per claim: ${defaultPeriodsPerClaim}`);
+            console.log(`Estimated claims needed: ${estimatedClaimsNeeded}`);
+            console.log(`Has more to claim: ${hasMoreToClaim}`);
+
+            expect(totalUnclaimedPeriods).to.equal(BigInt(periodsToCreate));
+            expect(hasMoreToClaim).to.equal(true); // 100 > 90 default
+            expect(estimatedClaimsNeeded).to.equal(BigInt(2)); // ceil(100/90) = 2
+
+            // First claim with default limit (90 periods)
+            const balanceBefore1 = await storageToken.balanceOf(user1.address);
+            await rewardEngine.connect(user1).claimRewards(PEER_ID_1, testPoolId);
+            const balanceAfter1 = await storageToken.balanceOf(user1.address);
+            const claimed1 = balanceAfter1 - balanceBefore1;
+
+            // Should have claimed 90 periods worth (or up to monthly cap)
+            const expectedClaim1 = rewardPerPeriod * defaultPeriodsPerClaim;
+            console.log(`First claim: ${ethers.formatEther(claimed1)} tokens (${defaultPeriodsPerClaim} periods)`);
+            console.log(`Expected first claim: ${ethers.formatEther(expectedClaim1)} tokens`);
+            
+            // The claimed amount should be capped at monthly max (8000 tokens)
+            const maxMonthlyReward = await rewardEngine.MAX_MONTHLY_REWARD_PER_PEER();
+            expect(claimed1).to.be.lte(maxMonthlyReward);
+            expect(claimed1).to.equal(expectedClaim1);
+
+            // Check remaining periods (note: periods are tracked separately from monthly cap)
+            const [remainingPeriods, , , , stillHasMore] = 
+                await rewardEngine.getClaimStatus(user1.address, PEER_ID_1, testPoolId);
+            
+            const expectedRemaining = BigInt(periodsToCreate) - defaultPeriodsPerClaim;
+            expect(remainingPeriods).to.equal(expectedRemaining); // 10 remaining
+            expect(stillHasMore).to.equal(false); // 10 < 90
+            console.log(`Remaining periods after first claim: ${remainingPeriods}`);
+
+            // Note: Second claim may be limited by monthly cap
+            // After claiming ~8000 tokens (90 periods), the monthly cap is nearly reached
+            // The remaining 10 periods would give ~888 more tokens, but may be capped
+            
+            // Advance to next month to reset the monthly cap
+            await time.increase(30 * 24 * 60 * 60 + 1);
+
+            // Second claim to get the rest (now in new month)
+            const balanceBefore2 = await storageToken.balanceOf(user1.address);
+            await rewardEngine.connect(user1).claimRewards(PEER_ID_1, testPoolId);
+            const balanceAfter2 = await storageToken.balanceOf(user1.address);
+            const claimed2 = balanceAfter2 - balanceBefore2;
+
+            // Should have claimed remaining periods
+            const expectedClaim2 = rewardPerPeriod * remainingPeriods;
+            console.log(`Second claim: ${ethers.formatEther(claimed2)} tokens (${remainingPeriods} periods)`);
+            console.log(`Expected claim2: ${ethers.formatEther(expectedClaim2)} tokens`);
+            expect(claimed2).to.equal(expectedClaim2);
+
+            // Verify all claimed
+            const finalRemaining = await rewardEngine.calculateEligibleMiningRewards(
+                user1.address, PEER_ID_1, testPoolId
+            );
+            expect(finalRemaining).to.equal(0);
+
+            console.log(`Total claimed: ${ethers.formatEther(claimed1 + claimed2)} tokens`);
+        }).timeout(120000); // 2 minute timeout
+    });
+
+    // 15. 3-Month Claiming Scenarios Analysis
+    describe("3-Month Claiming Scenarios Analysis", function () {
+        beforeEach(async function () {
+            // Add member to the test pool
+            await addMemberToPool(testPoolId, user1, PEER_ID_1);
+        });
+
+        it("SCENARIO 1: Online 3 months, claim 1 month at a time (3 separate claims)", async function () {
+            console.log("\n========== SCENARIO 1 ==========");
+            console.log("User is online for ALL periods for 3 months");
+            console.log("Claims with maxPeriods = 90 (1 month worth) at end of 3 months");
+            console.log("================================\n");
+
+            const expectedPeriod = Number(await rewardEngine.expectedPeriod()); // 8 hours
+            const monthlyReward = await rewardEngine.monthlyRewardPerPeer(); // 8000 tokens
+            const periodsPerMonth = Math.floor((30 * 24 * 60 * 60) / expectedPeriod); // ~90 periods
+            const rewardPerPeriod = monthlyReward / BigInt(periodsPerMonth);
+            const maxMonthlyReward = await rewardEngine.MAX_MONTHLY_REWARD_PER_PEER();
+
+            console.log(`Expected period: ${expectedPeriod} seconds (${expectedPeriod / 3600} hours)`);
+            console.log(`Monthly reward cap: ${ethers.formatEther(maxMonthlyReward)} tokens`);
+            console.log(`Periods per month: ${periodsPerMonth}`);
+            console.log(`Reward per period: ${ethers.formatEther(rewardPerPeriod)} tokens`);
+
+            // Simulate 3 months of being online (90 days = ~270 periods)
+            const monthsToSimulate = 3;
+            const totalPeriodsToCreate = periodsPerMonth * monthsToSimulate;
+            
+            console.log(`\nCreating ${totalPeriodsToCreate} periods (${monthsToSimulate} months)...`);
+            
+            for (let i = 0; i < totalPeriodsToCreate; i++) {
+                const ts = await getCurrentBlockTimestamp();
+                await rewardEngine.connect(owner).submitOnlineStatusBatch(
+                    testPoolId,
+                    [PEER_ID_1],
+                    ts
+                );
+                await time.increase(expectedPeriod + 1);
+            }
+
+            // Check status after 3 months
+            const [totalUnclaimedPeriods, defaultPeriodsPerClaim, maxPeriodsPerClaim, estimatedClaimsNeeded, hasMoreToClaim] = 
+                await rewardEngine.getClaimStatus(user1.address, PEER_ID_1, testPoolId);
+
+            console.log(`\n--- After 3 months (before any claims) ---`);
+            console.log(`Total unclaimed periods: ${totalUnclaimedPeriods}`);
+            console.log(`Default periods per claim: ${defaultPeriodsPerClaim}`);
+            console.log(`Max periods per claim: ${maxPeriodsPerClaim}`);
+            console.log(`Estimated claims needed: ${estimatedClaimsNeeded}`);
+            console.log(`Has more to claim: ${hasMoreToClaim}`);
+
+            const totalEligible = await rewardEngine.calculateEligibleMiningRewards(user1.address, PEER_ID_1, testPoolId);
+            console.log(`Total eligible rewards (view): ${ethers.formatEther(totalEligible)} tokens`);
+
+            // Now claim with 90 periods at a time (1 month worth)
+            // IMPORTANT: We need to advance to a new calendar month between claims
+            // because the monthly cap resets each calendar month
+            const periodsPerClaim = 90;
+            let totalClaimed = BigInt(0);
+            let claimNumber = 0;
+
+            console.log(`\n--- Claiming with ${periodsPerClaim} periods per claim ---`);
+            console.log(`(Advancing 30 days between claims to reset monthly cap)\n`);
+
+            while (true) {
+                const [remainingPeriods, , , , ] = await rewardEngine.getClaimStatus(
+                    user1.address, PEER_ID_1, testPoolId
+                );
+                
+                if (remainingPeriods === BigInt(0)) break;
+
+                claimNumber++;
+                const balanceBefore = await storageToken.balanceOf(user1.address);
+                
+                // Use claimRewardsWithLimit with 90 periods
+                await rewardEngine.connect(user1).claimRewardsWithLimit(PEER_ID_1, testPoolId, periodsPerClaim);
+                
+                const balanceAfter = await storageToken.balanceOf(user1.address);
+                const claimed = balanceAfter - balanceBefore;
+                totalClaimed += claimed;
+
+                const [newRemaining, , , , ] = await rewardEngine.getClaimStatus(
+                    user1.address, PEER_ID_1, testPoolId
+                );
+
+                console.log(`Claim ${claimNumber}: ${ethers.formatEther(claimed)} tokens | Remaining periods: ${newRemaining}`);
+
+                // Advance to next month to reset monthly cap (if there are more periods to claim)
+                if (newRemaining > BigInt(0)) {
+                    console.log(`  -> Advancing 30 days to next month...`);
+                    await time.increase(30 * 24 * 60 * 60 + 1);
+                }
+            }
+
+            console.log(`\n========== SCENARIO 1 RESULTS ==========`);
+            console.log(`Total claims made: ${claimNumber}`);
+            console.log(`Total tokens claimed: ${ethers.formatEther(totalClaimed)} tokens`);
+            console.log(`Expected if no cap: ${ethers.formatEther(rewardPerPeriod * BigInt(totalPeriodsToCreate))} tokens`);
+            console.log(`=========================================\n`);
+        }).timeout(300000); // 5 minute timeout
+
+        it("SCENARIO 2: Online 3 months, claim all at once (max periods = 270)", async function () {
+            console.log("\n========== SCENARIO 2 ==========");
+            console.log("User is online for ALL periods for 3 months");
+            console.log("Claims with maxPeriods = 270 (3 months worth) at end of 3 months");
+            console.log("================================\n");
+
+            const expectedPeriod = Number(await rewardEngine.expectedPeriod()); // 8 hours
+            const monthlyReward = await rewardEngine.monthlyRewardPerPeer(); // 8000 tokens
+            const periodsPerMonth = Math.floor((30 * 24 * 60 * 60) / expectedPeriod); // ~90 periods
+            const rewardPerPeriod = monthlyReward / BigInt(periodsPerMonth);
+            const maxMonthlyReward = await rewardEngine.MAX_MONTHLY_REWARD_PER_PEER();
+
+            console.log(`Expected period: ${expectedPeriod} seconds (${expectedPeriod / 3600} hours)`);
+            console.log(`Monthly reward cap: ${ethers.formatEther(maxMonthlyReward)} tokens`);
+            console.log(`Periods per month: ${periodsPerMonth}`);
+            console.log(`Reward per period: ${ethers.formatEther(rewardPerPeriod)} tokens`);
+
+            // Simulate 3 months of being online (90 days = ~270 periods)
+            const monthsToSimulate = 3;
+            const totalPeriodsToCreate = periodsPerMonth * monthsToSimulate;
+            
+            console.log(`\nCreating ${totalPeriodsToCreate} periods (${monthsToSimulate} months)...`);
+            
+            for (let i = 0; i < totalPeriodsToCreate; i++) {
+                const ts = await getCurrentBlockTimestamp();
+                await rewardEngine.connect(owner).submitOnlineStatusBatch(
+                    testPoolId,
+                    [PEER_ID_1],
+                    ts
+                );
+                await time.increase(expectedPeriod + 1);
+            }
+
+            // Check status after 3 months
+            const [totalUnclaimedPeriods, defaultPeriodsPerClaim, maxPeriodsPerClaim, estimatedClaimsNeeded, hasMoreToClaim] = 
+                await rewardEngine.getClaimStatus(user1.address, PEER_ID_1, testPoolId);
+
+            console.log(`\n--- After 3 months (before any claims) ---`);
+            console.log(`Total unclaimed periods: ${totalUnclaimedPeriods}`);
+            console.log(`Default periods per claim: ${defaultPeriodsPerClaim}`);
+            console.log(`Max periods per claim: ${maxPeriodsPerClaim}`);
+            console.log(`Estimated claims needed: ${estimatedClaimsNeeded}`);
+            console.log(`Has more to claim: ${hasMoreToClaim}`);
+
+            const totalEligible = await rewardEngine.calculateEligibleMiningRewards(user1.address, PEER_ID_1, testPoolId);
+            console.log(`Total eligible rewards (view): ${ethers.formatEther(totalEligible)} tokens`);
+
+            // Now claim with 270 periods at a time (3 months worth)
+            const periodsPerClaim = totalPeriodsToCreate; // 270 periods
+            let totalClaimed = BigInt(0);
+            let claimNumber = 0;
+
+            console.log(`\n--- Claiming with ${periodsPerClaim} periods per claim ---`);
+
+            while (true) {
+                const [remainingPeriods, , , , ] = await rewardEngine.getClaimStatus(
+                    user1.address, PEER_ID_1, testPoolId
+                );
+                
+                if (remainingPeriods === BigInt(0)) break;
+
+                claimNumber++;
+                const balanceBefore = await storageToken.balanceOf(user1.address);
+                
+                // Use claimRewardsWithLimit with 270 periods (all at once)
+                await rewardEngine.connect(user1).claimRewardsWithLimit(PEER_ID_1, testPoolId, periodsPerClaim);
+                
+                const balanceAfter = await storageToken.balanceOf(user1.address);
+                const claimed = balanceAfter - balanceBefore;
+                totalClaimed += claimed;
+
+                const [newRemaining, , , , ] = await rewardEngine.getClaimStatus(
+                    user1.address, PEER_ID_1, testPoolId
+                );
+
+                console.log(`Claim ${claimNumber}: ${ethers.formatEther(claimed)} tokens | Remaining periods: ${newRemaining}`);
+            }
+
+            console.log(`\n========== SCENARIO 2 RESULTS ==========`);
+            console.log(`Total claims made: ${claimNumber}`);
+            console.log(`Total tokens claimed: ${ethers.formatEther(totalClaimed)} tokens`);
+            console.log(`Expected if no cap: ${ethers.formatEther(rewardPerPeriod * BigInt(totalPeriodsToCreate))} tokens`);
+            console.log(`=========================================\n`);
+        }).timeout(300000); // 5 minute timeout
+
+        it("COMPARISON: Side-by-side analysis of both scenarios", async function () {
+            console.log("\n========== COMPARISON TEST ==========");
+            console.log("This test shows both scenarios side by side");
+            console.log("======================================\n");
+
+            const expectedPeriod = Number(await rewardEngine.expectedPeriod());
+            const monthlyReward = await rewardEngine.monthlyRewardPerPeer();
+            const periodsPerMonth = Math.floor((30 * 24 * 60 * 60) / expectedPeriod);
+            const rewardPerPeriod = monthlyReward / BigInt(periodsPerMonth);
+            const maxMonthlyReward = await rewardEngine.MAX_MONTHLY_REWARD_PER_PEER();
+
+            console.log(`Configuration:`);
+            console.log(`- Period duration: ${expectedPeriod / 3600} hours`);
+            console.log(`- Periods per month: ${periodsPerMonth}`);
+            console.log(`- Reward per period: ${ethers.formatEther(rewardPerPeriod)} tokens`);
+            console.log(`- Monthly reward cap: ${ethers.formatEther(maxMonthlyReward)} tokens`);
+            console.log(`- 3 months of periods: ${periodsPerMonth * 3} periods`);
+            console.log(`- Theoretical max (no cap): ${ethers.formatEther(rewardPerPeriod * BigInt(periodsPerMonth * 3))} tokens`);
+
+            console.log(`\n--- KEY INSIGHT ---`);
+            console.log(`The monthly cap of ${ethers.formatEther(maxMonthlyReward)} tokens applies PER CALENDAR MONTH.`);
+            console.log(`If user claims 90 periods (1 month) = ~${ethers.formatEther(rewardPerPeriod * BigInt(90))} tokens`);
+            console.log(`This is EQUAL to the monthly cap, so:`);
+            console.log(`- Scenario 1 (claim 90 at a time): Should get full rewards across 3 separate months`);
+            console.log(`- Scenario 2 (claim 270 at once): May be LIMITED by the current month's cap`);
+            console.log(`\nRun the individual scenario tests to see actual results!`);
+        });
+    });
 });

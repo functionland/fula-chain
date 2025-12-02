@@ -301,3 +301,6 @@ main()
 // 
 // Or for using existing pools:
 // TOKEN_ADDRESS=0x... STAKE_POOL_ADDRESS=0x... REWARD_POOL_ADDRESS=0x... npx hardhat run scripts/StakingEngineLinear/deployStakingEngineLinear.ts --network mainnet
+
+// npx hardhat verify <contract_address> --network sepolia
+// npx hardhat verify --contract contracts/StakingEngineLinear.sol:StakingEngineLinear 0xaBe4Cf6206b7d6801A21caD2E0806C4A0dDFd5f1 --network ethereum

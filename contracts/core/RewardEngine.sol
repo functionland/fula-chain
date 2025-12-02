@@ -61,6 +61,8 @@ contract RewardEngine is GovernanceModule {
     uint256 public constant MAX_HISTORICAL_SUBMISSION = 7 days; // Maximum 1 week back
     uint256 public constant MAX_FUTURE_SUBMISSION = 1 minutes; // Maximum 1 minute future
     uint256 public constant MAX_MONTHLY_REWARD_PER_PEER = 8000 * 10**18; // 8000 tokens per month
+    uint256 public constant DEFAULT_CLAIM_PERIODS_PER_TX = 90; // Default periods to process per claim transaction (~30 days at 8hr periods)
+    uint256 public constant MAX_CLAIM_PERIODS_LIMIT = 1000; // Hard cap on periods per claim to prevent abuse
 
     // State variables
     StorageToken public token;
@@ -573,38 +575,89 @@ contract RewardEngine is GovernanceModule {
         return (miningRewards, storageRewards, totalRewards);
     }
 
-    /// @notice Claim eligible rewards for a specific account/peerId pair
+    /// @notice Claim eligible rewards for a specific account/peerId pair (uses default period limit)
+    /// @dev Processes up to DEFAULT_CLAIM_PERIODS_PER_TX periods per call to bound gas usage
+    /// @dev Users may need to call multiple times if they have many unclaimed periods
     /// @param peerId The peer ID to claim rewards for
     /// @param poolId The pool ID
     function claimRewards(
         bytes32 peerId,
         uint32 poolId
     ) external whenNotPaused nonReentrant notTripped {
+        _claimRewardsInternal(peerId, poolId, DEFAULT_CLAIM_PERIODS_PER_TX);
+    }
+
+    /// @notice Claim eligible rewards with custom period limit
+    /// @dev Allows caller to specify how many periods to process (up to MAX_CLAIM_PERIODS_LIMIT)
+    /// @param peerId The peer ID to claim rewards for
+    /// @param poolId The pool ID
+    /// @param maxPeriods Maximum number of periods to process in this claim
+    function claimRewardsWithLimit(
+        bytes32 peerId,
+        uint32 poolId,
+        uint256 maxPeriods
+    ) external whenNotPaused nonReentrant notTripped {
+        if (maxPeriods == 0 || maxPeriods > MAX_CLAIM_PERIODS_LIMIT) {
+            maxPeriods = DEFAULT_CLAIM_PERIODS_PER_TX;
+        }
+        _claimRewardsInternal(peerId, poolId, maxPeriods);
+    }
+
+    /// @notice Internal function to claim rewards with specified period limit
+    /// @param peerId The peer ID to claim rewards for
+    /// @param poolId The pool ID
+    /// @param maxPeriodsToProcess Maximum periods to process
+    function _claimRewardsInternal(
+        bytes32 peerId,
+        uint32 poolId,
+        uint256 maxPeriodsToProcess
+    ) internal {
         address account = msg.sender;
 
         // Verify the account and peerId are members of the pool
         (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
         if (memberAddress == address(0) || memberAddress != account) revert NotPoolMember();
 
-        // Calculate eligible rewards
-        (uint256 miningRewards, uint256 storageRewards, uint256 totalRewards) =
-            this.getEligibleRewards(account, peerId, poolId);
+        // Get member join date and last claimed timestamp
+        uint256 joinDate = storagePool.joinTimestamp(peerId);
+        uint256 lastClaimed = lastClaimedRewards[account][peerId][poolId];
+        uint256 calculationStartTime = lastClaimed > 0 ? lastClaimed : joinDate;
 
-        if (totalRewards == 0) revert NoRewardsToClaim();
+        if (calculationStartTime >= block.timestamp) revert NoRewardsToClaim();
+
+        // Calculate eligible periods with a limit to bound gas usage
+        (uint256 eligiblePeriods, uint256 newLastClaimedTime) = _calculateEligiblePeriodsLimited(
+            peerId, poolId, joinDate, calculationStartTime, block.timestamp, maxPeriodsToProcess
+        );
+
+        if (eligiblePeriods == 0) revert NoRewardsToClaim();
+
+        // Calculate rewards for the limited periods
+        uint256 rewardPerPeriod = _calculateRewardPerPeriod();
+        if (rewardPerPeriod == 0) revert NoRewardsToClaim();
+
+        uint256 miningRewards = rewardPerPeriod * eligiblePeriods;
+        uint256 storageRewards = 0; // Placeholder for future storage rewards
+        uint256 totalRewards = miningRewards + storageRewards;
+
+        // Apply monthly cap per peer ID
+        uint256 currentMonth = _getCurrentMonth();
+        uint256 alreadyClaimed = monthlyRewardsClaimed[peerId][poolId][currentMonth];
+        if (alreadyClaimed >= MAX_MONTHLY_REWARD_PER_PEER) revert NoRewardsToClaim();
+        if (totalRewards + alreadyClaimed > MAX_MONTHLY_REWARD_PER_PEER) {
+            totalRewards = MAX_MONTHLY_REWARD_PER_PEER - alreadyClaimed;
+            miningRewards = totalRewards; // Adjust mining rewards accordingly
+        }
 
         // Additional check: ensure StakingPool can actually transfer the tokens
-        // This prevents race conditions between balance check and transfer
         uint256 stakingPoolTokenBalance = token.balanceOf(address(stakingPool));
         if (stakingPoolTokenBalance < totalRewards) revert InsufficientRewards();
 
         // 2. EFFECTS - Update state BEFORE external calls (proper CEI pattern)
-        // Store the last complete period boundary for next calculation
-        uint256 joinDate = storagePool.joinTimestamp(peerId);
-        uint256 lastCompletePeriodEnd = _getLastCompletePeriodEnd(joinDate, block.timestamp);
-        lastClaimedRewards[account][peerId][poolId] = lastCompletePeriodEnd;
+        // Store the calculated end time for next claim (not the full period end)
+        lastClaimedRewards[account][peerId][poolId] = newLastClaimedTime;
 
         // Update monthly rewards tracking for cap enforcement
-        uint256 currentMonth = _getCurrentMonth();
         monthlyRewardsClaimed[peerId][poolId][currentMonth] += totalRewards;
 
         // 3. INTERACTIONS - Single atomic transfer to prevent dual-transfer ordering issues
@@ -665,6 +718,58 @@ contract RewardEngine is GovernanceModule {
         uint32 poolId
     ) external view returns (uint256 unclaimedMining, uint256 unclaimedStorage, uint256 totalUnclaimed) {
         return this.getEligibleRewards(account, peerId, poolId);
+    }
+
+    /// @notice Get claim status information for a user
+    /// @dev Helps users understand how many claim transactions they need
+    /// @param account The member account
+    /// @param peerId The peer ID
+    /// @param poolId The pool ID
+    /// @return totalUnclaimedPeriods Total number of unclaimed periods
+    /// @return defaultPeriodsPerClaim Default periods processed per claim (DEFAULT_CLAIM_PERIODS_PER_TX)
+    /// @return maxPeriodsPerClaim Maximum periods allowed per claim (MAX_CLAIM_PERIODS_LIMIT)
+    /// @return estimatedClaimsNeeded Estimated number of claim transactions needed (using default)
+    /// @return hasMoreToClaim Whether there are more periods than can be claimed in one tx with default
+    function getClaimStatus(
+        address account,
+        bytes32 peerId,
+        uint32 poolId
+    ) external view returns (
+        uint256 totalUnclaimedPeriods,
+        uint256 defaultPeriodsPerClaim,
+        uint256 maxPeriodsPerClaim,
+        uint256 estimatedClaimsNeeded,
+        bool hasMoreToClaim
+    ) {
+        // Verify membership
+        (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
+        if (memberAddress == address(0) || memberAddress != account) revert NotPoolMember();
+
+        // Get timing info
+        uint256 joinDate = storagePool.joinTimestamp(peerId);
+        uint256 lastClaimed = lastClaimedRewards[account][peerId][poolId];
+        uint256 calculationStartTime = lastClaimed > 0 ? lastClaimed : joinDate;
+
+        if (calculationStartTime >= block.timestamp) {
+            return (0, DEFAULT_CLAIM_PERIODS_PER_TX, MAX_CLAIM_PERIODS_LIMIT, 0, false);
+        }
+
+        // Calculate total unclaimed periods (uses existing unlimited function)
+        totalUnclaimedPeriods = _calculateEligiblePeriodsFromJoinDate(
+            peerId, poolId, joinDate, calculationStartTime, block.timestamp
+        );
+
+        defaultPeriodsPerClaim = DEFAULT_CLAIM_PERIODS_PER_TX;
+        maxPeriodsPerClaim = MAX_CLAIM_PERIODS_LIMIT;
+        hasMoreToClaim = totalUnclaimedPeriods > DEFAULT_CLAIM_PERIODS_PER_TX;
+        
+        if (totalUnclaimedPeriods == 0) {
+            estimatedClaimsNeeded = 0;
+        } else {
+            estimatedClaimsNeeded = (totalUnclaimedPeriods + DEFAULT_CLAIM_PERIODS_PER_TX - 1) / DEFAULT_CLAIM_PERIODS_PER_TX;
+        }
+
+        return (totalUnclaimedPeriods, defaultPeriodsPerClaim, maxPeriodsPerClaim, estimatedClaimsNeeded, hasMoreToClaim);
     }
 
     /// @notice Internal function to get pool creator with caching
@@ -900,6 +1005,66 @@ contract RewardEngine is GovernanceModule {
         }
         
         return eligibleCount;
+    }
+
+    /// @notice Calculate eligible periods with a maximum limit for gas-bounded claims
+    /// @param peerId The peer ID
+    /// @param poolId The pool ID  
+    /// @param joinDate The user's join date
+    /// @param calculationStartTime Start time for calculation (join date or last claimed)
+    /// @param currentTime Current timestamp
+    /// @param maxPeriodsToProcess Maximum number of periods to process in this call
+    /// @return eligiblePeriods Number of complete periods with online status (up to limit)
+    /// @return newLastClaimedTime The timestamp to store as lastClaimed for next call
+    function _calculateEligiblePeriodsLimited(
+        bytes32 peerId,
+        uint32 poolId,
+        uint256 joinDate,
+        uint256 calculationStartTime,
+        uint256 currentTime,
+        uint256 maxPeriodsToProcess
+    ) internal view returns (uint256 eligiblePeriods, uint256 newLastClaimedTime) {
+        if (calculationStartTime >= currentTime || expectedPeriod == 0) {
+            return (0, calculationStartTime);
+        }
+
+        uint256 eligibleCount = 0;
+        
+        // Find the first period that starts at or after calculationStartTime
+        uint256 firstPeriodIndex = 0;
+        if (calculationStartTime > joinDate) {
+            firstPeriodIndex = (calculationStartTime - joinDate) / expectedPeriod;
+            // If calculationStartTime is not exactly on a period boundary, start from next period
+            if ((calculationStartTime - joinDate) % expectedPeriod != 0) {
+                firstPeriodIndex++;
+            }
+        }
+        
+        // Check each complete period from firstPeriodIndex onwards, up to the limit
+        uint256 periodIndex = firstPeriodIndex;
+        uint256 periodsChecked = 0;
+        uint256 lastProcessedPeriodEnd = calculationStartTime;
+
+        while (periodsChecked < maxPeriodsToProcess) {
+            uint256 periodStart = joinDate + (periodIndex * expectedPeriod);
+            uint256 periodEnd = periodStart + expectedPeriod;
+
+            // Stop if this period hasn't completed yet
+            if (periodEnd > currentTime) {
+                break;
+            }
+
+            // Check if user has at least one online status in this period
+            if (_hasOnlineStatusInPeriod(peerId, poolId, periodStart, periodEnd)) {
+                eligibleCount++;
+            }
+
+            lastProcessedPeriodEnd = periodEnd;
+            periodIndex++;
+            periodsChecked++;
+        }
+        
+        return (eligibleCount, lastProcessedPeriodEnd);
     }
 
     /// @notice Check if peerId has online status in a specific period
