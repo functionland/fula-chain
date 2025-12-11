@@ -16,16 +16,15 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "../governance/libraries/ProposalTypes.sol";
-import "hardhat/console.sol";
 
 /*
 Staking Periods and Rewards
 User cannot claim rewards before the staking priod is over
 | Lock Period | Duration | Fixed APY | Referrer Reward | 
 |-------------|----------|-----------|-----------------| 
-| LOCK_PERIOD_1 | 90 days | 2% | 0% | 
-| LOCK_PERIOD_2 | 180 days | 6% | 1% | 
-| LOCK_PERIOD_3 | 365 days | 15% | 4% |
+| LOCK_PERIOD_1 | 180 days | 6% | 1% | 
+| LOCK_PERIOD_2 | 365 days | 15% | 4% |
+| LOCK_PERIOD_3 | 730 days | 18% | 6% |
 */
 
 /*
@@ -54,19 +53,19 @@ contract StakingEngineLinear is
 
 
     // Lock periods in seconds
-    uint32 public constant LOCK_PERIOD_1 = 90 days;
-    uint32 public constant LOCK_PERIOD_2 = 180 days;
-    uint32 public constant LOCK_PERIOD_3 = 365 days;
+    uint32 public constant LOCK_PERIOD_1 = 180 days;
+    uint32 public constant LOCK_PERIOD_2 = 365 days;
+    uint32 public constant LOCK_PERIOD_3 = 730 days;
 
     // Fixed APY percentages for each lock period
-    uint256 public constant FIXED_APY_90_DAYS = 2; // 2% for 90 days
     uint256 public constant FIXED_APY_180_DAYS = 6; // 6% for 180 days
     uint256 public constant FIXED_APY_365_DAYS = 15; // 15% for 365 days
+    uint256 public constant FIXED_APY_730_DAYS = 18; // 18% for 730 days (2 years)
 
     // Referrer reward percentages for each lock period
-    uint256 public constant REFERRER_REWARD_PERCENT_90_DAYS = 0; // 0% for 90 days
     uint256 public constant REFERRER_REWARD_PERCENT_180_DAYS = 1; // 1% for 180 days
     uint256 public constant REFERRER_REWARD_PERCENT_365_DAYS = 4; // 4% for 365 days
+    uint256 public constant REFERRER_REWARD_PERCENT_730_DAYS = 6; // 6% for 730 days (2 years)
 
     // Precision factor for calculations to avoid rounding errors
     uint256 public constant PRECISION_FACTOR = 1e18;
@@ -95,9 +94,9 @@ contract StakingEngineLinear is
         uint256 activeReferredStakersCount; // Number of active stakers referred
         uint256 totalActiveStaked; // Total amount of tokens currently staked by referees
         uint256 totalUnstaked; // Total amount of tokens unstaked by referees
-        uint256 totalActiveStaked90Days; // Total active staked for 90 days
         uint256 totalActiveStaked180Days; // Total active staked for 180 days
         uint256 totalActiveStaked365Days; // Total active staked for 365 days
+        uint256 totalActiveStaked730Days; // Total active staked for 730 days (2 years)
     }
 
     struct ReferrerRewardInfo {
@@ -138,13 +137,13 @@ contract StakingEngineLinear is
     IPool public rewardPoolContract;
 
     // Tracking variables for internal accounting
-    uint256 public accRewardPerToken90Days;
     uint256 public accRewardPerToken180Days;
     uint256 public accRewardPerToken365Days;
+    uint256 public accRewardPerToken730Days;
     
-    uint256 public totalStaked90Days;
     uint256 public totalStaked180Days;
     uint256 public totalStaked365Days;
+    uint256 public totalStaked730Days;
 
     // --- New variables for global queries ---
     // List of all staker addresses (unique, append-only)
@@ -305,11 +304,11 @@ contract StakingEngineLinear is
      */
     function calculateRequiredRewards() public view returns (uint256) {
         // Calculate required rewards based on current stakes and APY
-        uint256 required90Days = (totalStaked90Days * FIXED_APY_90_DAYS) / 100;
         uint256 required180Days = (totalStaked180Days * FIXED_APY_180_DAYS) / 100;
         uint256 required365Days = (totalStaked365Days * FIXED_APY_365_DAYS) / 100;
+        uint256 required730Days = (totalStaked730Days * FIXED_APY_730_DAYS) / 100;
         
-        return required90Days + required180Days + required365Days;
+        return required180Days + required365Days + required730Days;
     }
 
     /**
@@ -431,11 +430,6 @@ contract StakingEngineLinear is
         uint256 timeElapsed = block.timestamp - lastUpdateTime;
         
         // Update accumulated rewards for each lock period
-        if (totalStaked90Days > 0) {
-            uint256 rewardsForPeriod = calculateElapsedRewards(totalStaked90Days, FIXED_APY_90_DAYS, timeElapsed);
-            accRewardPerToken90Days += (rewardsForPeriod * PRECISION_FACTOR) / totalStaked90Days;
-        }
-        
         if (totalStaked180Days > 0) {
             uint256 rewardsForPeriod = calculateElapsedRewards(totalStaked180Days, FIXED_APY_180_DAYS, timeElapsed);
             accRewardPerToken180Days += (rewardsForPeriod * PRECISION_FACTOR) / totalStaked180Days;
@@ -446,13 +440,18 @@ contract StakingEngineLinear is
             accRewardPerToken365Days += (rewardsForPeriod * PRECISION_FACTOR) / totalStaked365Days;
         }
         
+        if (totalStaked730Days > 0) {
+            uint256 rewardsForPeriod = calculateElapsedRewards(totalStaked730Days, FIXED_APY_730_DAYS, timeElapsed);
+            accRewardPerToken730Days += (rewardsForPeriod * PRECISION_FACTOR) / totalStaked730Days;
+        }
+        
         lastUpdateTime = block.timestamp;
     }
 
     /**
      * @notice Internal function to stake tokens
      * @param amount The amount to stake
-     * @param lockPeriod The lock period (90, 180, or 365 days)
+     * @param lockPeriod The lock period (180, 365, or 730 days)
      * @param referrer Optional address of the referrer
      */
     function _stakeTokenInternal(uint256 amount, uint256 lockPeriod, address referrer) internal {
@@ -468,11 +467,11 @@ contract StakingEngineLinear is
         
         // Use direct assignment instead of conditionals to save gas
         if (lockPeriod == LOCK_PERIOD_1) {
-            minimumAPY = FIXED_APY_90_DAYS;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
             minimumAPY = FIXED_APY_180_DAYS;
-        } else if (lockPeriod == LOCK_PERIOD_3) {
+        } else if (lockPeriod == LOCK_PERIOD_2) {
             minimumAPY = FIXED_APY_365_DAYS;
+        } else if (lockPeriod == LOCK_PERIOD_3) {
+            minimumAPY = FIXED_APY_730_DAYS;
         }
         
         if (projectedAPY < minimumAPY) {
@@ -502,9 +501,9 @@ contract StakingEngineLinear is
                         uint256 timeElapsed = nowOrEnd - stake.startTime;
 
                         uint256 fixedAPY = 0;
-                        if (stake.lockPeriod == LOCK_PERIOD_1) fixedAPY = FIXED_APY_90_DAYS;
-                        else if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_180_DAYS;
-                        else if (stake.lockPeriod == LOCK_PERIOD_3) fixedAPY = FIXED_APY_365_DAYS;
+                        if (stake.lockPeriod == LOCK_PERIOD_1) fixedAPY = FIXED_APY_180_DAYS;
+                        else if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_365_DAYS;
+                        else if (stake.lockPeriod == LOCK_PERIOD_3) fixedAPY = FIXED_APY_730_DAYS;
 
                         uint256 totalReward = (stake.amount * fixedAPY * stake.lockPeriod) / (100 * 365 days);
                         uint256 claimable = (totalReward * timeElapsed) / stake.lockPeriod;
@@ -532,11 +531,11 @@ contract StakingEngineLinear is
         
         // Update the appropriate period total
         if (lockPeriod == LOCK_PERIOD_1) {
-            totalStaked90Days += amount;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
             totalStaked180Days += amount;
-        } else if (lockPeriod == LOCK_PERIOD_3) {
+        } else if (lockPeriod == LOCK_PERIOD_2) {
             totalStaked365Days += amount;
+        } else if (lockPeriod == LOCK_PERIOD_3) {
+            totalStaked730Days += amount;
         }
         
         // --- Track all stakers globally and per period ---
@@ -587,21 +586,21 @@ contract StakingEngineLinear is
             
             // Update period-specific stats for referrer
             if (lockPeriod == LOCK_PERIOD_1) {
-                referrerInfo.totalActiveStaked90Days += amount;
-            } else if (lockPeriod == LOCK_PERIOD_2) {
                 referrerInfo.totalActiveStaked180Days += amount;
-            } else if (lockPeriod == LOCK_PERIOD_3) {
+            } else if (lockPeriod == LOCK_PERIOD_2) {
                 referrerInfo.totalActiveStaked365Days += amount;
+            } else if (lockPeriod == LOCK_PERIOD_3) {
+                referrerInfo.totalActiveStaked730Days += amount;
             }
             
             // Calculate referrer reward percentage once
             uint256 referrerRewardPercent;
             if (lockPeriod == LOCK_PERIOD_1) {
-                referrerRewardPercent = REFERRER_REWARD_PERCENT_90_DAYS;
-            } else if (lockPeriod == LOCK_PERIOD_2) {
                 referrerRewardPercent = REFERRER_REWARD_PERCENT_180_DAYS;
-            } else if (lockPeriod == LOCK_PERIOD_3) {
+            } else if (lockPeriod == LOCK_PERIOD_2) {
                 referrerRewardPercent = REFERRER_REWARD_PERCENT_365_DAYS;
+            } else if (lockPeriod == LOCK_PERIOD_3) {
+                referrerRewardPercent = REFERRER_REWARD_PERCENT_730_DAYS;
             }
             
             // Only process referrer rewards if there's actually a percentage
@@ -654,7 +653,7 @@ contract StakingEngineLinear is
     /**
      * @dev Stakes tokens with an optional referrer
      * @param amount The amount to stake
-     * @param lockPeriod The lock period (90, 180, or 365 days)
+     * @param lockPeriod The lock period (180, 365, or 730 days)
      * @param referrer Optional address of the referrer
      */
     function stakeTokenWithReferrer(uint256 amount, uint256 lockPeriod, address referrer) external virtual nonReentrant whenNotPaused {
@@ -700,7 +699,7 @@ contract StakingEngineLinear is
     /**
      * @notice Stake tokens without a referrer
      * @param amount The amount to stake
-     * @param lockPeriod The lock period (90, 180, or 365 days)
+     * @param lockPeriod The lock period (180, 365, or 730 days)
      */
     function stakeToken(uint256 amount, uint256 lockPeriod) external virtual nonReentrant whenNotPaused {
         if (token.allowance(msg.sender, address(this)) < amount) {
@@ -759,11 +758,11 @@ contract StakingEngineLinear is
      */
     function getAccRewardPerTokenForLockPeriod(uint256 lockPeriod) internal view returns (uint256) {
         if (lockPeriod == LOCK_PERIOD_1) {
-            return accRewardPerToken90Days;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
             return accRewardPerToken180Days;
-        } else if (lockPeriod == LOCK_PERIOD_3) {
+        } else if (lockPeriod == LOCK_PERIOD_2) {
             return accRewardPerToken365Days;
+        } else if (lockPeriod == LOCK_PERIOD_3) {
+            return accRewardPerToken730Days;
         }
         return 0; // Default case; should never occur due to earlier validation
     }
@@ -781,9 +780,9 @@ contract StakingEngineLinear is
         uint256 timeElapsed = nowOrEnd - stake.startTime;
 
         uint256 fixedAPY = 0;
-        if (stake.lockPeriod == LOCK_PERIOD_1) fixedAPY = FIXED_APY_90_DAYS;
-        else if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_180_DAYS;
-        else if (stake.lockPeriod == LOCK_PERIOD_3) fixedAPY = FIXED_APY_365_DAYS;
+        if (stake.lockPeriod == LOCK_PERIOD_1) fixedAPY = FIXED_APY_180_DAYS;
+        else if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_365_DAYS;
+        else if (stake.lockPeriod == LOCK_PERIOD_3) fixedAPY = FIXED_APY_730_DAYS;
 
         uint256 totalReward = (stake.amount * fixedAPY * stake.lockPeriod) / (100 * 365 days);
         uint256 claimable = (totalReward * timeElapsed) / stake.lockPeriod;
@@ -818,11 +817,11 @@ contract StakingEngineLinear is
         // Update total staked amounts
         totalStaked -= stakedAmount;
         if (lockPeriod == LOCK_PERIOD_1) {
-            totalStaked90Days -= stakedAmount;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
             totalStaked180Days -= stakedAmount;
-        } else if (lockPeriod == LOCK_PERIOD_3) {
+        } else if (lockPeriod == LOCK_PERIOD_2) {
             totalStaked365Days -= stakedAmount;
+        } else if (lockPeriod == LOCK_PERIOD_3) {
+            totalStaked730Days -= stakedAmount;
         }
 
         // Update referrer info if any
@@ -831,11 +830,11 @@ contract StakingEngineLinear is
             referrerInfo.totalActiveStaked -= stakedAmount;
             referrerInfo.totalUnstaked += stakedAmount;
             if (lockPeriod == LOCK_PERIOD_1) {
-                referrerInfo.totalActiveStaked90Days -= stakedAmount;
-            } else if (lockPeriod == LOCK_PERIOD_2) {
                 referrerInfo.totalActiveStaked180Days -= stakedAmount;
-            } else if (lockPeriod == LOCK_PERIOD_3) {
+            } else if (lockPeriod == LOCK_PERIOD_2) {
                 referrerInfo.totalActiveStaked365Days -= stakedAmount;
+            } else if (lockPeriod == LOCK_PERIOD_3) {
+                referrerInfo.totalActiveStaked730Days -= stakedAmount;
             }
             // Mark all referrer rewards for this stake as inactive
             for (uint256 i = 0; i < referrerRewards[referrer].length; i++) {
@@ -864,9 +863,9 @@ contract StakingEngineLinear is
         uint256 nowOrEnd = block.timestamp < lockEnd ? block.timestamp : lockEnd;
         uint256 timeElapsed = nowOrEnd - stake.startTime;
         uint256 fixedAPY = 0;
-        if (stake.lockPeriod == LOCK_PERIOD_1) fixedAPY = FIXED_APY_90_DAYS;
-        else if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_180_DAYS;
-        else if (stake.lockPeriod == LOCK_PERIOD_3) fixedAPY = FIXED_APY_365_DAYS;
+        if (stake.lockPeriod == LOCK_PERIOD_1) fixedAPY = FIXED_APY_180_DAYS;
+        else if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_365_DAYS;
+        else if (stake.lockPeriod == LOCK_PERIOD_3) fixedAPY = FIXED_APY_730_DAYS;
         uint256 totalReward = (stake.amount * fixedAPY * stake.lockPeriod) / (100 * 365 days);
         uint256 claimable = (totalReward * timeElapsed) / stake.lockPeriod;
         // Track claimed rewards in rewardDebt
@@ -915,14 +914,14 @@ contract StakingEngineLinear is
         uint256 totalStakedForPeriod = 0;
         
         if (lockPeriod == LOCK_PERIOD_1) {
-            fixedAPY = FIXED_APY_90_DAYS;
-            totalStakedForPeriod = totalStaked90Days;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
             fixedAPY = FIXED_APY_180_DAYS;
             totalStakedForPeriod = totalStaked180Days;
-        } else if (lockPeriod == LOCK_PERIOD_3) {
+        } else if (lockPeriod == LOCK_PERIOD_2) {
             fixedAPY = FIXED_APY_365_DAYS;
             totalStakedForPeriod = totalStaked365Days;
+        } else if (lockPeriod == LOCK_PERIOD_3) {
+            fixedAPY = FIXED_APY_730_DAYS;
+            totalStakedForPeriod = totalStaked730Days;
         }
         
         // Calculate total staked amount including the additional stake
@@ -956,14 +955,14 @@ contract StakingEngineLinear is
         uint256 totalStakedForPeriod = 0;
         
         if (lockPeriod == LOCK_PERIOD_1) {
-            fixedAPY = FIXED_APY_90_DAYS;
-            totalStakedForPeriod = totalStaked90Days;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
             fixedAPY = FIXED_APY_180_DAYS;
             totalStakedForPeriod = totalStaked180Days;
-        } else if (lockPeriod == LOCK_PERIOD_3) {
+        } else if (lockPeriod == LOCK_PERIOD_2) {
             fixedAPY = FIXED_APY_365_DAYS;
             totalStakedForPeriod = totalStaked365Days;
+        } else if (lockPeriod == LOCK_PERIOD_3) {
+            fixedAPY = FIXED_APY_730_DAYS;
+            totalStakedForPeriod = totalStaked730Days;
         }
         
         // Calculate rewards needed for the fixed APY

@@ -24,6 +24,19 @@ function waitForUserConfirmation(message: string): Promise<void> {
   });
 }
 
+// Helper function to wait between transactions (prevents nonce issues on some networks)
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Wait for transaction confirmation with retries
+async function waitForConfirmation(tx: any, confirmations: number = 1): Promise<void> {
+  console.log(`Waiting for ${confirmations} confirmation(s)...`);
+  await tx.wait(confirmations);
+  // Additional delay to ensure network has processed the transaction
+  await delay(5000);
+}
+
 async function main() {
     const [deployer] = await ethers.getSigners();
     console.log("Deploying contracts with the account:", deployer.address);
@@ -116,7 +129,13 @@ async function main() {
             // Deploy StakingPool implementation
             console.log("Deploying StakingPool implementation...");
             const stakingPoolImplementation = await StakingPool.deploy();
-            await stakingPoolImplementation.waitForDeployment();
+            const implDeployTx = stakingPoolImplementation.deploymentTransaction();
+            if (implDeployTx) {
+                await waitForConfirmation(implDeployTx, 2);
+            } else {
+                await stakingPoolImplementation.waitForDeployment();
+                await delay(5000);
+            }
             const stakingPoolImplAddress = await stakingPoolImplementation.getAddress();
             console.log("StakingPool implementation deployed to:", stakingPoolImplAddress);
 
@@ -132,7 +151,13 @@ async function main() {
                 stakingPoolImplAddress,
                 stakePoolInitData
             );
-            await stakePoolProxy.waitForDeployment();
+            const stakeProxyTx = stakePoolProxy.deploymentTransaction();
+            if (stakeProxyTx) {
+                await waitForConfirmation(stakeProxyTx, 2);
+            } else {
+                await stakePoolProxy.waitForDeployment();
+                await delay(5000);
+            }
             stakePoolAddress = await stakePoolProxy.getAddress();
             console.log("Stake pool proxy deployed and initialized at:", stakePoolAddress);
 
@@ -151,7 +176,13 @@ async function main() {
                 stakingPoolImplAddress, 
                 rewardPoolInitData
             );
-            await rewardPoolProxy.waitForDeployment();
+            const rewardProxyTx = rewardPoolProxy.deploymentTransaction();
+            if (rewardProxyTx) {
+                await waitForConfirmation(rewardProxyTx, 2);
+            } else {
+                await rewardPoolProxy.waitForDeployment();
+                await delay(5000);
+            }
             rewardPoolAddress = await rewardPoolProxy.getAddress();
             console.log("Reward pool proxy deployed and initialized at:", rewardPoolAddress);
             // Print the implementation address for reward pool (same as stake pool implementation)
@@ -185,9 +216,15 @@ async function main() {
             { kind: 'uups', initializer: 'initialize' }
         );
 
-        console.log("StakingEngineLinear deployment transaction:", stakingEngine.deploymentTransaction ? stakingEngine.deploymentTransaction.hash : "Transaction hash not available");
+        const engineDeployTx = stakingEngine.deploymentTransaction();
+        console.log("StakingEngineLinear deployment transaction:", engineDeployTx ? engineDeployTx.hash : "Transaction hash not available");
         
-        await stakingEngine.waitForDeployment();
+        if (engineDeployTx) {
+            await waitForConfirmation(engineDeployTx, 2);
+        } else {
+            await stakingEngine.waitForDeployment();
+            await delay(5000);
+        }
         const contractAddress = await stakingEngine.getAddress();
         
         // Get the implementation address
