@@ -36,6 +36,7 @@ contract RewardEngine is GovernanceModule {
     event ERC20Recovered(address indexed token, address indexed recipient, uint256 amount);
     event CircuitBreakerActivated(address indexed triggeredBy, uint256 blockNumber);
     event CircuitBreakerReset(address indexed resetBy, uint256 blockNumber, bool isAutoReset);
+    event OnlineStatusesMigrated(uint32 indexed poolId, uint256 timestampsProcessed, uint256 lastTimestamp, bool complete);
 
     // Errors
     error InvalidAmount();
@@ -51,18 +52,30 @@ contract RewardEngine is GovernanceModule {
     error CircuitBreakerTripped();
     error InvalidRecipient();
     error InsufficientBalance();
+    error DeprecatedFunction();
+    error NoDataToMigrate();
+    error MigrationAlreadyComplete();
+    error MigrationNotComplete();
+    error ExpectedPeriodChangeBlocked();
 
     // Constants
-    uint256 public constant MAX_BATCH_SIZE = 100;
+    uint256 public constant MAX_BATCH_SIZE = 250;
     uint256 public constant SECONDS_PER_YEAR = 365 days;
     uint256 public constant SECONDS_PER_MONTH = 30 days;
     uint256 public constant DEFAULT_EXPECTED_PERIOD = 8 hours;
     uint256 public constant DEFAULT_MONTHLY_REWARD_PER_PEER = 8000 * 10**18; // 8000 tokens per peer per month
     uint256 public constant MAX_HISTORICAL_SUBMISSION = 7 days; // Maximum 1 week back
     uint256 public constant MAX_FUTURE_SUBMISSION = 1 minutes; // Maximum 1 minute future
-    uint256 public constant MAX_MONTHLY_REWARD_PER_PEER = 8000 * 10**18; // 8000 tokens per month
+    uint256 public constant MAX_MONTHLY_REWARD_PER_PEER = 96000 * 10**18; // 96000 tokens per month
     uint256 public constant DEFAULT_CLAIM_PERIODS_PER_TX = 90; // Default periods to process per claim transaction (~30 days at 8hr periods)
-    uint256 public constant MAX_CLAIM_PERIODS_LIMIT = 1000; // Hard cap on periods per claim to prevent abuse
+    uint256 public constant MAX_CLAIM_PERIODS_LIMIT = 90; // Hard cap on periods per claim to prevent abuse
+    
+    // V2 Constants - O(1) lookup allows much higher limits
+    // IMPORTANT: These three constants must stay synchronized
+    uint256 public constant SIX_MONTHS_IN_PERIODS = 540; // 6 months at 8hr periods (base constant)
+    uint256 public constant DEFAULT_CLAIM_PERIODS_PER_TX_V2 = SIX_MONTHS_IN_PERIODS;
+    uint256 public constant MAX_CLAIM_PERIODS_LIMIT_V2 = SIX_MONTHS_IN_PERIODS;
+    uint256 public constant MAX_VIEW_PERIODS_V2 = SIX_MONTHS_IN_PERIODS;
 
     // State variables
     StorageToken public token;
@@ -99,6 +112,22 @@ contract RewardEngine is GovernanceModule {
     // peerId => poolId => month => claimedAmount
     mapping(bytes32 => mapping(uint32 => mapping(uint256 => uint256))) public monthlyRewardsClaimed;
 
+    // V2: Direct period indexing for O(1) lookups - solves O(n²) complexity
+    // poolId => periodIndex => peerId => isOnline
+    mapping(uint32 => mapping(uint256 => mapping(bytes32 => bool))) public periodOnlineStatus;
+
+    // Migration state: tracks progress of migrating old online status to V2 format
+    // poolId => current timestamp cursor (0 means not started or complete)
+    mapping(uint32 => uint256) public migrationCursor;
+    // poolId => peer index cursor within current timestamp (for resuming mid-array)
+    mapping(uint32 => uint256) public migrationPeerCursor;
+    // poolId => whether migration has been completed (prevents re-running)
+    mapping(uint32 => bool) public migrationComplete;
+    // poolId => whether pool has V2 submissions (data is already in V2 format, no migration needed)
+    mapping(uint32 => bool) public poolHasV2Submissions;
+    // Tracks if any V2 data has been written globally (blocks expectedPeriod changes)
+    bool public hasV2Data;
+
     // Circuit breaker state
     bool public circuitBreakerTripped;
     uint256 public lastCircuitBreakerResetBlock;
@@ -107,6 +136,9 @@ contract RewardEngine is GovernanceModule {
     // Reward tracking
     mapping(address => uint256) public totalRewardsClaimed;
     uint256 public totalRewardsDistributed;
+
+    // I-03 Fix: Storage gap for future upgrades (50 slots reserved)
+    uint256[50] private __gap;
 
     /// @notice Initialize the RewardEngine contract
     /// @param _token Address of the StorageToken contract
@@ -169,7 +201,7 @@ contract RewardEngine is GovernanceModule {
         if (circuitBreakerTripped) {
             if (block.number >= lastCircuitBreakerResetBlock + CIRCUIT_BREAKER_COOLDOWN_BLOCKS) {
                 // Circuit breaker cooldown has elapsed, but we don't auto-reset in view functions
-                // Users should call resetCircuitBreakerAuto() to reset it
+                // Users should call canResetCircuitBreaker() to check status
                 revert CircuitBreakerTripped();
             } else {
                 revert CircuitBreakerTripped();
@@ -177,16 +209,12 @@ contract RewardEngine is GovernanceModule {
         }
     }
 
-    /// @notice Auto-reset circuit breaker after cooldown (view function, callable by anyone)
-    /// @dev This is a view function that can be called off-chain to reset the circuit breaker
-    function resetCircuitBreakerAuto() external view {
-        if (circuitBreakerTripped && block.number >= lastCircuitBreakerResetBlock + CIRCUIT_BREAKER_COOLDOWN_BLOCKS) {
-            // Note: This is a view function, so it doesn't actually reset the state
-            // It's meant to be called off-chain to check if reset is possible
-            // The actual reset happens in state-changing functions via _checkCircuitBreaker(true)
-            return;
-        }
-        revert CircuitBreakerTripped();
+    /// @notice L-03 Fix: Check if circuit breaker can be reset after cooldown
+    /// @dev Returns true if cooldown elapsed and circuit breaker can be reset
+    /// @return canReset True if circuit breaker can be reset
+    function canResetCircuitBreaker() external view returns (bool canReset) {
+        return circuitBreakerTripped && 
+               block.number >= lastCircuitBreakerResetBlock + CIRCUIT_BREAKER_COOLDOWN_BLOCKS;
     }
 
     /// @notice Modifier to check circuit breaker status with auto-reset
@@ -207,6 +235,53 @@ contract RewardEngine is GovernanceModule {
         circuitBreakerTripped = false;
         lastCircuitBreakerResetBlock = block.number;
         emit CircuitBreakerReset(msg.sender, block.number, false);
+    }
+
+    /// @notice Migrate old online status data to V2 format (admin only, one-time)
+    /// @dev H-01 Fix: Tracks total SSTORE operations instead of timestamps to prevent gas DoS
+    /// @param poolId The pool ID to migrate
+    /// @param maxOperations Max SSTORE operations (peer writes) per call, not timestamps
+    function adminMigrateOnlineStatuses(
+        uint32 poolId,
+        uint256 maxOperations
+    ) external onlyRole(ProposalTypes.ADMIN_ROLE) nonReentrant {
+        if (migrationComplete[poolId]) revert MigrationAlreadyComplete();
+        
+        uint256 ts = migrationCursor[poolId];
+        if (ts == 0) ts = timestampHead[poolId];
+        if (ts == 0) revert NoDataToMigrate();
+        
+        uint256 peerIdx = migrationPeerCursor[poolId];
+        uint256 operations;
+        
+        while (ts != 0 && operations < maxOperations) {
+            uint256 periodIdx = ts / expectedPeriod;
+            bytes32[] memory peers = onlineStatus[poolId][ts];
+            
+            // Resume from peer cursor if we're continuing within a timestamp
+            while (peerIdx < peers.length && operations < maxOperations) {
+                periodOnlineStatus[poolId][periodIdx][peers[peerIdx]] = true;
+                peerIdx++;
+                operations++;
+            }
+            
+            // If we finished all peers for this timestamp, move to next
+            if (peerIdx >= peers.length) {
+                ts = timestampNext[poolId][ts];
+                peerIdx = 0; // Reset peer cursor for next timestamp
+            }
+        }
+        
+        // Save cursors for next call
+        migrationCursor[poolId] = ts;
+        migrationPeerCursor[poolId] = peerIdx;
+        
+        // Mark complete if we've processed all timestamps
+        if (ts == 0) {
+            migrationComplete[poolId] = true;
+        }
+        
+        emit OnlineStatusesMigrated(poolId, operations, ts, ts == 0);
     }
 
     /// @notice Emergency withdrawal function for stuck tokens (admin only)
@@ -281,6 +356,7 @@ contract RewardEngine is GovernanceModule {
     }
 
     /// @notice Set the expected period for online status reporting
+    /// @dev M-03 Fix: Blocked when V2 data exists to prevent period index mismatch
     /// @param _expectedPeriod New expected period in seconds
     function setExpectedPeriod(uint256 _expectedPeriod)
         external
@@ -289,6 +365,10 @@ contract RewardEngine is GovernanceModule {
         onlyRole(ProposalTypes.ADMIN_ROLE)
     {
         if (_expectedPeriod == 0) revert InvalidAmount();
+        
+        // M-03: Block expectedPeriod changes if V2 data has been written
+        // Changing expectedPeriod would break period index lookups for existing V2 data
+        if (hasV2Data) revert ExpectedPeriodChangeBlocked();
 
         uint256 oldPeriod = expectedPeriod;
         expectedPeriod = _expectedPeriod;
@@ -296,11 +376,22 @@ contract RewardEngine is GovernanceModule {
         emit ExpectedPeriodUpdated(oldPeriod, _expectedPeriod);
     }
 
-    /// @notice Submit online status for multiple peer IDs (batch operation)
+    /// @notice Submit online status for multiple peer IDs (batch operation) - DEPRECATED
+    /// @dev This function is deprecated. Use submitOnlineStatusBatchV2 instead.
+    /// @dev Kept for backwards compatibility - reverts to prevent new submissions with old method
+    function submitOnlineStatusBatch(
+        uint32,
+        bytes32[] calldata,
+        uint256
+    ) external pure {
+        revert DeprecatedFunction();
+    }
+
+    /// @notice Submit online status for multiple peer IDs (batch operation) - V2 with O(1) lookups
     /// @param poolId The pool ID to submit status for
     /// @param peerIds Array of peer IDs that were online
     /// @param timestamp The timestamp for this status update
-    function submitOnlineStatusBatch(
+    function submitOnlineStatusBatchV2(
         uint32 poolId,
         bytes32[] calldata peerIds,
         uint256 timestamp
@@ -318,30 +409,41 @@ contract RewardEngine is GovernanceModule {
             revert NotPoolCreator();
         }
 
-        // Calculate the period for this timestamp to handle multiple submissions
-        uint256 period = timestamp / expectedPeriod;
+        // Calculate the period index for this timestamp (global, not per-user)
+        uint256 periodIndex = timestamp / expectedPeriod;
 
-        // Check if this is a duplicate submission for the same period
-        // Allow updates but track the latest submission time
-        lastPeriodSubmission[poolId][period] = block.timestamp;
+        // Track the latest submission time for this period
+        lastPeriodSubmission[poolId][periodIndex] = block.timestamp;
 
-        // Store the raw timestamp so period checks relative to joinDate work correctly
-        onlineStatus[poolId][timestamp] = peerIds;
+        // L-01 Fix: Removed redundant V1 storage writes (onlineStatus, timestampExists, linked list)
+        // V1 storage is no longer needed as V2 is the primary storage after migration
+        // This saves ~40,000 gas per submission
 
-        // Record timestamp in linked list if it's new (O(1) insertion)
-        if (!timestampExists[poolId][timestamp]) {
-            _insertTimestampLinked(poolId, timestamp);
+        // V2: Direct period indexing for O(1) lookups
+        for (uint256 i = 0; i < peerIds.length; i++) {
+            periodOnlineStatus[poolId][periodIndex][peerIds[i]] = true;
+        }
+        
+        // Mark that this pool has V2 submissions (H-02: no migration needed for this pool)
+        if (!poolHasV2Submissions[poolId]) {
+            poolHasV2Submissions[poolId] = true;
+        }
+        
+        // M-03: Mark that V2 data exists globally (blocks expectedPeriod changes)
+        if (!hasV2Data) {
+            hasV2Data = true;
         }
 
         emit OnlineStatusSubmitted(poolId, msg.sender, peerIds.length, timestamp);
     }
 
     /// @notice Get online status for a specific peerId since a given time
+    /// @dev L-01 Fix: Updated to use V2 period-based lookups instead of V1 linked list
     /// @param peerId The peer ID
     /// @param poolId The pool ID
     /// @param sinceTime The timestamp to check from (0 for default period)
-    /// @return onlineCount Number of online status records found
-    /// @return totalExpected Total expected status reports in the period
+    /// @return onlineCount Number of periods with online status found
+    /// @return totalExpected Total expected periods in the range
     function getOnlineStatusSince(
         bytes32 peerId,
         uint32 poolId,
@@ -355,31 +457,27 @@ contract RewardEngine is GovernanceModule {
 
         if (sinceTime >= block.timestamp) revert InvalidTimeRange();
 
-        // Normalize timestamps to period boundaries for consistent calculations
-        uint256 normalizedSinceTime = _normalizeToPeriodBoundary(sinceTime);
-        uint256 normalizedCurrentTime = _normalizeToPeriodBoundary(block.timestamp);
-
-        uint256 timeRange = normalizedCurrentTime - normalizedSinceTime;
-        totalExpected = timeRange / expectedPeriod;
-
-        // Ultra-optimized: Use linked-list to iterate through timestamps efficiently
-        // This scales linearly but with O(1) insertions, crucial for long-term usage
-        onlineCount = 0;
-        uint256 currentTimestamp = timestampHead[poolId];
-
-        if (currentTimestamp == 0) {
-            return (0, totalExpected);
+        // Calculate period range
+        uint256 startPeriodIndex = sinceTime / expectedPeriod;
+        uint256 endPeriodIndex = block.timestamp / expectedPeriod;
+        
+        // Don't count the current incomplete period
+        if (block.timestamp % expectedPeriod != 0) {
+            endPeriodIndex--;
+        }
+        
+        if (endPeriodIndex < startPeriodIndex) {
+            return (0, 0);
         }
 
-        // Iterate through linked list of timestamps within our range
-        while (currentTimestamp != 0) {
-            if (currentTimestamp >= normalizedSinceTime && currentTimestamp <= normalizedCurrentTime) {
-                // Check if this peerId was online at this timestamp
-                if (_isPeerOnlineAtTimestamp(poolId, currentTimestamp, peerId)) {
-                    onlineCount++;
-                }
+        totalExpected = endPeriodIndex - startPeriodIndex + 1;
+        onlineCount = 0;
+
+        // V2: Use O(1) period lookups instead of V1 linked list
+        for (uint256 periodIdx = startPeriodIndex; periodIdx <= endPeriodIndex; periodIdx++) {
+            if (periodOnlineStatus[poolId][periodIdx][peerId]) {
+                onlineCount++;
             }
-            currentTimestamp = timestampNext[poolId][currentTimestamp];
         }
 
         return (onlineCount, totalExpected);
@@ -457,8 +555,8 @@ contract RewardEngine is GovernanceModule {
             return (startTime, endTime, 0, 0, 0, 0);
         }
 
-        // Calculate eligible periods using new period-based logic
-        onlinePeriods = _calculateEligiblePeriodsFromJoinDate(peerId, poolId, joinDate, startTime, endTime);
+        // Calculate eligible periods using V2 O(1) lookup
+        onlinePeriods = _calculateEligiblePeriodsFromJoinDateV2(peerId, poolId, joinDate, startTime, endTime);
         
         // Calculate total periods that have passed (complete periods only)
         uint256 timeElapsed = endTime - startTime;
@@ -475,60 +573,62 @@ contract RewardEngine is GovernanceModule {
         return (startTime, endTime, totalPeriods, onlinePeriods, rewardPerPeriod, totalReward);
     }
 
-    /// @notice Calculate eligible mining rewards for a specific account/peerId pair
+    /// @notice Calculate eligible mining rewards - DEPRECATED, use calculateEligibleMiningRewardsV2
+    function calculateEligibleMiningRewards(
+        address,
+        bytes32,
+        uint32
+    ) external pure returns (uint256) {
+        revert DeprecatedFunction();
+    }
+
+    /// @notice V2: Calculate eligible mining rewards using O(1) lookups
     /// @param account The member account
     /// @param peerId The peer ID
     /// @param poolId The pool ID
     /// @return eligibleRewards Amount of eligible mining rewards
-    function calculateEligibleMiningRewards(
+    function calculateEligibleMiningRewardsV2(
         address account,
         bytes32 peerId,
         uint32 poolId
     ) external view returns (uint256 eligibleRewards) {
-        // Verify the account and peerId are members of the pool
+        return _calculateEligibleMiningRewardsV2Internal(account, peerId, poolId);
+    }
+    
+    /// @notice L-02 Fix: Internal version to avoid external self-calls
+    function _calculateEligibleMiningRewardsV2Internal(
+        address account,
+        bytes32 peerId,
+        uint32 poolId
+    ) internal view returns (uint256 eligibleRewards) {
         (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
         if (memberAddress == address(0) || memberAddress != account) revert NotPoolMember();
 
-        // Get member join date and last claimed timestamp
         uint256 joinDate = storagePool.joinTimestamp(peerId);
         uint256 lastClaimed = lastClaimedRewards[account][peerId][poolId];
+        uint256 calculationStartTime = lastClaimed > 0 ? lastClaimed : joinDate;
 
-        // Determine the start time for reward calculation
-        // Always start from join date for period calculations, not reward system start
-        uint256 calculationStartTime;
-        if (lastClaimed > 0) {
-            // User has claimed before - start from last claimed period boundary
-            calculationStartTime = lastClaimed;
-        } else {
-            // First time claiming - start from join date
-            calculationStartTime = joinDate;
-        }
-
-        // Ensure we don't calculate rewards from the future
         if (calculationStartTime >= block.timestamp) {
             return 0;
         }
 
-        // Calculate eligible periods based on fixed periods from join date
-        uint256 eligiblePeriods = _calculateEligiblePeriodsFromJoinDate(peerId, poolId, joinDate, calculationStartTime, block.timestamp);
+        // V2: Uses O(1) lookups instead of O(n) linked list iteration
+        uint256 eligiblePeriods = _calculateEligiblePeriodsFromJoinDateV2(peerId, poolId, joinDate, calculationStartTime, block.timestamp);
         
         if (eligiblePeriods == 0) {
             return 0;
         }
 
-        // Calculate reward per period
         uint256 rewardPerPeriod = _calculateRewardPerPeriod();
         if (rewardPerPeriod == 0) return 0;
 
-        // Calculate total eligible rewards (no ratio - just count of complete periods)
         eligibleRewards = rewardPerPeriod * eligiblePeriods;
 
-        // Apply monthly cap per peer ID
         uint256 currentMonth = _getCurrentMonth();
         uint256 alreadyClaimed = monthlyRewardsClaimed[peerId][poolId][currentMonth];
 
         if (alreadyClaimed >= MAX_MONTHLY_REWARD_PER_PEER) {
-            return 0; // Already reached monthly cap
+            return 0;
         }
 
         if (eligibleRewards + alreadyClaimed > MAX_MONTHLY_REWARD_PER_PEER) {
@@ -548,8 +648,17 @@ contract RewardEngine is GovernanceModule {
         bytes32 peerId,
         uint32 poolId
     ) external view returns (uint256 eligibleRewards) {
+        return _calculateEligibleStorageRewardsInternal(account, peerId, poolId);
+    }
+    
+    /// @notice L-02 Fix: Internal version to avoid external self-calls
+    function _calculateEligibleStorageRewardsInternal(
+        address account,
+        bytes32 peerId,
+        uint32 poolId
+    ) internal view returns (uint256) {
         // Verify the account and peerId are members of the pool
-         (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
+        (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
         if (memberAddress == address(0) || memberAddress != account) revert NotPoolMember();
 
         // Storage rewards are set to 0 as placeholder for now
@@ -557,6 +666,7 @@ contract RewardEngine is GovernanceModule {
     }
 
     /// @notice Get total eligible rewards (mining + storage) for a specific account/peerId pair
+    /// @dev L-02 Fix: Uses internal functions instead of external self-calls for gas efficiency
     /// @param account The member account
     /// @param peerId The peer ID
     /// @param poolId The pool ID
@@ -568,130 +678,170 @@ contract RewardEngine is GovernanceModule {
         bytes32 peerId,
         uint32 poolId
     ) external view returns (uint256 miningRewards, uint256 storageRewards, uint256 totalRewards) {
-        miningRewards = this.calculateEligibleMiningRewards(account, peerId, poolId);
-        storageRewards = this.calculateEligibleStorageRewards(account, peerId, poolId);
+        miningRewards = _calculateEligibleMiningRewardsV2Internal(account, peerId, poolId);
+        storageRewards = _calculateEligibleStorageRewardsInternal(account, peerId, poolId);
         totalRewards = miningRewards + storageRewards;
 
         return (miningRewards, storageRewards, totalRewards);
     }
 
-    /// @notice Claim eligible rewards for a specific account/peerId pair (uses default period limit)
-    /// @dev Processes up to DEFAULT_CLAIM_PERIODS_PER_TX periods per call to bound gas usage
-    /// @dev Users may need to call multiple times if they have many unclaimed periods
+    /// @notice Claim eligible rewards - DEPRECATED, use claimRewardsV2
+    function claimRewards(
+        bytes32,
+        uint32
+    ) external pure {
+        revert DeprecatedFunction();
+    }
+
+    /// @notice Claim eligible rewards with limit - DEPRECATED, use claimRewardsWithLimitV2
+    function claimRewardsWithLimit(
+        bytes32,
+        uint32,
+        uint256
+    ) external pure {
+        revert DeprecatedFunction();
+    }
+
+    /// @notice V2: Claim eligible rewards using O(1) lookups (uses default period limit)
     /// @param peerId The peer ID to claim rewards for
     /// @param poolId The pool ID
-    function claimRewards(
+    function claimRewardsV2(
         bytes32 peerId,
         uint32 poolId
     ) external whenNotPaused nonReentrant notTripped {
-        _claimRewardsInternal(peerId, poolId, DEFAULT_CLAIM_PERIODS_PER_TX);
+        _claimRewardsInternalV2(peerId, poolId, DEFAULT_CLAIM_PERIODS_PER_TX_V2);
     }
 
-    /// @notice Claim eligible rewards with custom period limit
-    /// @dev Allows caller to specify how many periods to process (up to MAX_CLAIM_PERIODS_LIMIT)
+    /// @notice V2: Claim eligible rewards with custom period limit using O(1) lookups
     /// @param peerId The peer ID to claim rewards for
     /// @param poolId The pool ID
-    /// @param maxPeriods Maximum number of periods to process in this claim
-    function claimRewardsWithLimit(
+    /// @param maxPeriods Maximum number of periods to process (up to MAX_CLAIM_PERIODS_LIMIT_V2)
+    function claimRewardsWithLimitV2(
         bytes32 peerId,
         uint32 poolId,
         uint256 maxPeriods
     ) external whenNotPaused nonReentrant notTripped {
-        if (maxPeriods == 0 || maxPeriods > MAX_CLAIM_PERIODS_LIMIT) {
-            maxPeriods = DEFAULT_CLAIM_PERIODS_PER_TX;
+        if (maxPeriods == 0 || maxPeriods > MAX_CLAIM_PERIODS_LIMIT_V2) {
+            maxPeriods = DEFAULT_CLAIM_PERIODS_PER_TX_V2;
         }
-        _claimRewardsInternal(peerId, poolId, maxPeriods);
+        _claimRewardsInternalV2(peerId, poolId, maxPeriods);
     }
 
-    /// @notice Internal function to claim rewards with specified period limit
+    /// @notice V2: Internal function to claim rewards using O(1) lookups
+    /// @dev H-02 Fix: Blocks V2 claims if pool has unmigrated V1 data to prevent reward loss
+    /// @dev C-01 Fix: Timestamp only advances for actually paid periods, not all processed periods
     /// @param peerId The peer ID to claim rewards for
     /// @param poolId The pool ID
     /// @param maxPeriodsToProcess Maximum periods to process
-    function _claimRewardsInternal(
+    function _claimRewardsInternalV2(
         bytes32 peerId,
         uint32 poolId,
         uint256 maxPeriodsToProcess
     ) internal {
+        // H-02: Prevent V2 claims for pools with unmigrated V1-only data
+        // Only block if: pool has V1 data AND pool has NO V2 submissions AND migration not complete
+        // Pools with V2 submissions have data already in V2 format (no migration needed)
+        if (timestampHead[poolId] != 0 && !poolHasV2Submissions[poolId] && !migrationComplete[poolId]) {
+            revert MigrationNotComplete();
+        }
+        
         address account = msg.sender;
 
-        // Verify the account and peerId are members of the pool
         (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
         if (memberAddress == address(0) || memberAddress != account) revert NotPoolMember();
 
-        // Get member join date and last claimed timestamp
         uint256 joinDate = storagePool.joinTimestamp(peerId);
         uint256 lastClaimed = lastClaimedRewards[account][peerId][poolId];
         uint256 calculationStartTime = lastClaimed > 0 ? lastClaimed : joinDate;
 
         if (calculationStartTime >= block.timestamp) revert NoRewardsToClaim();
 
-        // Calculate eligible periods with a limit to bound gas usage
-        (uint256 eligiblePeriods, uint256 newLastClaimedTime) = _calculateEligiblePeriodsLimited(
+        // V2: Calculate eligible periods with O(1) lookups
+        (uint256 eligiblePeriods, uint256 newLastClaimedTime) = _calculateEligiblePeriodsLimitedV2(
             peerId, poolId, joinDate, calculationStartTime, block.timestamp, maxPeriodsToProcess
         );
 
-        // Always update lastClaimedRewards to advance through offline periods
-        // This allows users to skip through offline months without reverting
-        if (newLastClaimedTime > calculationStartTime) {
-            lastClaimedRewards[account][peerId][poolId] = newLastClaimedTime;
-        }
+        // C-01 Fix: Do NOT update lastClaimedRewards here - wait until after cap is applied
 
-        // If no eligible periods (all offline), emit event and return without reverting
         if (eligiblePeriods == 0) {
+            // No eligible periods but still advance timestamp to skip empty periods
+            if (newLastClaimedTime > calculationStartTime) {
+                lastClaimedRewards[account][peerId][poolId] = newLastClaimedTime;
+            }
             emit MiningRewardsClaimed(account, peerId, poolId, 0);
             return;
         }
 
-        // Calculate rewards for the limited periods
         uint256 rewardPerPeriod = _calculateRewardPerPeriod();
         if (rewardPerPeriod == 0) {
+            // No rewards but still advance timestamp
+            if (newLastClaimedTime > calculationStartTime) {
+                lastClaimedRewards[account][peerId][poolId] = newLastClaimedTime;
+            }
             emit MiningRewardsClaimed(account, peerId, poolId, 0);
             return;
         }
 
         uint256 miningRewards = rewardPerPeriod * eligiblePeriods;
-        uint256 storageRewards = 0; // Placeholder for future storage rewards
+        uint256 storageRewards = 0;
         uint256 totalRewards = miningRewards + storageRewards;
+        uint256 actualPaidPeriods = eligiblePeriods; // Track how many periods are actually paid
 
-        // Apply monthly cap per peer ID
         uint256 currentMonth = _getCurrentMonth();
         uint256 alreadyClaimed = monthlyRewardsClaimed[peerId][poolId][currentMonth];
         if (alreadyClaimed >= MAX_MONTHLY_REWARD_PER_PEER) {
+            // Cap already hit - don't advance timestamp at all (user can try again next month)
             emit MiningRewardsClaimed(account, peerId, poolId, 0);
             return;
         }
         if (totalRewards + alreadyClaimed > MAX_MONTHLY_REWARD_PER_PEER) {
+            // C-01 Fix: Calculate actual paid periods based on capped rewards
             totalRewards = MAX_MONTHLY_REWARD_PER_PEER - alreadyClaimed;
-            miningRewards = totalRewards; // Adjust mining rewards accordingly
+            miningRewards = totalRewards;
+            // Calculate how many periods this actually covers
+            actualPaidPeriods = totalRewards / rewardPerPeriod;
         }
 
-        // Additional check: ensure StakingPool can actually transfer the tokens
+        // C-01 Fix: Calculate adjusted timestamp based on ACTUAL paid periods
+        // Only advance timestamp for periods we're actually paying for
+        uint256 adjustedLastClaimedTime;
+        if (actualPaidPeriods == eligiblePeriods) {
+            // No cap hit - use the full newLastClaimedTime
+            adjustedLastClaimedTime = newLastClaimedTime;
+        } else {
+            // Cap hit - calculate timestamp for actual paid periods only
+            uint256 firstPeriodIndex = 0;
+            if (calculationStartTime > joinDate) {
+                firstPeriodIndex = (calculationStartTime - joinDate) / expectedPeriod;
+                if ((calculationStartTime - joinDate) % expectedPeriod != 0) {
+                    firstPeriodIndex++;
+                }
+            }
+            // Advance only by actual paid periods
+            adjustedLastClaimedTime = joinDate + ((firstPeriodIndex + actualPaidPeriods) * expectedPeriod);
+        }
+
+        // NOW update lastClaimedRewards with adjusted timestamp
+        if (adjustedLastClaimedTime > calculationStartTime) {
+            lastClaimedRewards[account][peerId][poolId] = adjustedLastClaimedTime;
+        }
+
         uint256 stakingPoolTokenBalance = token.balanceOf(address(stakingPool));
         if (stakingPoolTokenBalance < totalRewards) revert InsufficientRewards();
 
-        // Update monthly rewards tracking for cap enforcement
         monthlyRewardsClaimed[peerId][poolId][currentMonth] += totalRewards;
 
-        // 3. INTERACTIONS - Single atomic transfer to prevent dual-transfer ordering issues
-        // First, transfer tokens from StakingPool to this contract
         bool success = stakingPool.transferTokens(totalRewards);
         if (!success) revert InsufficientRewards();
 
-        // Update total rewards distributed after successful transfer from staking pool
         totalRewardsDistributed += totalRewards;
-
-        // Update caller's total claimed rewards before final transfer
         totalRewardsClaimed[account] += totalRewards;
 
-        // Now transfer tokens from this contract to the user (single external call)
-        // If this fails, the entire transaction reverts and state is restored
         IERC20(address(token)).safeTransfer(account, totalRewards);
 
-        // Emit tracking events
         emit TotalRewardsDistributedUpdated(totalRewardsDistributed);
         emit UserTotalRewardsUpdated(account, totalRewardsClaimed[account]);
 
-        // Emit events for mining and storage rewards separately
         if (miningRewards > 0) {
             emit MiningRewardsClaimed(account, peerId, poolId, miningRewards);
         }
@@ -718,6 +868,7 @@ contract RewardEngine is GovernanceModule {
     }
 
     /// @notice Get accumulated unclaimed rewards for a specific account/peerId pair
+    /// @dev M-02 Fix: Uses internal functions instead of external self-call for gas efficiency
     /// @param account The member account
     /// @param peerId The peer ID
     /// @param poolId The pool ID
@@ -729,20 +880,32 @@ contract RewardEngine is GovernanceModule {
         bytes32 peerId,
         uint32 poolId
     ) external view returns (uint256 unclaimedMining, uint256 unclaimedStorage, uint256 totalUnclaimed) {
-        return this.getEligibleRewards(account, peerId, poolId);
+        unclaimedMining = _calculateEligibleMiningRewardsV2Internal(account, peerId, poolId);
+        unclaimedStorage = _calculateEligibleStorageRewardsInternal(account, peerId, poolId);
+        totalUnclaimed = unclaimedMining + unclaimedStorage;
+        
+        return (unclaimedMining, unclaimedStorage, totalUnclaimed);  // L-03: Explicit return for consistency
     }
 
-    /// @notice Get claim status information for a user
-    /// @dev Helps users understand how many claim transactions they need
+    /// @notice Get claim status - DEPRECATED, use getClaimStatusV2
+    function getClaimStatus(
+        address,
+        bytes32,
+        uint32
+    ) external pure returns (uint256, uint256, uint256, uint256, bool) {
+        revert DeprecatedFunction();
+    }
+
+    /// @notice V2: Get claim status using O(1) lookups
     /// @param account The member account
     /// @param peerId The peer ID
     /// @param poolId The pool ID
     /// @return totalUnclaimedPeriods Total number of unclaimed periods
-    /// @return defaultPeriodsPerClaim Default periods processed per claim (DEFAULT_CLAIM_PERIODS_PER_TX)
-    /// @return maxPeriodsPerClaim Maximum periods allowed per claim (MAX_CLAIM_PERIODS_LIMIT)
-    /// @return estimatedClaimsNeeded Estimated number of claim transactions needed (using default)
-    /// @return hasMoreToClaim Whether there are more periods than can be claimed in one tx with default
-    function getClaimStatus(
+    /// @return defaultPeriodsPerClaim Default periods per claim (V2 limit)
+    /// @return maxPeriodsPerClaim Maximum periods per claim (V2 limit)
+    /// @return estimatedClaimsNeeded Estimated claims needed
+    /// @return hasMoreToClaim Whether more periods than one tx can handle
+    function getClaimStatusV2(
         address account,
         bytes32 peerId,
         uint32 poolId
@@ -753,32 +916,30 @@ contract RewardEngine is GovernanceModule {
         uint256 estimatedClaimsNeeded,
         bool hasMoreToClaim
     ) {
-        // Verify membership
         (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
         if (memberAddress == address(0) || memberAddress != account) revert NotPoolMember();
 
-        // Get timing info
         uint256 joinDate = storagePool.joinTimestamp(peerId);
         uint256 lastClaimed = lastClaimedRewards[account][peerId][poolId];
         uint256 calculationStartTime = lastClaimed > 0 ? lastClaimed : joinDate;
 
         if (calculationStartTime >= block.timestamp) {
-            return (0, DEFAULT_CLAIM_PERIODS_PER_TX, MAX_CLAIM_PERIODS_LIMIT, 0, false);
+            return (0, DEFAULT_CLAIM_PERIODS_PER_TX_V2, MAX_CLAIM_PERIODS_LIMIT_V2, 0, false);
         }
 
-        // Calculate total unclaimed periods (uses existing unlimited function)
-        totalUnclaimedPeriods = _calculateEligiblePeriodsFromJoinDate(
+        // V2: Uses O(1) lookups
+        totalUnclaimedPeriods = _calculateEligiblePeriodsFromJoinDateV2(
             peerId, poolId, joinDate, calculationStartTime, block.timestamp
         );
 
-        defaultPeriodsPerClaim = DEFAULT_CLAIM_PERIODS_PER_TX;
-        maxPeriodsPerClaim = MAX_CLAIM_PERIODS_LIMIT;
-        hasMoreToClaim = totalUnclaimedPeriods > DEFAULT_CLAIM_PERIODS_PER_TX;
+        defaultPeriodsPerClaim = DEFAULT_CLAIM_PERIODS_PER_TX_V2;
+        maxPeriodsPerClaim = MAX_CLAIM_PERIODS_LIMIT_V2;
+        hasMoreToClaim = totalUnclaimedPeriods > DEFAULT_CLAIM_PERIODS_PER_TX_V2;
         
         if (totalUnclaimedPeriods == 0) {
             estimatedClaimsNeeded = 0;
         } else {
-            estimatedClaimsNeeded = (totalUnclaimedPeriods + DEFAULT_CLAIM_PERIODS_PER_TX - 1) / DEFAULT_CLAIM_PERIODS_PER_TX;
+            estimatedClaimsNeeded = (totalUnclaimedPeriods + DEFAULT_CLAIM_PERIODS_PER_TX_V2 - 1) / DEFAULT_CLAIM_PERIODS_PER_TX_V2;
         }
 
         return (totalUnclaimedPeriods, defaultPeriodsPerClaim, maxPeriodsPerClaim, estimatedClaimsNeeded, hasMoreToClaim);
@@ -823,22 +984,16 @@ contract RewardEngine is GovernanceModule {
         return false;
     }
 
-    /// @notice Internal function to insert timestamp in linked list (O(1) operation)
-    /// @param poolId The pool ID
-    /// @param timestamp The timestamp to insert
-    function _insertTimestampLinked(uint32 poolId, uint256 timestamp) internal {
-        // Mark timestamp as existing
-        timestampExists[poolId][timestamp] = true;
+    // L-01 Fix: Removed _insertTimestampLinked (dead code - no longer called after V1 writes removed)
 
-        // Insert at head of linked list for O(1) insertion
-        uint256 currentHead = timestampHead[poolId];
-        timestampNext[poolId][timestamp] = currentHead;
-        timestampHead[poolId] = timestamp;
-    }
+    // ============================================
+    // V1 LEGACY FUNCTIONS - For migration verification only
+    // These functions read from V1 storage which is no longer written to.
+    // After migration is complete, these will only return pre-migration data.
+    // ============================================
 
-
-
-    /// @notice Get all online peerIds for a specific pool and timestamp
+    /// @notice V1 LEGACY: Get all online peerIds for a specific pool and timestamp
+    /// @dev WARNING: Only returns V1 data. For V2, use periodOnlineStatus mapping directly.
     /// @param poolId The pool ID
     /// @param timestamp The timestamp to check
     /// @return peerIds Array of peerIds that were online at the timestamp
@@ -846,88 +1001,31 @@ contract RewardEngine is GovernanceModule {
         return onlineStatus[poolId][timestamp];
     }
 
-    /// @notice Get all online peerIds for the latest submission in a pool
-    /// @param poolId The pool ID
-    /// @return peerIds Array of peerIds that were online in the latest submission
-    function getLatestOnlinePeerIds(uint32 poolId) external view returns (bytes32[] memory peerIds) {
-        // Get the latest timestamp (first in the linked list)
-        uint256 latestTimestamp = timestampHead[poolId];
-
-        if (latestTimestamp == 0) {
-            return new bytes32[](0); // No submissions yet
-        }
-
-        return this.getOnlinePeerIds(poolId, latestTimestamp);
+    /// @notice M-02 Fix: DEPRECATED - This function only returns V1 data
+    /// @dev V1 linked list is no longer written to. Use V2 periodOnlineStatus mapping.
+    function getLatestOnlinePeerIds(uint32) external pure returns (bytes32[] memory) {
+        revert DeprecatedFunction();
     }
 
-    /// @notice Check if a specific peerId was online at a timestamp
+    /// @notice V1 LEGACY: Check if a specific peerId was online at a timestamp
+    /// @dev WARNING: Only checks V1 data. For V2, use periodOnlineStatus mapping.
+    /// @dev Kept for migration verification - checks V1 array storage.
     /// @param poolId The pool ID
     /// @param timestamp The timestamp to check
     /// @param peerId The peer ID to check
-    /// @return isOnline True if the peerId was online at the timestamp
+    /// @return isOnline True if the peerId was online at the timestamp (V1 data only)
     function isPeerOnlineAtTimestamp(uint32 poolId, uint256 timestamp, bytes32 peerId) external view returns (bool isOnline) {
         return _isPeerOnlineAtTimestamp(poolId, timestamp, peerId);
     }
 
-    /// @notice Get the count of recorded timestamps for a pool
-    /// @param poolId The pool ID
-    /// @return count Number of timestamps recorded for the pool
-    function getRecordedTimestampCount(uint32 poolId) external view returns (uint256 count) {
-        // Count timestamps in linked list
-        uint256 currentTimestamp = timestampHead[poolId];
-        count = 0;
-
-        while (currentTimestamp != 0) {
-            count++;
-            currentTimestamp = timestampNext[poolId][currentTimestamp];
-        }
-
-        return count;
-    }
-
-    /// @notice Get recorded timestamps for a pool (paginated)
-    /// @param poolId The pool ID
-    /// @param offset Starting index
-    /// @param limit Maximum number of timestamps to return
-    /// @return timestamps Array of recorded timestamps
-    function getRecordedTimestamps(uint32 poolId, uint256 offset, uint256 limit) external view returns (uint256[] memory timestamps) {
-        // First, count total timestamps
-        uint256 totalCount = this.getRecordedTimestampCount(poolId);
-
-        if (offset >= totalCount) {
-            return new uint256[](0);
-        }
-
-        uint256 endIndex = offset + limit;
-        if (endIndex > totalCount) {
-            endIndex = totalCount;
-        }
-
-        uint256 resultLength = endIndex - offset;
-        timestamps = new uint256[](resultLength);
-
-        // Traverse linked list to get timestamps
-        uint256 currentTimestamp = timestampHead[poolId];
-        uint256 currentIndex = 0;
-        uint256 resultIndex = 0;
-
-        while (currentTimestamp != 0 && resultIndex < resultLength) {
-            if (currentIndex >= offset) {
-                timestamps[resultIndex] = currentTimestamp;
-                resultIndex++;
-            }
-            currentIndex++;
-            currentTimestamp = timestampNext[poolId][currentTimestamp];
-        }
-
-        return timestamps;
-    }
-
     /// @notice Internal function to safely calculate reward per period with overflow protection
+    /// @dev L-05 Fix: Reward per period = monthlyRewardPerPeer / (SECONDS_PER_MONTH / expectedPeriod)
+    /// @dev With default 8-hour periods: periodsPerMonth = 30 days / 8 hours = 90 periods
+    /// @dev Example: 8000 tokens / 90 periods = ~88.89 tokens per period
     /// @return rewardPerPeriod Safe reward per period calculation
     function _calculateRewardPerPeriod() internal view returns (uint256 rewardPerPeriod) {
-        // Simplified calculation: use monthly reward per peer directly
-        // Calculate reward per period based on monthly amount
+        // Calculate periods per month based on expectedPeriod
+        // Default: 30 days / 8 hours = 2,592,000 / 28,800 = 90 periods per month
         uint256 periodsPerMonth = SECONDS_PER_MONTH / expectedPeriod;
 
         if (periodsPerMonth == 0) return 0;
@@ -938,36 +1036,16 @@ contract RewardEngine is GovernanceModule {
         return monthlyRewardPerPeer / periodsPerMonth;
     }
 
-    /// @notice Internal function to safely calculate total reward with overflow and division protection
-    /// @param rewardPerPeriod Reward per period
-    /// @param onlinePeriods Number of online periods
-    /// @param totalPeriods Total periods
-    /// @return totalReward Safe total reward calculation
-    function _calculateTotalReward(
-        uint256 rewardPerPeriod,
-        uint256 onlinePeriods,
-        uint256 totalPeriods
-    ) internal pure returns (uint256 totalReward) {
-        if (totalPeriods == 0 || rewardPerPeriod == 0) return 0;
+    // I-02 Fix: Removed unused _calculateTotalReward function (dead code)
 
-        // Check for overflow before multiplication
-        if (rewardPerPeriod > 0 && onlinePeriods > type(uint256).max / rewardPerPeriod) {
-            // Use alternative calculation to prevent overflow
-            return (rewardPerPeriod / totalPeriods) * onlinePeriods;
-        } else {
-            // Safe to multiply first for better precision
-            return (rewardPerPeriod * onlinePeriods) / totalPeriods;
-        }
-    }
-
-    /// @notice Calculate eligible periods from join date with online status check
+    /// @notice V2: Calculate eligible periods from join date with O(1) lookups
     /// @param peerId The peer ID
     /// @param poolId The pool ID  
     /// @param joinDate The user's join date
     /// @param calculationStartTime Start time for calculation (join date or last claimed)
     /// @param currentTime Current timestamp
     /// @return eligiblePeriods Number of complete periods with online status
-    function _calculateEligiblePeriodsFromJoinDate(
+    function _calculateEligiblePeriodsFromJoinDateV2(
         bytes32 peerId,
         uint32 poolId,
         uint256 joinDate,
@@ -978,40 +1056,39 @@ contract RewardEngine is GovernanceModule {
             return 0;
         }
 
-        // Calculate periods based on fixed boundaries from join date
-        // Period boundaries are: joinDate, joinDate + expectedPeriod, joinDate + 2*expectedPeriod, etc.
-        
         uint256 eligibleCount = 0;
         
         // Find the first period that starts at or after calculationStartTime
         uint256 firstPeriodIndex = 0;
         if (calculationStartTime > joinDate) {
             firstPeriodIndex = (calculationStartTime - joinDate) / expectedPeriod;
-            // If calculationStartTime is not exactly on a period boundary, start from next period
             if ((calculationStartTime - joinDate) % expectedPeriod != 0) {
                 firstPeriodIndex++;
             }
         }
         
-        // Check each complete period from firstPeriodIndex onwards
+        // V2: Check up to 6 months (540 periods) - O(1) per period lookup
         uint256 periodIndex = firstPeriodIndex;
-        uint256 maxPeriods = 1000; // Safety limit to prevent infinite loops and overflow
+        uint256 maxPeriods = MAX_VIEW_PERIODS_V2;
         uint256 periodsChecked = 0;
+        
+        // L-02 Gas Optimization: Calculate periodStart once, then increment
+        // Saves ~200 gas per iteration (avoids multiplication each loop)
+        uint256 periodStart = joinDate + (firstPeriodIndex * expectedPeriod);
 
         while (periodsChecked < maxPeriods) {
-            uint256 periodStart = joinDate + (periodIndex * expectedPeriod);
             uint256 periodEnd = periodStart + expectedPeriod;
 
-            // Stop if this period hasn't completed yet
             if (periodEnd > currentTime) {
                 break;
             }
 
-            // Check if user has at least one online status in this period
-            if (_hasOnlineStatusInPeriod(peerId, poolId, periodStart, periodEnd)) {
+            // V2: O(1) lookup instead of O(n) linked list iteration
+            if (_hasOnlineStatusInPeriodV2(peerId, poolId, periodStart)) {
                 eligibleCount++;
             }
 
+            periodStart = periodEnd;  // L-02: Increment instead of recalculate
             periodIndex++;
             periodsChecked++;
         }
@@ -1019,16 +1096,16 @@ contract RewardEngine is GovernanceModule {
         return eligibleCount;
     }
 
-    /// @notice Calculate eligible periods with a maximum limit for gas-bounded claims
+    /// @notice V2: Calculate eligible periods with limit using O(1) lookups
     /// @param peerId The peer ID
     /// @param poolId The pool ID  
     /// @param joinDate The user's join date
-    /// @param calculationStartTime Start time for calculation (join date or last claimed)
+    /// @param calculationStartTime Start time for calculation
     /// @param currentTime Current timestamp
-    /// @param maxPeriodsToProcess Maximum number of periods to process in this call
-    /// @return eligiblePeriods Number of complete periods with online status (up to limit)
-    /// @return newLastClaimedTime The timestamp to store as lastClaimed for next call
-    function _calculateEligiblePeriodsLimited(
+    /// @param maxPeriodsToProcess Maximum periods to process
+    /// @return eligiblePeriods Number of complete periods with online status
+    /// @return newLastClaimedTime The timestamp to store as lastClaimed
+    function _calculateEligiblePeriodsLimitedV2(
         bytes32 peerId,
         uint32 poolId,
         uint256 joinDate,
@@ -1042,17 +1119,14 @@ contract RewardEngine is GovernanceModule {
 
         uint256 eligibleCount = 0;
         
-        // Find the first period that starts at or after calculationStartTime
         uint256 firstPeriodIndex = 0;
         if (calculationStartTime > joinDate) {
             firstPeriodIndex = (calculationStartTime - joinDate) / expectedPeriod;
-            // If calculationStartTime is not exactly on a period boundary, start from next period
             if ((calculationStartTime - joinDate) % expectedPeriod != 0) {
                 firstPeriodIndex++;
             }
         }
         
-        // Check each complete period from firstPeriodIndex onwards, up to the limit
         uint256 periodIndex = firstPeriodIndex;
         uint256 periodsChecked = 0;
         uint256 lastProcessedPeriodEnd = calculationStartTime;
@@ -1061,13 +1135,12 @@ contract RewardEngine is GovernanceModule {
             uint256 periodStart = joinDate + (periodIndex * expectedPeriod);
             uint256 periodEnd = periodStart + expectedPeriod;
 
-            // Stop if this period hasn't completed yet
             if (periodEnd > currentTime) {
                 break;
             }
 
-            // Check if user has at least one online status in this period
-            if (_hasOnlineStatusInPeriod(peerId, poolId, periodStart, periodEnd)) {
+            // V2: O(1) lookup
+            if (_hasOnlineStatusInPeriodV2(peerId, poolId, periodStart)) {
                 eligibleCount++;
             }
 
@@ -1079,67 +1152,19 @@ contract RewardEngine is GovernanceModule {
         return (eligibleCount, lastProcessedPeriodEnd);
     }
 
-    /// @notice Check if peerId has online status in a specific period
+    /// @notice V2: Check if peerId has online status in a specific period - O(1) lookup
+    /// @dev Uses direct period indexing instead of linked list iteration
     /// @param peerId The peer ID
     /// @param poolId The pool ID
-    /// @param periodStart Start of the period (inclusive)
-    /// @param periodEnd End of the period (exclusive)
-    /// @return hasStatus True if peerId has at least one online status in the period
-    function _hasOnlineStatusInPeriod(
+    /// @param periodStart Start of the period (used to calculate period index)
+    /// @return hasStatus True if peerId has online status in the period
+    function _hasOnlineStatusInPeriodV2(
         bytes32 peerId,
         uint32 poolId,
-        uint256 periodStart,
-        uint256 periodEnd
+        uint256 periodStart
     ) internal view returns (bool hasStatus) {
-        // Iterate through all recorded timestamps for this pool
-        uint256 currentTimestamp = timestampHead[poolId];
-        uint256 iterations = 0;
-        uint256 maxIterations = 1000; // Safety limit to prevent infinite loops
-
-        while (currentTimestamp != 0 && iterations < maxIterations) {
-            // Check if timestamp falls within the period
-            // Note: We need to be more flexible here - any online status timestamp
-            // that falls within this period should count, regardless of normalization
-            if (currentTimestamp >= periodStart && currentTimestamp < periodEnd) {
-                // Check if this peerId was online at this timestamp
-                if (_isPeerOnlineAtTimestamp(poolId, currentTimestamp, peerId)) {
-                    return true; // Found at least one online status in this period
-                }
-            }
-            currentTimestamp = timestampNext[poolId][currentTimestamp];
-            iterations++;
-        }
-
-        return false; // No online status found in this period
-    }
-
-    /// @notice Check if peerId has any online status since a given time
-    /// @param peerId The peer ID
-    /// @param poolId The pool ID
-    /// @param sinceTime Start time to check from (inclusive)
-    /// @param untilTime End time to check until (exclusive)
-    /// @return hasStatus True if peerId has at least one online status in the time range
-    function _hasAnyOnlineStatusSince(
-        bytes32 peerId,
-        uint32 poolId,
-        uint256 sinceTime,
-        uint256 untilTime
-    ) internal view returns (bool hasStatus) {
-        // Iterate through all recorded timestamps for this pool
-        uint256 currentTimestamp = timestampHead[poolId];
-        
-        while (currentTimestamp != 0) {
-            // Check if timestamp falls within the time range
-            if (currentTimestamp >= sinceTime && currentTimestamp < untilTime) {
-                // Check if this peerId was online at this timestamp
-                if (_isPeerOnlineAtTimestamp(poolId, currentTimestamp, peerId)) {
-                    return true; // Found at least one online status in this time range
-                }
-            }
-            currentTimestamp = timestampNext[poolId][currentTimestamp];
-        }
-        
-        return false; // No online status found in this time range
+        uint256 periodIndex = periodStart / expectedPeriod;
+        return periodOnlineStatus[poolId][periodIndex][peerId];
     }
 
     /// @notice Get the last complete period end timestamp based on join date
@@ -1160,6 +1185,7 @@ contract RewardEngine is GovernanceModule {
     }
 
     /// @notice Get reward statistics for an address
+    /// @dev L-06 Fix: Added zero address validation
     /// @param account The address to query
     /// @return totalClaimed Total rewards claimed by the address
     /// @return totalDistributed Total rewards distributed by the contract
@@ -1169,6 +1195,8 @@ contract RewardEngine is GovernanceModule {
         uint256 totalDistributed,
         uint256 claimPercentage
     ) {
+        if (account == address(0)) revert InvalidRecipient();
+        
         totalClaimed = totalRewardsClaimed[account];
         totalDistributed = totalRewardsDistributed;
 
@@ -1182,6 +1210,9 @@ contract RewardEngine is GovernanceModule {
         return (totalClaimed, totalDistributed, claimPercentage);
     }
 
+    /// @notice V1 LEGACY: Get raw online status array for a pool and timestamp
+    /// @dev WARNING: Only returns V1 data. V1 storage is no longer written to.
+    /// @dev Kept for migration verification only.
     function getRawOnlineInterned(uint32 poolId, uint256 timestamp) external view returns (bytes32[] memory) {
         return onlineStatus[poolId][timestamp];
     }
