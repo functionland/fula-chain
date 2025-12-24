@@ -470,6 +470,11 @@ contract RewardEngine is GovernanceModule {
             return (0, 0);
         }
 
+        uint256 maxPeriods = MAX_VIEW_PERIODS_V2;
+        if (endPeriodIndex > startPeriodIndex + maxPeriods - 1) {
+            endPeriodIndex = startPeriodIndex + maxPeriods - 1;
+        }
+
         totalExpected = endPeriodIndex - startPeriodIndex + 1;
         onlineCount = 0;
 
