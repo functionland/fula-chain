@@ -559,8 +559,12 @@ contract RewardEngine is GovernanceModule {
         onlinePeriods = _calculateEligiblePeriodsFromJoinDateV2(peerId, poolId, joinDate, startTime, endTime);
         
         // Calculate total periods that have passed (complete periods only)
+        // M-02 Fix: Cap totalPeriods at MAX_VIEW_PERIODS_V2 for consistency with onlinePeriods
         uint256 timeElapsed = endTime - startTime;
         totalPeriods = timeElapsed / expectedPeriod;
+        if (totalPeriods > MAX_VIEW_PERIODS_V2) {
+            totalPeriods = MAX_VIEW_PERIODS_V2;
+        }
 
         // Calculate reward per period
         rewardPerPeriod = _calculateRewardPerPeriod();
@@ -800,6 +804,14 @@ contract RewardEngine is GovernanceModule {
             miningRewards = totalRewards;
             // Calculate how many periods this actually covers
             actualPaidPeriods = totalRewards / rewardPerPeriod;
+            
+            // H-01 Fix: If remaining cap is less than 1 period worth, don't pay partial amount
+            // This prevents stuck state where timestamp doesn't advance but tokens are paid
+            // User must wait until next month when cap resets
+            if (actualPaidPeriods == 0) {
+                emit MiningRewardsClaimed(account, peerId, poolId, 0);
+                return;
+            }
         }
 
         // C-01 Fix: Calculate adjusted timestamp based on ACTUAL paid periods
@@ -817,11 +829,12 @@ contract RewardEngine is GovernanceModule {
                     firstPeriodIndex++;
                 }
             }
-            // Advance only by actual paid periods
+            // Advance only by actual paid periods (guaranteed > 0 due to H-01 fix above)
             adjustedLastClaimedTime = joinDate + ((firstPeriodIndex + actualPaidPeriods) * expectedPeriod);
         }
 
         // NOW update lastClaimedRewards with adjusted timestamp
+        // Note: With H-01 fix, actualPaidPeriods > 0, so adjustedLastClaimedTime > calculationStartTime is guaranteed
         if (adjustedLastClaimedTime > calculationStartTime) {
             lastClaimedRewards[account][peerId][poolId] = adjustedLastClaimedTime;
         }
