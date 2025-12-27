@@ -22,9 +22,9 @@ Staking Periods and Rewards
 User cannot claim rewards before the staking priod is over
 | Lock Period | Duration | Fixed APY | Referrer Reward | 
 |-------------|----------|-----------|-----------------| 
-| LOCK_PERIOD_1 | 180 days | 6% | 1% | 
 | LOCK_PERIOD_2 | 365 days | 15% | 4% |
 | LOCK_PERIOD_3 | 730 days | 18% | 6% |
+| LOCK_PERIOD_4 | 1095 days | 24% | 8% |
 */
 
 /*
@@ -53,19 +53,19 @@ contract StakingEngineLinear is
 
 
     // Lock periods in seconds
-    uint32 public constant LOCK_PERIOD_1 = 180 days;
     uint32 public constant LOCK_PERIOD_2 = 365 days;
     uint32 public constant LOCK_PERIOD_3 = 730 days;
+    uint32 public constant LOCK_PERIOD_4 = 1095 days;
 
     // Fixed APY percentages for each lock period
-    uint256 public constant FIXED_APY_180_DAYS = 6; // 6% for 180 days
     uint256 public constant FIXED_APY_365_DAYS = 15; // 15% for 365 days
     uint256 public constant FIXED_APY_730_DAYS = 18; // 18% for 730 days (2 years)
+    uint256 public constant FIXED_APY_1095_DAYS = 24; // 24% for 1095 days (3 years)
 
     // Referrer reward percentages for each lock period
-    uint256 public constant REFERRER_REWARD_PERCENT_180_DAYS = 1; // 1% for 180 days
     uint256 public constant REFERRER_REWARD_PERCENT_365_DAYS = 4; // 4% for 365 days
     uint256 public constant REFERRER_REWARD_PERCENT_730_DAYS = 6; // 6% for 730 days (2 years)
+    uint256 public constant REFERRER_REWARD_PERCENT_1095_DAYS = 8; // 8% for 1095 days (3 years)
 
     // Precision factor for calculations to avoid rounding errors
     uint256 public constant PRECISION_FACTOR = 1e18;
@@ -94,9 +94,9 @@ contract StakingEngineLinear is
         uint256 activeReferredStakersCount; // Number of active stakers referred
         uint256 totalActiveStaked; // Total amount of tokens currently staked by referees
         uint256 totalUnstaked; // Total amount of tokens unstaked by referees
-        uint256 totalActiveStaked180Days; // Total active staked for 180 days
         uint256 totalActiveStaked365Days; // Total active staked for 365 days
         uint256 totalActiveStaked730Days; // Total active staked for 730 days (2 years)
+        uint256 totalActiveStaked1095Days; // Total active staked for 1095 days (3 years)
     }
 
     struct ReferrerRewardInfo {
@@ -137,13 +137,13 @@ contract StakingEngineLinear is
     IPool public rewardPoolContract;
 
     // Tracking variables for internal accounting
-    uint256 public accRewardPerToken180Days;
     uint256 public accRewardPerToken365Days;
     uint256 public accRewardPerToken730Days;
+    uint256 public accRewardPerToken1095Days;
     
-    uint256 public totalStaked180Days;
     uint256 public totalStaked365Days;
     uint256 public totalStaked730Days;
+    uint256 public totalStaked1095Days;
 
     // --- New variables for global queries ---
     // List of all staker addresses (unique, append-only)
@@ -206,6 +206,19 @@ contract StakingEngineLinear is
     error NoUpgradeProposalPending();
     error UpgradeTimelockNotExpired();
     error InvalidImplementationAddress();
+    // G-08 FIX: Custom errors to replace string error messages
+    error ZeroAmount();
+    error InvalidLockPeriod();
+    error MaxActiveStakesReached();
+    error CannotReferYourself();
+    error ReferrerCannotBeContract();
+    error InvalidStakeIndex();
+    error StakeAlreadyUnstaked();
+    error LockPeriodNotEnded();
+    error StakeNotActive();
+    error InsufficientRewardsInPool();
+    error NoReferrerRewardExists();
+    error InvalidRewardIndex();
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -304,11 +317,11 @@ contract StakingEngineLinear is
      */
     function calculateRequiredRewards() public view returns (uint256) {
         // Calculate required rewards based on current stakes and APY
-        uint256 required180Days = (totalStaked180Days * FIXED_APY_180_DAYS) / 100;
         uint256 required365Days = (totalStaked365Days * FIXED_APY_365_DAYS) / 100;
         uint256 required730Days = (totalStaked730Days * FIXED_APY_730_DAYS) / 100;
+        uint256 required1095Days = (totalStaked1095Days * FIXED_APY_1095_DAYS) / 100;
         
-        return required180Days + required365Days + required730Days;
+        return required365Days + required730Days + required1095Days;
     }
 
     /**
@@ -399,16 +412,24 @@ contract StakingEngineLinear is
     function getClaimableReferrerRewards(address referrer) public view returns (uint256) {
         uint256 claimable = 0;
         ReferrerRewardInfo[] memory rewards = referrerRewards[referrer];
+        uint256 rewardsLength = rewards.length;
         
-        for (uint256 i = 0; i < rewards.length; i++) {
-            if (rewards[i].isActive) {
-                // Use the exact same calculation as claimReferrerReward
-                uint256 lockEnd = rewards[i].startTime + rewards[i].lockPeriod;
-                uint256 nowOrEnd = block.timestamp < lockEnd ? block.timestamp : lockEnd;
-                uint256 timeElapsed = nowOrEnd - rewards[i].startTime;
-                uint256 totalClaimable = (rewards[i].totalReward * timeElapsed) / rewards[i].lockPeriod;
-                uint256 alreadyClaimed = rewards[i].claimedReward;
+        for (uint256 i = 0; i < rewardsLength; i++) {
+            // C-01 FIX: Include inactive rewards (totalReward was capped at unstake time)
+            if (rewards[i].totalReward > 0) {
+                uint256 totalClaimable;
+                if (rewards[i].isActive) {
+                    // Active stake: calculate proportional reward up to now or lock end
+                    uint256 lockEnd = rewards[i].startTime + rewards[i].lockPeriod;
+                    uint256 nowOrEnd = block.timestamp < lockEnd ? block.timestamp : lockEnd;
+                    uint256 timeElapsed = nowOrEnd - rewards[i].startTime;
+                    totalClaimable = (rewards[i].totalReward * timeElapsed) / rewards[i].lockPeriod;
+                } else {
+                    // Inactive stake: totalReward was already capped, full amount is claimable
+                    totalClaimable = rewards[i].totalReward;
+                }
                 
+                uint256 alreadyClaimed = rewards[i].claimedReward;
                 if (totalClaimable > alreadyClaimed) {
                     claimable += totalClaimable - alreadyClaimed;
                 }
@@ -430,11 +451,6 @@ contract StakingEngineLinear is
         uint256 timeElapsed = block.timestamp - lastUpdateTime;
         
         // Update accumulated rewards for each lock period
-        if (totalStaked180Days > 0) {
-            uint256 rewardsForPeriod = calculateElapsedRewards(totalStaked180Days, FIXED_APY_180_DAYS, timeElapsed);
-            accRewardPerToken180Days += (rewardsForPeriod * PRECISION_FACTOR) / totalStaked180Days;
-        }
-        
         if (totalStaked365Days > 0) {
             uint256 rewardsForPeriod = calculateElapsedRewards(totalStaked365Days, FIXED_APY_365_DAYS, timeElapsed);
             accRewardPerToken365Days += (rewardsForPeriod * PRECISION_FACTOR) / totalStaked365Days;
@@ -443,6 +459,11 @@ contract StakingEngineLinear is
         if (totalStaked730Days > 0) {
             uint256 rewardsForPeriod = calculateElapsedRewards(totalStaked730Days, FIXED_APY_730_DAYS, timeElapsed);
             accRewardPerToken730Days += (rewardsForPeriod * PRECISION_FACTOR) / totalStaked730Days;
+        }
+        
+        if (totalStaked1095Days > 0) {
+            uint256 rewardsForPeriod = calculateElapsedRewards(totalStaked1095Days, FIXED_APY_1095_DAYS, timeElapsed);
+            accRewardPerToken1095Days += (rewardsForPeriod * PRECISION_FACTOR) / totalStaked1095Days;
         }
         
         lastUpdateTime = block.timestamp;
@@ -466,12 +487,12 @@ contract StakingEngineLinear is
         uint256 minimumAPY = 0;
         
         // Use direct assignment instead of conditionals to save gas
-        if (lockPeriod == LOCK_PERIOD_1) {
-            minimumAPY = FIXED_APY_180_DAYS;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
+        if (lockPeriod == LOCK_PERIOD_2) {
             minimumAPY = FIXED_APY_365_DAYS;
         } else if (lockPeriod == LOCK_PERIOD_3) {
             minimumAPY = FIXED_APY_730_DAYS;
+        } else if (lockPeriod == LOCK_PERIOD_4) {
+            minimumAPY = FIXED_APY_1095_DAYS;
         }
         
         if (projectedAPY < minimumAPY) {
@@ -501,9 +522,9 @@ contract StakingEngineLinear is
                         uint256 timeElapsed = nowOrEnd - stake.startTime;
 
                         uint256 fixedAPY = 0;
-                        if (stake.lockPeriod == LOCK_PERIOD_1) fixedAPY = FIXED_APY_180_DAYS;
-                        else if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_365_DAYS;
+                        if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_365_DAYS;
                         else if (stake.lockPeriod == LOCK_PERIOD_3) fixedAPY = FIXED_APY_730_DAYS;
+                        else if (stake.lockPeriod == LOCK_PERIOD_4) fixedAPY = FIXED_APY_1095_DAYS;
 
                         uint256 totalReward = (stake.amount * fixedAPY * stake.lockPeriod) / (100 * 365 days);
                         uint256 claimable = (totalReward * timeElapsed) / stake.lockPeriod;
@@ -530,12 +551,12 @@ contract StakingEngineLinear is
         totalStaked += amount;
         
         // Update the appropriate period total
-        if (lockPeriod == LOCK_PERIOD_1) {
-            totalStaked180Days += amount;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
+        if (lockPeriod == LOCK_PERIOD_2) {
             totalStaked365Days += amount;
         } else if (lockPeriod == LOCK_PERIOD_3) {
             totalStaked730Days += amount;
+        } else if (lockPeriod == LOCK_PERIOD_4) {
+            totalStaked1095Days += amount;
         }
         
         // --- Track all stakers globally and per period ---
@@ -585,22 +606,22 @@ contract StakingEngineLinear is
             referrerInfo.totalActiveStaked += amount;
             
             // Update period-specific stats for referrer
-            if (lockPeriod == LOCK_PERIOD_1) {
-                referrerInfo.totalActiveStaked180Days += amount;
-            } else if (lockPeriod == LOCK_PERIOD_2) {
+            if (lockPeriod == LOCK_PERIOD_2) {
                 referrerInfo.totalActiveStaked365Days += amount;
             } else if (lockPeriod == LOCK_PERIOD_3) {
                 referrerInfo.totalActiveStaked730Days += amount;
+            } else if (lockPeriod == LOCK_PERIOD_4) {
+                referrerInfo.totalActiveStaked1095Days += amount;
             }
             
             // Calculate referrer reward percentage once
             uint256 referrerRewardPercent;
-            if (lockPeriod == LOCK_PERIOD_1) {
-                referrerRewardPercent = REFERRER_REWARD_PERCENT_180_DAYS;
-            } else if (lockPeriod == LOCK_PERIOD_2) {
+            if (lockPeriod == LOCK_PERIOD_2) {
                 referrerRewardPercent = REFERRER_REWARD_PERCENT_365_DAYS;
             } else if (lockPeriod == LOCK_PERIOD_3) {
                 referrerRewardPercent = REFERRER_REWARD_PERCENT_730_DAYS;
+            } else if (lockPeriod == LOCK_PERIOD_4) {
+                referrerRewardPercent = REFERRER_REWARD_PERCENT_1095_DAYS;
             }
             
             // Only process referrer rewards if there's actually a percentage
@@ -660,20 +681,22 @@ contract StakingEngineLinear is
         if (token.allowance(msg.sender, address(this)) < amount) {
             revert InsufficientApproval();
         }
-        require(amount > 0, "Amount must be greater than zero");
-        require(
-            lockPeriod == LOCK_PERIOD_1 || lockPeriod == LOCK_PERIOD_2 || lockPeriod == LOCK_PERIOD_3,
-            "Invalid lock period"
-        );
+        // G-08 FIX: Use custom errors instead of string messages
+        if (amount == 0) revert ZeroAmount();
+        if (lockPeriod != LOCK_PERIOD_2 && lockPeriod != LOCK_PERIOD_3 && lockPeriod != LOCK_PERIOD_4) {
+            revert InvalidLockPeriod();
+        }
 
-        // Limit the number of active stakes per user
+        // G-01 FIX: Cache storage array to avoid redundant SLOAD operations
+        StakeInfo[] storage userStakes = stakes[msg.sender];
+        uint256 userStakesLength = userStakes.length;
         uint256 activeStakes = 0;
-        for (uint256 i = 0; i < stakes[msg.sender].length; i++) {
-            if (stakes[msg.sender][i].isActive) {
+        for (uint256 i = 0; i < userStakesLength; i++) {
+            if (userStakes[i].isActive) {
                 activeStakes++;
             }
         }
-        require(activeStakes < 100, "Maximum number of active stakes reached");
+        if (activeStakes >= 100) revert MaxActiveStakesReached();
         
         // Make the zero address handling explicit
         if (referrer == address(0)) {
@@ -684,12 +707,12 @@ contract StakingEngineLinear is
         }
         
         // Referrer cannot be the same as the staker
-        require(referrer != msg.sender, "Cannot refer yourself");
+        if (referrer == msg.sender) revert CannotReferYourself();
         
         // Additional validation to check referrer is not a contract
         uint256 size;
         assembly { size := extcodesize(referrer) }
-        require(size == 0, "Referrer cannot be a contract");
+        if (size > 0) revert ReferrerCannotBeContract();
 
         _stakeTokenInternal(amount, lockPeriod, referrer);
         
@@ -705,19 +728,21 @@ contract StakingEngineLinear is
         if (token.allowance(msg.sender, address(this)) < amount) {
             revert InsufficientApproval();
         }
-        require(amount > 0, "Amount must be greater than zero");
-        require(
-            lockPeriod == LOCK_PERIOD_1 || lockPeriod == LOCK_PERIOD_2 || lockPeriod == LOCK_PERIOD_3,
-            "Invalid lock period"
-        );
-        // Limit the number of active stakes per user
+        // G-08 FIX: Use custom errors instead of string messages
+        if (amount == 0) revert ZeroAmount();
+        if (lockPeriod != LOCK_PERIOD_2 && lockPeriod != LOCK_PERIOD_3 && lockPeriod != LOCK_PERIOD_4) {
+            revert InvalidLockPeriod();
+        }
+        // G-01 FIX: Cache storage array to avoid redundant SLOAD operations
+        StakeInfo[] storage userStakes = stakes[msg.sender];
+        uint256 userStakesLength = userStakes.length;
         uint256 activeStakes = 0;
-        for (uint256 i = 0; i < stakes[msg.sender].length; i++) {
-            if (stakes[msg.sender][i].isActive) {
+        for (uint256 i = 0; i < userStakesLength; i++) {
+            if (userStakes[i].isActive) {
                 activeStakes++;
             }
         }
-        require(activeStakes < 100, "Maximum number of active stakes reached");
+        if (activeStakes >= 100) revert MaxActiveStakesReached();
 
         _stakeTokenInternal(amount, lockPeriod, address(0));
         
@@ -741,14 +766,19 @@ contract StakingEngineLinear is
         }
 
         // Calculate annualized rewards based on fixed APY
-        uint256 annualRewards = (stakedAmount * fixedAPY * PRECISION_FACTOR) / 100;
+        // H-02 FIX: Improved precision by performing multiplication before division
+        uint256 annualRewards = (stakedAmount * fixedAPY) / 100;
 
         // Adjust rewards proportionally to elapsed time (in seconds)
         if (timeElapsed == 0) {
             return 0;
         }
-        // Improved precision by using adding half divisor for rounding
-        return (annualRewards * timeElapsed + (365 days * PRECISION_FACTOR / 2)) / (365 days * PRECISION_FACTOR);
+        
+        // H-02 FIX: Proper rounding - add half of divisor scaled to the numerator
+        uint256 divisor = 365 days;
+        uint256 numerator = annualRewards * timeElapsed;
+        // Round to nearest by adding half the divisor
+        return (numerator + (divisor / 2)) / divisor;
     }
 
     /**
@@ -757,12 +787,12 @@ contract StakingEngineLinear is
      * @return Accumulated reward per token
      */
     function getAccRewardPerTokenForLockPeriod(uint256 lockPeriod) internal view returns (uint256) {
-        if (lockPeriod == LOCK_PERIOD_1) {
-            return accRewardPerToken180Days;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
+        if (lockPeriod == LOCK_PERIOD_2) {
             return accRewardPerToken365Days;
         } else if (lockPeriod == LOCK_PERIOD_3) {
             return accRewardPerToken730Days;
+        } else if (lockPeriod == LOCK_PERIOD_4) {
+            return accRewardPerToken1095Days;
         }
         return 0; // Default case; should never occur due to earlier validation
     }
@@ -780,9 +810,9 @@ contract StakingEngineLinear is
         uint256 timeElapsed = nowOrEnd - stake.startTime;
 
         uint256 fixedAPY = 0;
-        if (stake.lockPeriod == LOCK_PERIOD_1) fixedAPY = FIXED_APY_180_DAYS;
-        else if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_365_DAYS;
+        if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_365_DAYS;
         else if (stake.lockPeriod == LOCK_PERIOD_3) fixedAPY = FIXED_APY_730_DAYS;
+        else if (stake.lockPeriod == LOCK_PERIOD_4) fixedAPY = FIXED_APY_1095_DAYS;
 
         uint256 totalReward = (stake.amount * fixedAPY * stake.lockPeriod) / (100 * 365 days);
         uint256 claimable = (totalReward * timeElapsed) / stake.lockPeriod;
@@ -800,10 +830,11 @@ contract StakingEngineLinear is
      * @param index Index of the stake to unstake
      */
     function unstakeToken(uint256 index) external nonReentrant whenNotPaused {
-        require(index < stakes[msg.sender].length, "Invalid stake index");
+        // G-08 FIX: Use custom errors instead of string messages
+        if (index >= stakes[msg.sender].length) revert InvalidStakeIndex();
         StakeInfo storage stake = stakes[msg.sender][index];
-        require(stake.isActive, "Stake already unstaked");
-        require(block.timestamp >= stake.startTime + stake.lockPeriod, "Cannot unstake before lock period ends");
+        if (!stake.isActive) revert StakeAlreadyUnstaked();
+        if (block.timestamp < stake.startTime + stake.lockPeriod) revert LockPeriodNotEnded();
 
         updateRewards();
 
@@ -816,12 +847,12 @@ contract StakingEngineLinear is
 
         // Update total staked amounts
         totalStaked -= stakedAmount;
-        if (lockPeriod == LOCK_PERIOD_1) {
-            totalStaked180Days -= stakedAmount;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
+        if (lockPeriod == LOCK_PERIOD_2) {
             totalStaked365Days -= stakedAmount;
         } else if (lockPeriod == LOCK_PERIOD_3) {
             totalStaked730Days -= stakedAmount;
+        } else if (lockPeriod == LOCK_PERIOD_4) {
+            totalStaked1095Days -= stakedAmount;
         }
 
         // Update referrer info if any
@@ -829,17 +860,28 @@ contract StakingEngineLinear is
             ReferrerInfo storage referrerInfo = referrers[referrer];
             referrerInfo.totalActiveStaked -= stakedAmount;
             referrerInfo.totalUnstaked += stakedAmount;
-            if (lockPeriod == LOCK_PERIOD_1) {
-                referrerInfo.totalActiveStaked180Days -= stakedAmount;
-            } else if (lockPeriod == LOCK_PERIOD_2) {
+            if (lockPeriod == LOCK_PERIOD_2) {
                 referrerInfo.totalActiveStaked365Days -= stakedAmount;
             } else if (lockPeriod == LOCK_PERIOD_3) {
                 referrerInfo.totalActiveStaked730Days -= stakedAmount;
+            } else if (lockPeriod == LOCK_PERIOD_4) {
+                referrerInfo.totalActiveStaked1095Days -= stakedAmount;
             }
             // Mark all referrer rewards for this stake as inactive
-            for (uint256 i = 0; i < referrerRewards[referrer].length; i++) {
-                if (referrerRewards[referrer][i].referee == msg.sender && referrerRewards[referrer][i].stakeId == index) {
-                    referrerRewards[referrer][i].isActive = false;
+            // C-01 FIX: Before deactivating, cap totalReward to actual earned amount so referrer doesn't lose unclaimed rewards
+            ReferrerRewardInfo[] storage rewards = referrerRewards[referrer];
+            uint256 rewardsLength = rewards.length;
+            for (uint256 i = 0; i < rewardsLength; i++) {
+                if (rewards[i].referee == msg.sender && rewards[i].stakeId == index) {
+                    ReferrerRewardInfo storage info = rewards[i];
+                    // Calculate the final claimable amount up to now (or lock end)
+                    uint256 lockEnd = info.startTime + info.lockPeriod;
+                    uint256 nowOrEnd = block.timestamp < lockEnd ? block.timestamp : lockEnd;
+                    uint256 timeElapsed = nowOrEnd - info.startTime;
+                    uint256 finalClaimable = (info.totalReward * timeElapsed) / info.lockPeriod;
+                    // Cap totalReward to actual earned amount so referrer can still claim what they earned
+                    info.totalReward = finalClaimable;
+                    info.isActive = false;
                     break;
                 }
             }
@@ -856,26 +898,27 @@ contract StakingEngineLinear is
      * @param stakeIndex Index of the stake to claim rewards for
      */
     function claimStakerReward(uint256 stakeIndex) external nonReentrant whenNotPaused {
-        require(stakeIndex < stakes[msg.sender].length, "Invalid stake index");
+        // G-08 FIX: Use custom errors instead of string messages
+        if (stakeIndex >= stakes[msg.sender].length) revert InvalidStakeIndex();
         StakeInfo storage stake = stakes[msg.sender][stakeIndex];
-        require(stake.isActive, "Stake not active");
+        if (!stake.isActive) revert StakeNotActive();
         uint256 lockEnd = stake.startTime + stake.lockPeriod;
         uint256 nowOrEnd = block.timestamp < lockEnd ? block.timestamp : lockEnd;
         uint256 timeElapsed = nowOrEnd - stake.startTime;
         uint256 fixedAPY = 0;
-        if (stake.lockPeriod == LOCK_PERIOD_1) fixedAPY = FIXED_APY_180_DAYS;
-        else if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_365_DAYS;
+        if (stake.lockPeriod == LOCK_PERIOD_2) fixedAPY = FIXED_APY_365_DAYS;
         else if (stake.lockPeriod == LOCK_PERIOD_3) fixedAPY = FIXED_APY_730_DAYS;
+        else if (stake.lockPeriod == LOCK_PERIOD_4) fixedAPY = FIXED_APY_1095_DAYS;
         uint256 totalReward = (stake.amount * fixedAPY * stake.lockPeriod) / (100 * 365 days);
         uint256 claimable = (totalReward * timeElapsed) / stake.lockPeriod;
         // Track claimed rewards in rewardDebt
         uint256 alreadyClaimed = stake.rewardDebt;
-        require(claimable > alreadyClaimed, "No claimable rewards");
+        if (claimable <= alreadyClaimed) revert NoClaimableRewards();
         uint256 toClaim = claimable - alreadyClaimed;
         // Update rewardDebt
         stake.rewardDebt = claimable;
         // Transfer rewards
-        require(token.balanceOf(rewardPool) >= toClaim, "Insufficient rewards in pool");
+        if (token.balanceOf(rewardPool) < toClaim) revert InsufficientRewardsInPool();
         rewardPoolContract.transferTokens(toClaim);
         token.safeTransfer(msg.sender, toClaim);
         emit RewardDistributionLog(msg.sender, stake.amount, toClaim, 0, token.balanceOf(rewardPool), stake.lockPeriod, timeElapsed);
@@ -887,16 +930,28 @@ contract StakingEngineLinear is
      */
     function claimReferrerReward(uint256 rewardIndex) external nonReentrant whenNotPaused {
         ReferrerRewardInfo storage info = referrerRewards[msg.sender][rewardIndex];
-        require(info.isActive, "Referrer reward not active");
-        uint256 lockEnd = info.startTime + info.lockPeriod;
-        uint256 nowOrEnd = block.timestamp < lockEnd ? block.timestamp : lockEnd;
-        uint256 timeElapsed = nowOrEnd - info.startTime;
-        uint256 claimable = (info.totalReward * timeElapsed) / info.lockPeriod;
+        // C-01 FIX: Allow claiming from inactive rewards (referee may have unstaked but referrer still has unclaimed rewards)
+        // The totalReward was capped at unstake time, so we can safely allow claiming
+        // G-08 FIX: Use custom errors instead of string messages
+        if (info.totalReward == 0) revert NoReferrerRewardExists();
+        
+        uint256 claimable;
+        if (info.isActive) {
+            // Active stake: calculate proportional reward up to now or lock end
+            uint256 lockEnd = info.startTime + info.lockPeriod;
+            uint256 nowOrEnd = block.timestamp < lockEnd ? block.timestamp : lockEnd;
+            uint256 timeElapsed = nowOrEnd - info.startTime;
+            claimable = (info.totalReward * timeElapsed) / info.lockPeriod;
+        } else {
+            // Inactive stake: totalReward was already capped at unstake time, so full amount is claimable
+            claimable = info.totalReward;
+        }
+        
         uint256 alreadyClaimed = info.claimedReward;
-        require(claimable > alreadyClaimed, "No claimable rewards");
+        if (claimable <= alreadyClaimed) revert NoClaimableRewards();
         uint256 toClaim = claimable - alreadyClaimed;
         info.claimedReward = claimable;
-        require(token.balanceOf(rewardPool) >= toClaim, "Insufficient rewards in pool");
+        if (token.balanceOf(rewardPool) < toClaim) revert InsufficientRewardsInPool();
         rewardPoolContract.transferTokens(toClaim);
         token.safeTransfer(msg.sender, toClaim);
         emit ReferrerRewardsClaimed(msg.sender, toClaim);
@@ -913,15 +968,15 @@ contract StakingEngineLinear is
         uint256 totalNeededRewards = 0;
         uint256 totalStakedForPeriod = 0;
         
-        if (lockPeriod == LOCK_PERIOD_1) {
-            fixedAPY = FIXED_APY_180_DAYS;
-            totalStakedForPeriod = totalStaked180Days;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
+        if (lockPeriod == LOCK_PERIOD_2) {
             fixedAPY = FIXED_APY_365_DAYS;
             totalStakedForPeriod = totalStaked365Days;
         } else if (lockPeriod == LOCK_PERIOD_3) {
             fixedAPY = FIXED_APY_730_DAYS;
             totalStakedForPeriod = totalStaked730Days;
+        } else if (lockPeriod == LOCK_PERIOD_4) {
+            fixedAPY = FIXED_APY_1095_DAYS;
+            totalStakedForPeriod = totalStaked1095Days;
         }
         
         // Calculate total staked amount including the additional stake
@@ -954,15 +1009,15 @@ contract StakingEngineLinear is
         uint256 fixedAPY = 0;
         uint256 totalStakedForPeriod = 0;
         
-        if (lockPeriod == LOCK_PERIOD_1) {
-            fixedAPY = FIXED_APY_180_DAYS;
-            totalStakedForPeriod = totalStaked180Days;
-        } else if (lockPeriod == LOCK_PERIOD_2) {
+        if (lockPeriod == LOCK_PERIOD_2) {
             fixedAPY = FIXED_APY_365_DAYS;
             totalStakedForPeriod = totalStaked365Days;
         } else if (lockPeriod == LOCK_PERIOD_3) {
             fixedAPY = FIXED_APY_730_DAYS;
             totalStakedForPeriod = totalStaked730Days;
+        } else if (lockPeriod == LOCK_PERIOD_4) {
+            fixedAPY = FIXED_APY_1095_DAYS;
+            totalStakedForPeriod = totalStaked1095Days;
         }
         
         // Calculate rewards needed for the fixed APY
@@ -1012,7 +1067,8 @@ contract StakingEngineLinear is
      * @return ReferrerRewardInfo struct for the given index
      */
     function getReferrerRewardByIndex(address referrer, uint256 index) external view returns (ReferrerRewardInfo memory) {
-        require(index < referrerRewards[referrer].length, "Invalid reward index");
+        // G-08 FIX: Use custom errors instead of string messages
+        if (index >= referrerRewards[referrer].length) revert InvalidRewardIndex();
         return referrerRewards[referrer][index];
     }
 
@@ -1023,7 +1079,8 @@ contract StakingEngineLinear is
      * @return StakeInfo struct for the given index
      */
     function getStakerRewardByIndex(address staker, uint256 index) external view returns (StakeInfo memory) {
-        require(index < stakes[staker].length, "Invalid stake index");
+        // G-08 FIX: Use custom errors instead of string messages
+        if (index >= stakes[staker].length) revert InvalidStakeIndex();
         return stakes[staker][index];
     }
 
@@ -1034,7 +1091,8 @@ contract StakingEngineLinear is
      * @return toClaim Amount of claimable rewards for the given stake
      */
     function getClaimableStakerReward(address staker, uint256 stakeIndex) external view returns (uint256 toClaim) {
-        require(stakeIndex < stakes[staker].length, "Invalid stake index");
+        // G-08 FIX: Use custom errors instead of string messages
+        if (stakeIndex >= stakes[staker].length) revert InvalidStakeIndex();
         StakeInfo storage stake = stakes[staker][stakeIndex];
         return _calculateClaimableReward(stake);
     }
@@ -1048,14 +1106,14 @@ contract StakingEngineLinear is
     }
     /**
      * @notice Get all staker addresses for a specific period
-     * @param lockPeriod The lock period (use LOCK_PERIOD_1, _2, or _3)
+     * @param lockPeriod The lock period (use LOCK_PERIOD_2, _3, or _4)
      */
     function getStakerAddressesByPeriod(uint256 lockPeriod) external view returns (address[] memory) {
         return stakerAddressesByPeriod[lockPeriod];
     }
     /**
      * @notice Get staked amounts for each staker for a specific period
-     * @param lockPeriod The lock period (use LOCK_PERIOD_1, _2, or _3)
+     * @param lockPeriod The lock period (use LOCK_PERIOD_2, _3, or _4)
      * @return stakerAddresses, amounts arrays
      */
     function getStakedAmountsByPeriod(uint256 lockPeriod) external view returns (address[] memory, uint256[] memory) {
@@ -1081,14 +1139,14 @@ contract StakingEngineLinear is
     }
     /**
      * @notice Get all referrer addresses for a specific period
-     * @param lockPeriod The lock period (use LOCK_PERIOD_1, _2, or _3)
+     * @param lockPeriod The lock period (use LOCK_PERIOD_2, _3, or _4)
      */
     function getReferrerAddressesByPeriod(uint256 lockPeriod) external view returns (address[] memory) {
         return referrerAddressesByPeriod[lockPeriod];
     }
     /**
      * @notice Get referrers who referred someone in a specific period
-     * @param lockPeriod The lock period (use LOCK_PERIOD_1, _2, or _3)
+     * @param lockPeriod The lock period (use LOCK_PERIOD_2, _3, or _4)
      * @return referrers array (only those who actually referred at least one staker in that period)
      */
     function getActiveReferrersByPeriod(uint256 lockPeriod) external view returns (address[] memory) {
