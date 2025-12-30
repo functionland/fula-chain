@@ -53,16 +53,19 @@ contract StakingEngineLinear is
 
 
     // Lock periods in seconds
+    uint32 public constant LOCK_PERIOD_1 = 180 days;
     uint32 public constant LOCK_PERIOD_2 = 365 days;
     uint32 public constant LOCK_PERIOD_3 = 730 days;
     uint32 public constant LOCK_PERIOD_4 = 1095 days;
 
     // Fixed APY percentages for each lock period
+    uint256 public constant FIXED_APY_180_DAYS = 6; // 6% for 180 days
     uint256 public constant FIXED_APY_365_DAYS = 15; // 15% for 365 days
     uint256 public constant FIXED_APY_730_DAYS = 18; // 18% for 730 days (2 years)
     uint256 public constant FIXED_APY_1095_DAYS = 24; // 24% for 1095 days (3 years)
 
     // Referrer reward percentages for each lock period
+    uint256 public constant REFERRER_REWARD_PERCENT_180_DAYS = 1; // 1% for 180 days
     uint256 public constant REFERRER_REWARD_PERCENT_365_DAYS = 4; // 4% for 365 days
     uint256 public constant REFERRER_REWARD_PERCENT_730_DAYS = 6; // 6% for 730 days (2 years)
     uint256 public constant REFERRER_REWARD_PERCENT_1095_DAYS = 8; // 8% for 1095 days (3 years)
@@ -94,6 +97,8 @@ contract StakingEngineLinear is
         uint256 activeReferredStakersCount; // Number of active stakers referred
         uint256 totalActiveStaked; // Total amount of tokens currently staked by referees
         uint256 totalUnstaked; // Total amount of tokens unstaked by referees
+        // DEPRECATED: Keep for storage layout compatibility - DO NOT REMOVE
+        uint256 _deprecated_totalActiveStaked180Days;
         uint256 totalActiveStaked365Days; // Total active staked for 365 days
         uint256 totalActiveStaked730Days; // Total active staked for 730 days (2 years)
         uint256 totalActiveStaked1095Days; // Total active staked for 1095 days (3 years)
@@ -137,12 +142,18 @@ contract StakingEngineLinear is
     IPool public rewardPoolContract;
 
     // Tracking variables for internal accounting
+    // DEPRECATED: Keep for storage layout compatibility - DO NOT REMOVE
+    uint256 internal _deprecated_accRewardPerToken180Days;
     uint256 public accRewardPerToken365Days;
     uint256 public accRewardPerToken730Days;
-    uint256 public accRewardPerToken1095Days;
     
+    // DEPRECATED: Keep for storage layout compatibility - DO NOT REMOVE
+    uint256 internal _deprecated_totalStaked180Days;
     uint256 public totalStaked365Days;
     uint256 public totalStaked730Days;
+    
+    // NEW: Added at end to preserve storage layout
+    uint256 public accRewardPerToken1095Days;
     uint256 public totalStaked1095Days;
 
     // --- New variables for global queries ---
