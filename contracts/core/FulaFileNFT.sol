@@ -5,6 +5,7 @@ import "@openzeppelin/contracts-upgradeable/token/ERC1155/ERC1155Upgradeable.sol
 import "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155SupplyUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/interfaces/IERC2981.sol";
 import "../governance/GovernanceModule.sol";
 import "../governance/interfaces/IFulaFileNFT.sol";
 
@@ -17,6 +18,7 @@ contract FulaFileNFT is
     GovernanceModule,
     ERC1155Upgradeable,
     ERC1155SupplyUpgradeable,
+    IERC2981,
     IFulaFileNFT
 {
     using SafeERC20 for IERC20;
@@ -29,6 +31,7 @@ contract FulaFileNFT is
     uint256 public constant MAX_CLAIM_DURATION = 365 days;
     uint256 public constant MAX_CID_LENGTH = 256;
     uint256 public constant MAX_EVENT_NAME_LENGTH = 128;
+    uint96 public constant MAX_ROYALTY_BPS = 10000; // 100% (basis points)
 
     // ========================================================================
     // STATE
@@ -63,7 +66,10 @@ contract FulaFileNFT is
     mapping(address => mapping(bytes32 => bool)) private _eventCreated;
     mapping(address => mapping(bytes32 => uint256[])) private _eventTokenIds;
 
-    uint256[40] private __gap;
+    /// @dev Per-token royalty in basis points (e.g. 250 = 2.5%). Receiver is always the creator.
+    mapping(uint256 => uint96) private _tokenRoyaltyBps;
+
+    uint256[39] private __gap;
 
     // ========================================================================
     // INITIALIZER
@@ -95,10 +101,12 @@ contract FulaFileNFT is
         string calldata eventName,
         string calldata metadataCid,
         uint256 fulaPerNft,
-        uint256 count
+        uint256 count,
+        uint96 royaltyBps
     ) external whenNotPaused nonReentrant returns (uint256 firstTokenId) {
         if (count == 0) revert ZeroAmount();
         if (count > MAX_MINT_COUNT) revert ExceedsMaxMintCount(count, MAX_MINT_COUNT);
+        if (royaltyBps > MAX_ROYALTY_BPS) revert RoyaltyTooHigh(royaltyBps, MAX_ROYALTY_BPS);
 
         uint256 cidLen = bytes(metadataCid).length;
         if (cidLen == 0 || cidLen > MAX_CID_LENGTH) revert InvalidCidLength();
@@ -109,8 +117,8 @@ contract FulaFileNFT is
 
         uint256 totalFula = fulaPerNft * count;
         if (totalFula > 0) {
+            totalLockedFula += totalFula; // CEI: update state before external call
             storageToken.safeTransferFrom(msg.sender, address(this), totalFula);
-            totalLockedFula += totalFula;
         }
 
         firstTokenId = _nextTokenId;
@@ -123,6 +131,10 @@ contract FulaFileNFT is
             fulaPerNft: fulaPerNft,
             initialMintCount: count
         });
+
+        if (royaltyBps > 0) {
+            _tokenRoyaltyBps[firstTokenId] = royaltyBps;
+        }
 
         _mint(msg.sender, firstTokenId, count, "");
 
@@ -272,12 +284,12 @@ contract FulaFileNFT is
     }
 
     /// @notice Contract-level name for block explorers (ERC1155 has no standard name).
-    function name() public pure returns (string memory) {
+    function name() external pure returns (string memory) {
         return "FulaFileNFT";
     }
 
     /// @notice Contract-level symbol for block explorers.
-    function symbol() public pure returns (string memory) {
+    function symbol() external pure returns (string memory) {
         return "FFNFT";
     }
 
@@ -285,6 +297,20 @@ contract FulaFileNFT is
         TokenInfo storage info = tokenInfo[tokenId];
         if (info.creator == address(0)) revert InvalidTokenId(tokenId);
         return string(abi.encodePacked(_baseUri, info.metadataCid));
+    }
+
+    /// @notice ERC-2981 royalty info. Royalty receiver is always the token creator.
+    function royaltyInfo(uint256 tokenId, uint256 salePrice)
+        external
+        view
+        override
+        returns (address receiver, uint256 royaltyAmount)
+    {
+        TokenInfo storage info = tokenInfo[tokenId];
+        if (info.creator == address(0)) revert InvalidTokenId(tokenId);
+        uint96 bps = _tokenRoyaltyBps[tokenId];
+        receiver = info.creator;
+        royaltyAmount = (salePrice * bps) / 10000;
     }
 
     // ========================================================================
@@ -341,7 +367,6 @@ contract FulaFileNFT is
     function _authorizeUpgrade(address newImplementation)
         internal
         nonReentrant
-        whenNotPaused
         onlyRole(ProposalTypes.ADMIN_ROLE)
         override
     {
@@ -379,10 +404,11 @@ contract FulaFileNFT is
     function supportsInterface(bytes4 interfaceId)
         public
         view
-        override(ERC1155Upgradeable, AccessControlUpgradeable)
+        override(ERC1155Upgradeable, AccessControlUpgradeable, IERC165)
         returns (bool)
     {
-        return super.supportsInterface(interfaceId);
+        return interfaceId == type(IERC2981).interfaceId ||
+            super.supportsInterface(interfaceId);
     }
 
     /// @notice Allow the contract to receive its own ERC1155 tokens (for claim escrow).
@@ -395,6 +421,13 @@ contract FulaFileNFT is
     ) public view returns (bytes4) {
         if (msg.sender != address(this)) revert ExternalTokensRejected();
         return this.onERC1155Received.selector;
+    }
+
+    /// @notice Reject batch transfers of external ERC1155 tokens.
+    function onERC1155BatchReceived(
+        address, address, uint256[] memory, uint256[] memory, bytes memory
+    ) public pure returns (bytes4) {
+        revert ExternalTokensRejected();
     }
 
 }

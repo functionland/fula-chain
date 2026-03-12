@@ -1,6 +1,6 @@
 import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
-import { FulaFileNFT, StorageToken } from "../../../typechain-types";
+import { FulaFileNFT, StorageToken, MockERC20, MockERC1155 } from "../../../typechain-types";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 import { ZeroAddress, BytesLike } from "ethers";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
@@ -110,7 +110,7 @@ describe("FulaFileNFT", function () {
 
       await fulaToken.connect(user1).approve(nftAddress, totalFula);
 
-      const tx = await nft.connect(user1).mintWithFula(DEFAULT_EVENT, metadataCid, FULA_PER_NFT, count);
+      const tx = await nft.connect(user1).mintWithFula(DEFAULT_EVENT, metadataCid, FULA_PER_NFT, count, 0);
 
       expect(await nft.balanceOf(user1.address, 1)).to.equal(count);
 
@@ -139,7 +139,7 @@ describe("FulaFileNFT", function () {
     });
 
     it("should mint with zero FULA (free mint)", async function () {
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmFree", 0, 1);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmFree", 0, 1, 0);
       expect(await nft.balanceOf(user1.address, 1)).to.equal(1);
     });
 
@@ -147,8 +147,8 @@ describe("FulaFileNFT", function () {
       const nftAddress = await nft.getAddress();
       await fulaToken.connect(user1).approve(nftAddress, FULA_PER_NFT * BigInt(2));
 
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmFirst", FULA_PER_NFT, 1);
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmSecond", FULA_PER_NFT, 1);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmFirst", FULA_PER_NFT, 1, 0);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmSecond", FULA_PER_NFT, 1, 0);
 
       expect(await nft.balanceOf(user1.address, 1)).to.equal(1);
       expect(await nft.balanceOf(user1.address, 2)).to.equal(1);
@@ -159,13 +159,13 @@ describe("FulaFileNFT", function () {
 
     it("should revert with zero count", async function () {
       await expect(
-        nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmTest", FULA_PER_NFT, 0)
+        nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmTest", FULA_PER_NFT, 0, 0)
       ).to.be.revertedWithCustomError(nft, "ZeroAmount");
     });
 
     it("should revert with insufficient FULA allowance", async function () {
       await expect(
-        nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmTest", FULA_PER_NFT, 1)
+        nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmTest", FULA_PER_NFT, 1, 0)
       ).to.be.reverted;
     });
   });
@@ -178,7 +178,7 @@ describe("FulaFileNFT", function () {
 
       const nftAddress = await nft.getAddress();
       await fulaToken.connect(user1).approve(nftAddress, FULA_PER_NFT);
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmClaim", FULA_PER_NFT, 1);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmClaim", FULA_PER_NFT, 1, 0);
     });
 
     it("should create a claim offer and claim it", async function () {
@@ -260,7 +260,7 @@ describe("FulaFileNFT", function () {
     it("should revert double claim", async function () {
       const nftAddress = await nft.getAddress();
       await fulaToken.connect(user1).approve(nftAddress, FULA_PER_NFT);
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmDouble", FULA_PER_NFT, 1);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmDouble", FULA_PER_NFT, 1, 0);
 
       const expiresAt = (await time.latest()) + 86400;
       const tx = await nft.connect(user1).createClaimOffer(1, user2.address, expiresAt);
@@ -293,7 +293,7 @@ describe("FulaFileNFT", function () {
 
       const nftAddress = await nft.getAddress();
       await fulaToken.connect(user1).approve(nftAddress, FULA_PER_NFT * BigInt(3));
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmOpen", FULA_PER_NFT, 3);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmOpen", FULA_PER_NFT, 3, 0);
     });
 
     it("should create an open offer with claimer = address(0)", async function () {
@@ -405,7 +405,7 @@ describe("FulaFileNFT", function () {
 
       const nftAddress = await nft.getAddress();
       await fulaToken.connect(user1).approve(nftAddress, FULA_PER_NFT * BigInt(5));
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmBurn", FULA_PER_NFT, 5);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmBurn", FULA_PER_NFT, 5, 0);
 
       // Transfer 3 to user2 via standard ERC1155 transfer (no FULA released)
       await nft.connect(user1).safeTransferFrom(user1.address, user2.address, 1, 3, "0x");
@@ -430,7 +430,7 @@ describe("FulaFileNFT", function () {
     });
 
     it("should release nothing for zero fulaPerNft", async function () {
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmFree", 0, 1);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmFree", 0, 1, 0);
       const tokenId = 2;
 
       const user1FulaBefore = await fulaToken.balanceOf(user1.address);
@@ -502,7 +502,7 @@ describe("FulaFileNFT", function () {
       const totalMintFula = FULA_PER_NFT * BigInt(count);
 
       await fulaToken.connect(user1).approve(nftAddress, totalMintFula);
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmLocked", FULA_PER_NFT, count);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmLocked", FULA_PER_NFT, count, 0);
       expect(await nft.totalLockedFula()).to.equal(totalMintFula);
 
       // Transfer 1 to user2, then burn — FULA released to creator (user1)
@@ -512,7 +512,7 @@ describe("FulaFileNFT", function () {
     });
 
     it("should be zero after free mint", async function () {
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmFree", 0, 5);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmFree", 0, 5, 0);
       expect(await nft.totalLockedFula()).to.equal(0);
     });
   });
@@ -526,7 +526,7 @@ describe("FulaFileNFT", function () {
       const nftAddress = await nft.getAddress();
 
       await fulaToken.connect(user1).approve(nftAddress, FULA_PER_NFT);
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmDrain", FULA_PER_NFT, 1);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmDrain", FULA_PER_NFT, 1, 0);
 
       await expect(
         nft.connect(owner).recoverERC20(
@@ -541,7 +541,7 @@ describe("FulaFileNFT", function () {
       const nftAddress = await nft.getAddress();
 
       await fulaToken.connect(user1).approve(nftAddress, FULA_PER_NFT);
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmSurplus", FULA_PER_NFT, 1);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmSurplus", FULA_PER_NFT, 1, 0);
 
       const surplus = ethers.parseEther("50");
       await fulaToken.connect(user1).transfer(nftAddress, surplus);
@@ -567,7 +567,7 @@ describe("FulaFileNFT", function () {
 
       const nftAddress = await nft.getAddress();
       await fulaToken.connect(user1).approve(nftAddress, FULA_PER_NFT);
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmCancel", FULA_PER_NFT, 1);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmCancel", FULA_PER_NFT, 1, 0);
 
       const expiresAt = (await time.latest()) + 300;
       const tx = await nft.connect(user1).createClaimOffer(1, user2.address, expiresAt);
@@ -617,20 +617,20 @@ describe("FulaFileNFT", function () {
   describe("metadataCid validation", function () {
     it("should revert with empty CID", async function () {
       await expect(
-        nft.connect(user1).mintWithFula(DEFAULT_EVENT, "", 0, 1)
+        nft.connect(user1).mintWithFula(DEFAULT_EVENT, "", 0, 1, 0)
       ).to.be.revertedWithCustomError(nft, "InvalidCidLength");
     });
 
     it("should revert with CID longer than 256 bytes", async function () {
       const longCid = "Q" + "m".repeat(256);
       await expect(
-        nft.connect(user1).mintWithFula(DEFAULT_EVENT, longCid, 0, 1)
+        nft.connect(user1).mintWithFula(DEFAULT_EVENT, longCid, 0, 1, 0)
       ).to.be.revertedWithCustomError(nft, "InvalidCidLength");
     });
 
     it("should revert with empty event name", async function () {
       await expect(
-        nft.connect(user1).mintWithFula("", "QmTest", 0, 1)
+        nft.connect(user1).mintWithFula("", "QmTest", 0, 1, 0)
       ).to.be.revertedWithCustomError(nft, "EventNameEmpty");
     });
   });
@@ -640,7 +640,7 @@ describe("FulaFileNFT", function () {
       await setupQuorumAndWhitelist();
       const nftAddress = await nft.getAddress();
       await fulaToken.connect(user1).approve(nftAddress, FULA_PER_NFT);
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmTestCid123", FULA_PER_NFT, 1);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmTestCid123", FULA_PER_NFT, 1, 0);
     });
 
     it("should return correct URI", async function () {
@@ -668,7 +668,7 @@ describe("FulaFileNFT", function () {
       const newUri = "https://new-gateway.example.com/";
       await nft.connect(owner).setBaseUri(newUri);
 
-      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmTest", 0, 1);
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmTest", 0, 1, 0);
       expect(await nft.uri(1)).to.equal(newUri + "QmTest");
     });
 
@@ -716,7 +716,7 @@ describe("FulaFileNFT", function () {
       await nft.connect(owner).emergencyAction(1);
 
       await expect(
-        nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmPaused", 0, 1)
+        nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmPaused", 0, 1, 0)
       ).to.be.reverted;
     });
   });
@@ -730,9 +730,9 @@ describe("FulaFileNFT", function () {
       const nftAddress = await nft.getAddress();
       await fulaToken.connect(user1).approve(nftAddress, FULA_PER_NFT * BigInt(3));
 
-      await nft.connect(user1).mintWithFula("photos", "QmPhoto1", FULA_PER_NFT, 1);
-      await nft.connect(user1).mintWithFula("photos", "QmPhoto2", FULA_PER_NFT, 1);
-      await nft.connect(user1).mintWithFula("videos", "QmVideo1", FULA_PER_NFT, 1);
+      await nft.connect(user1).mintWithFula("photos", "QmPhoto1", FULA_PER_NFT, 1, 0);
+      await nft.connect(user1).mintWithFula("photos", "QmPhoto2", FULA_PER_NFT, 1, 0);
+      await nft.connect(user1).mintWithFula("videos", "QmVideo1", FULA_PER_NFT, 1, 0);
 
       const events = await nft.getCreatorEvents(user1.address);
       expect(events.length).to.equal(2);
@@ -747,6 +747,323 @@ describe("FulaFileNFT", function () {
 
       expect(await nft.getEventTokenCount(user1.address, "photos")).to.equal(2);
       expect(await nft.getEventTokenCount(user1.address, "videos")).to.equal(1);
+    });
+  });
+
+  describe("ERC-2981 royalties", function () {
+    beforeEach(async function () {
+      await setupQuorumAndWhitelist();
+    });
+
+    it("should return correct royalty info for token with royalty", async function () {
+      const nftAddress = await nft.getAddress();
+      await fulaToken.connect(user1).approve(nftAddress, FULA_PER_NFT);
+
+      // Mint with 5% royalty (500 basis points)
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmRoyalty", FULA_PER_NFT, 1, 500);
+
+      const salePrice = ethers.parseEther("100");
+      const [receiver, royaltyAmount] = await nft.royaltyInfo(1, salePrice);
+
+      expect(receiver).to.equal(user1.address);
+      // 5% of 100 = 5
+      expect(royaltyAmount).to.equal(ethers.parseEther("5"));
+    });
+
+    it("should return zero royalty for token minted with 0 bps", async function () {
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmNoRoyalty", 0, 1, 0);
+
+      const salePrice = ethers.parseEther("100");
+      const [receiver, royaltyAmount] = await nft.royaltyInfo(1, salePrice);
+
+      expect(receiver).to.equal(user1.address);
+      expect(royaltyAmount).to.equal(0);
+    });
+
+    it("should support 100% royalty (10000 bps)", async function () {
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmFullRoyalty", 0, 1, 10000);
+
+      const salePrice = ethers.parseEther("100");
+      const [, royaltyAmount] = await nft.royaltyInfo(1, salePrice);
+
+      expect(royaltyAmount).to.equal(salePrice);
+    });
+
+    it("should revert with royalty > 10000 bps", async function () {
+      await expect(
+        nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmBadRoyalty", 0, 1, 10001)
+      ).to.be.revertedWithCustomError(nft, "RoyaltyTooHigh");
+    });
+
+    it("should report ERC-2981 interface support", async function () {
+      // ERC-2981 interfaceId = 0x2a55205a
+      expect(await nft.supportsInterface("0x2a55205a")).to.be.true;
+    });
+
+    it("should revert royaltyInfo for non-existent token", async function () {
+      await expect(nft.royaltyInfo(999, 100)).to.be.revertedWithCustomError(nft, "InvalidTokenId");
+    });
+  });
+
+  // ===========================================================================
+  // SECURITY AUDIT — NEW TESTS
+  // ===========================================================================
+
+  /** Helper: extract linkHash from a createClaimOffer transaction */
+  async function extractLinkHash(nftContract: FulaFileNFT, tx: any): Promise<string> {
+    const receipt = await tx.wait();
+    const event = receipt?.logs.find((log: any) => {
+      try {
+        return nftContract.interface.parseLog({ topics: log.topics as string[], data: log.data })?.name === "ClaimOfferCreated";
+      } catch { return false; }
+    });
+    return nftContract.interface.parseLog({ topics: event!.topics as string[], data: event!.data })!.args[0];
+  }
+
+  describe("boundary conditions", function () {
+    beforeEach(async function () {
+      await setupQuorumAndWhitelist();
+    });
+
+    it("should mint exactly MAX_MINT_COUNT (1000) successfully", async function () {
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmMax1000", 0, 1000, 0);
+      expect(await nft.balanceOf(user1.address, 1)).to.equal(1000);
+    });
+
+    it("should revert mint with count > MAX_MINT_COUNT (1001)", async function () {
+      await expect(
+        nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmOver", 0, 1001, 0)
+      ).to.be.revertedWithCustomError(nft, "ExceedsMaxMintCount");
+    });
+
+    it("should create claim offer at exactly MAX_CLAIM_DURATION (365 days)", async function () {
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmDur", 0, 1, 0);
+      const now = await time.latest();
+      const expiresAt = now + 365 * 24 * 60 * 60;
+      // Should succeed without reverting
+      await nft.connect(user1).createClaimOffer(1, user2.address, expiresAt);
+    });
+
+    it("should revert claim offer with expiry > MAX_CLAIM_DURATION", async function () {
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmDur2", 0, 1, 0);
+      const now = await time.latest();
+      // +2 because block.timestamp advances by at least 1 when the tx is mined
+      const expiresAt = now + 365 * 24 * 60 * 60 + 2;
+      await expect(
+        nft.connect(user1).createClaimOffer(1, user2.address, expiresAt)
+      ).to.be.revertedWithCustomError(nft, "ExpiryTooFar");
+    });
+
+    it("should accept event name at exactly MAX_EVENT_NAME_LENGTH (128 chars)", async function () {
+      const name128 = "a".repeat(128);
+      await nft.connect(user1).mintWithFula(name128, "QmLen128", 0, 1, 0);
+      const events = await nft.getCreatorEvents(user1.address);
+      expect(events).to.include(name128);
+    });
+
+    it("should revert with event name > MAX_EVENT_NAME_LENGTH (129 chars)", async function () {
+      const name129 = "a".repeat(129);
+      await expect(
+        nft.connect(user1).mintWithFula(name129, "QmLen129", 0, 1, 0)
+      ).to.be.revertedWithCustomError(nft, "EventNameTooLong");
+    });
+  });
+
+  describe("pausable coverage", function () {
+    let claimLinkHash: string;
+
+    beforeEach(async function () {
+      await setupQuorumAndWhitelist();
+
+      const nftAddress = await nft.getAddress();
+
+      // Mint tokens and create a claim offer BEFORE pausing
+      await fulaToken.connect(user1).approve(nftAddress, FULA_PER_NFT * BigInt(5));
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmPause", FULA_PER_NFT, 5, 0);
+
+      // Create a claim offer for claimNFT / cancelClaimOffer tests
+      const expiresAt = (await time.latest()) + 86400;
+      const tx = await nft.connect(user1).createClaimOffer(1, user2.address, expiresAt);
+      claimLinkHash = await extractLinkHash(nft, tx);
+
+      // Send surplus FULA so recoverERC20 has something to recover
+      await fulaToken.connect(user1).transfer(nftAddress, ethers.parseEther("50"));
+
+      // Pause the contract
+      await time.increase(86401);
+      await nft.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
+      await nft.connect(owner).emergencyAction(1);
+      expect(await nft.paused()).to.be.true;
+    });
+
+    it("should revert createClaimOffer when paused", async function () {
+      await expect(
+        nft.connect(user1).createClaimOffer(1, user2.address, (await time.latest()) + 86400)
+      ).to.be.reverted;
+    });
+
+    it("should revert claimNFT when paused", async function () {
+      await expect(
+        nft.connect(user2).claimNFT(claimLinkHash)
+      ).to.be.reverted;
+    });
+
+    it("should revert burn when paused", async function () {
+      await expect(
+        nft.connect(user1).burn(user1.address, 1, 1)
+      ).to.be.reverted;
+    });
+
+    it("should revert cancelClaimOffer when paused", async function () {
+      await expect(
+        nft.connect(user1).cancelClaimOffer(claimLinkHash)
+      ).to.be.reverted;
+    });
+
+    it("should revert setBaseUri when paused", async function () {
+      await expect(
+        nft.connect(owner).setBaseUri("https://new.example.com/")
+      ).to.be.reverted;
+    });
+
+    it("should revert recoverERC20 when paused", async function () {
+      await expect(
+        nft.connect(owner).recoverERC20(
+          await fulaToken.getAddress(),
+          ethers.parseEther("1"),
+          admin.address
+        )
+      ).to.be.reverted;
+    });
+  });
+
+  describe("claim state machine", function () {
+    beforeEach(async function () {
+      await setupQuorumAndWhitelist();
+
+      const nftAddress = await nft.getAddress();
+      await fulaToken.connect(user1).approve(nftAddress, FULA_PER_NFT * BigInt(3));
+      await nft.connect(user1).mintWithFula(DEFAULT_EVENT, "QmState", FULA_PER_NFT, 3, 0);
+    });
+
+    it("should revert cancel on already-claimed offer", async function () {
+      const expiresAt = (await time.latest()) + 86400;
+      const tx = await nft.connect(user1).createClaimOffer(1, user2.address, expiresAt);
+      const linkHash = await extractLinkHash(nft, tx);
+
+      // Claim it
+      await nft.connect(user2).claimNFT(linkHash);
+
+      // Try to cancel — should revert with OfferNotActive
+      await expect(
+        nft.connect(user1).cancelClaimOffer(linkHash)
+      ).to.be.revertedWithCustomError(nft, "OfferNotActive");
+    });
+
+    it("should revert burn when tokens are escrowed in claim offer", async function () {
+      // user1 has 3 tokens. Escrow 2 via claim offers.
+      const expiresAt = (await time.latest()) + 86400;
+      await nft.connect(user1).createClaimOffer(1, user2.address, expiresAt);
+      await nft.connect(user1).createClaimOffer(1, user2.address, expiresAt);
+
+      // user1 now has 1 token, contract has 2. Try to burn 2 from user1.
+      expect(await nft.balanceOf(user1.address, 1)).to.equal(1);
+      await expect(
+        nft.connect(user1).burn(user1.address, 1, 2)
+      ).to.be.reverted; // ERC1155InsufficientBalance
+    });
+  });
+
+  describe("recoverERC20 edge cases", function () {
+    beforeEach(async function () {
+      await setupQuorumAndWhitelist();
+    });
+
+    it("should revert recoverERC20 with to = address(0)", async function () {
+      const nftAddress = await nft.getAddress();
+      await fulaToken.connect(user1).transfer(nftAddress, ethers.parseEther("10"));
+
+      await expect(
+        nft.connect(owner).recoverERC20(
+          await fulaToken.getAddress(),
+          ethers.parseEther("10"),
+          ZeroAddress
+        )
+      ).to.be.revertedWithCustomError(nft, "InvalidAddress");
+    });
+
+    it("should revert recoverERC20 from non-admin", async function () {
+      const nftAddress = await nft.getAddress();
+      await fulaToken.connect(user1).transfer(nftAddress, ethers.parseEther("10"));
+
+      await expect(
+        nft.connect(user1).recoverERC20(
+          await fulaToken.getAddress(),
+          ethers.parseEther("10"),
+          user1.address
+        )
+      ).to.be.reverted; // AccessControl
+    });
+
+    it("should recover non-FULA ERC20 without surplus check", async function () {
+      const MockERC20Factory = await ethers.getContractFactory("MockERC20");
+      const mockToken = await MockERC20Factory.deploy(ethers.parseEther("1000")) as MockERC20;
+      await mockToken.waitForDeployment();
+
+      const nftAddress = await nft.getAddress();
+      const amount = ethers.parseEther("100");
+
+      // Send mock tokens to NFT contract
+      await mockToken.transfer(nftAddress, amount);
+      expect(await mockToken.balanceOf(nftAddress)).to.equal(amount);
+
+      // Recover — should succeed without surplus check
+      const balBefore = await mockToken.balanceOf(admin.address);
+      await nft.connect(owner).recoverERC20(
+        await mockToken.getAddress(),
+        amount,
+        admin.address
+      );
+      const balAfter = await mockToken.balanceOf(admin.address);
+      expect(balAfter - balBefore).to.equal(amount);
+    });
+  });
+
+  describe("ERC1155 receiver rejection", function () {
+    let mockErc1155: MockERC1155;
+
+    beforeEach(async function () {
+      const MockERC1155Factory = await ethers.getContractFactory("MockERC1155");
+      mockErc1155 = await MockERC1155Factory.deploy() as MockERC1155;
+      await mockErc1155.waitForDeployment();
+
+      // Mint external ERC1155 tokens to user1 (EOA — no receiver check)
+      await mockErc1155.mint(user1.address, 1, 10);
+      await mockErc1155.mintBatch(user1.address, [2, 3], [5, 5]);
+    });
+
+    it("should reject external ERC1155 single transfer", async function () {
+      const nftAddress = await nft.getAddress();
+      await expect(
+        mockErc1155.connect(user1).safeTransferFrom(user1.address, nftAddress, 1, 1, "0x")
+      ).to.be.revertedWithCustomError(nft, "ExternalTokensRejected");
+    });
+
+    it("should reject external ERC1155 batch transfer", async function () {
+      const nftAddress = await nft.getAddress();
+      await expect(
+        mockErc1155.connect(user1).safeBatchTransferFrom(
+          user1.address, nftAddress, [2, 3], [1, 1], "0x"
+        )
+      ).to.be.revertedWithCustomError(nft, "ExternalTokensRejected");
+    });
+  });
+
+  describe("double initialization", function () {
+    it("should revert when initialize is called again", async function () {
+      await expect(
+        nft.initialize(owner.address, admin.address, await fulaToken.getAddress(), BASE_URI)
+      ).to.be.reverted; // InvalidInitialization
     });
   });
 });

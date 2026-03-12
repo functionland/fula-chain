@@ -31,7 +31,7 @@ const config: HardhatUserConfig = {
         settings: {
           optimizer: {
             enabled: true,
-            runs: 50,
+            runs: 25,
           },
           viaIR: true,
           evmVersion: "shanghai",
@@ -137,6 +137,9 @@ const config: HardhatUserConfig = {
       url: "https://rpc-testnet.singularityfinance.ai",
       accounts: vars.has("PK") ? [vars.get("PK")] : [],
       chainId: 751,
+    },
+    hardhat: {
+      allowUnlimitedContractSize: true,
     },
     localhost: {
       url: "http://127.0.0.1:8545",

@@ -67,6 +67,7 @@ interface IFulaFileNFT {
     error ExceedsMaxMintCount(uint256 count, uint256 max);
     error EventNameTooLong(uint256 length, uint256 max);
     error EventNameEmpty();
+    error RoyaltyTooHigh(uint96 royaltyBps, uint96 maxBps);
     error ExternalTokensRejected();
     error UpgradeNotAuthorized();
 }
