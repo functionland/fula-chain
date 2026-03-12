@@ -7,17 +7,39 @@ import "hardhat-contract-sizer";
 
 const config: HardhatUserConfig = {
   solidity: {
-    version: "0.8.24",
-    settings: {
-      optimizer: {
-        enabled: true,
-        runs: 200,
+    compilers: [
+      {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 200,
+          },
+          viaIR: true,
+          evmVersion: "shanghai",
+          outputSelection: {
+            "*": {
+              "*": ["storageLayout"],
+            },
+          },
+        },
       },
-      viaIR: true,
-      evmVersion: "shanghai",
-      outputSelection: {
-        "*": {
-          "*": ["storageLayout"], // 👈 this line is key
+    ],
+    overrides: {
+      "contracts/core/FulaFileNFT.sol": {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 50,
+          },
+          viaIR: true,
+          evmVersion: "shanghai",
+          outputSelection: {
+            "*": {
+              "*": ["storageLayout"],
+            },
+          },
         },
       },
     },
