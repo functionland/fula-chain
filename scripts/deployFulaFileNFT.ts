@@ -87,7 +87,8 @@ async function main() {
         {
             initializer: "initialize",
             kind: "uups",
-            unsafeAllow: ["constructor"]
+            unsafeAllow: ["constructor"],
+            redeployImplementation: "always",
         }
     ) as FulaFileNFT;
 
