@@ -46,6 +46,13 @@ interface IFulaFileNFT {
 
     event BaseUriUpdated(string newBaseUri);
 
+    event GasDeposited(bytes32 indexed linkHash, uint256 amount);
+    event GasReimbursed(bytes32 indexed linkHash, address relayer, uint256 amount);
+    event GasWithdrawn(bytes32 indexed linkHash, address creator, uint256 amount);
+    event NftTransferredBack(bytes32 indexed linkHash, uint256 indexed tokenId, address holder, address creator);
+    event MetaNonceUsed(address indexed signer, uint256 newNonce);
+    event MinGasDepositUpdated(uint256 newMin);
+
     // ========================================================================
     // ERRORS
     // ========================================================================
@@ -70,4 +77,11 @@ interface IFulaFileNFT {
     error RoyaltyTooHigh(uint96 royaltyBps, uint96 maxBps);
     error ExternalTokensRejected();
     error UpgradeNotAuthorized();
+    error MetaTxExpired();
+    error InvalidNonce();
+    error InvalidMetaSignature();
+    error ReimbursementFailed();
+    error OfferStillActive(bytes32 linkHash);
+    error DepositTooLow(uint256 sent, uint256 minimum);
+    error ClaimKeyExists();
 }

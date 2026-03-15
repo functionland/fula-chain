@@ -6,16 +6,18 @@ import "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155Supp
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/interfaces/IERC2981.sol";
-import "../governance/GovernanceModule.sol";
+import "../governance/NftGovernanceModule.sol";
 import "../governance/interfaces/IFulaFileNFT.sol";
+import "./libraries/MetaTxLib.sol";
 
 /// @title FulaFileNFT
 /// @notice ERC1155 NFT contract that accepts FULA (StorageToken) as payment for minting.
-/// @dev Inherits GovernanceModule for UUPS upgradeability + governance proposal system.
+/// @dev Inherits NftGovernanceModule for UUPS upgradeability + lightweight governance.
 ///      Locks FULA per mint; burning releases FULA to the token's original creator (not the burner).
 ///      Tokens are organized by creator events/categories with paginated queries.
+///      Supports gasless (meta-tx) claims on Base via creator-sponsored gas deposits.
 contract FulaFileNFT is
-    GovernanceModule,
+    NftGovernanceModule,
     ERC1155Upgradeable,
     ERC1155SupplyUpgradeable,
     IERC2981,
@@ -41,7 +43,6 @@ contract FulaFileNFT is
     uint256 private _nextTokenId;
     string private _baseUri;
     uint256 public totalLockedFula;
-    uint256 private _claimNonce;
 
     struct TokenInfo {
         address creator;
@@ -69,7 +70,14 @@ contract FulaFileNFT is
     /// @dev Per-token royalty in basis points (e.g. 250 = 2.5%). Receiver is always the creator.
     mapping(uint256 => uint96) private _tokenRoyaltyBps;
 
-    uint256[39] private __gap;
+    /// @dev Gas deposits for meta-tx claims (claimKey => ETH deposited by creator)
+    mapping(bytes32 => uint256) public claimGasDeposits;
+    /// @dev Replay-protection nonces for meta-tx signers
+    mapping(address => uint256) public metaNonces;
+    /// @dev Minimum ETH deposit required for gas-sponsored claims (0 = no minimum)
+    uint256 public minGasDeposit;
+
+    uint256[36] private __gap;
 
     // ========================================================================
     // INITIALIZER
@@ -90,7 +98,6 @@ contract FulaFileNFT is
         storageToken = IERC20(_storageToken);
         _baseUri = baseUri;
         _nextTokenId = 1;
-        proposalCount = 0;
     }
 
     // ========================================================================
@@ -155,8 +162,9 @@ contract FulaFileNFT is
     function createClaimOffer(
         uint256 tokenId,
         address claimer,
-        uint256 expiresAt
-    ) external whenNotPaused nonReentrant returns (bytes32 linkHash) {
+        uint256 expiresAt,
+        bytes32 claimKey
+    ) external payable whenNotPaused nonReentrant {
         if (expiresAt <= block.timestamp) revert InvalidExpiryTime(expiresAt);
         uint256 maxExpiry = block.timestamp + MAX_CLAIM_DURATION;
         if (expiresAt > maxExpiry) revert ExpiryTooFar(expiresAt, maxExpiry);
@@ -164,11 +172,9 @@ contract FulaFileNFT is
             revert InsufficientBalance(0, 1);
         }
         if (tokenInfo[tokenId].creator == address(0)) revert InvalidTokenId(tokenId);
+        if (claimOffers[claimKey].sender != address(0)) revert ClaimKeyExists();
 
-        _claimNonce++;
-        linkHash = keccak256(abi.encodePacked(tokenId, msg.sender, claimer, expiresAt, _claimNonce));
-
-        claimOffers[linkHash] = ClaimOffer({
+        claimOffers[claimKey] = ClaimOffer({
             tokenId: tokenId,
             sender: msg.sender,
             claimer: claimer,
@@ -178,15 +184,23 @@ contract FulaFileNFT is
 
         _safeTransferFrom(msg.sender, address(this), tokenId, 1, "");
 
-        emit ClaimOfferCreated(linkHash, tokenId, msg.sender, claimer, expiresAt);
+        // Store gas deposit if ETH sent (for gasless meta-tx claims on Base)
+        if (msg.value > 0) {
+            if (msg.value < minGasDeposit) revert DepositTooLow(msg.value, minGasDeposit);
+            claimGasDeposits[claimKey] = msg.value;
+            emit GasDeposited(claimKey, msg.value);
+        }
+
+        emit ClaimOfferCreated(claimKey, tokenId, msg.sender, claimer, expiresAt);
     }
 
-    function claimNFT(bytes32 linkHash) external whenNotPaused nonReentrant {
-        ClaimOffer storage offer = claimOffers[linkHash];
-        if (offer.sender == address(0)) revert ClaimNotFound(linkHash);
-        if (offer.status == 1) revert AlreadyClaimed(linkHash);
-        if (offer.status == 2) revert OfferCancelled(linkHash);
-        if (block.timestamp > offer.expiresAt) revert ClaimExpired(linkHash);
+    function claimNFT(bytes32 secret) external whenNotPaused nonReentrant {
+        bytes32 claimKey = keccak256(abi.encodePacked(secret));
+        ClaimOffer storage offer = claimOffers[claimKey];
+        if (offer.sender == address(0)) revert ClaimNotFound(claimKey);
+        if (offer.status == 1) revert AlreadyClaimed(claimKey);
+        if (offer.status == 2) revert OfferCancelled(claimKey);
+        if (block.timestamp > offer.expiresAt) revert ClaimExpired(claimKey);
         if (offer.claimer != address(0) && msg.sender != offer.claimer) {
             revert NotClaimRecipient(msg.sender, offer.claimer);
         }
@@ -196,7 +210,119 @@ contract FulaFileNFT is
 
         _safeTransferFrom(address(this), msg.sender, offer.tokenId, 1, "");
 
-        emit NftClaimed(linkHash, offer.tokenId, msg.sender);
+        emit NftClaimed(claimKey, offer.tokenId, msg.sender);
+    }
+
+    // ========================================================================
+    // META-TX GASLESS FUNCTIONS (creator-sponsored gas on Base)
+    // ========================================================================
+
+    /// @notice Claim an NFT via meta-transaction (gasless for the claimer).
+    /// @dev The claimer signs an EIP-712 message over claimKey; a relayer submits the secret and is reimbursed.
+    function claimNFTMeta(
+        bytes32 secret,
+        address claimer,
+        uint256 deadline,
+        uint256 nonce,
+        bytes calldata sig
+    ) external whenNotPaused nonReentrant {
+        bytes32 claimKey = keccak256(abi.encodePacked(secret));
+        MetaTxLib.verifyClaimSig(claimKey, claimer, deadline, nonce, sig, metaNonces[claimer]);
+        metaNonces[claimer]++;
+        emit MetaNonceUsed(claimer, metaNonces[claimer]);
+
+        ClaimOffer storage offer = claimOffers[claimKey];
+        if (offer.sender == address(0)) revert ClaimNotFound(claimKey);
+        if (offer.status == 1) revert AlreadyClaimed(claimKey);
+        if (offer.status == 2) revert OfferCancelled(claimKey);
+        if (block.timestamp > offer.expiresAt) revert ClaimExpired(claimKey);
+        if (offer.claimer != address(0) && claimer != offer.claimer) {
+            revert NotClaimRecipient(claimer, offer.claimer);
+        }
+
+        offer.status = 1;
+        offer.claimer = claimer;
+        _safeTransferFrom(address(this), claimer, offer.tokenId, 1, "");
+        emit NftClaimed(claimKey, offer.tokenId, claimer);
+
+        _reimburseRelayer(claimKey);
+    }
+
+    /// @notice Burn an NFT via meta-transaction (gasless for the holder).
+    function burnMeta(
+        bytes32 claimKey,
+        uint256 tokenId,
+        uint256 amount,
+        address holder,
+        uint256 deadline,
+        uint256 nonce,
+        bytes calldata sig
+    ) external whenNotPaused nonReentrant {
+        MetaTxLib.verifyBurnSig(claimKey, tokenId, amount, holder, deadline, nonce, sig, metaNonces[holder]);
+        metaNonces[holder]++;
+        emit MetaNonceUsed(holder, metaNonces[holder]);
+
+        _burn(holder, tokenId, amount);
+
+        TokenInfo storage info = tokenInfo[tokenId];
+        uint256 fulaToRelease = info.fulaPerNft * amount;
+        if (fulaToRelease > 0) {
+            totalLockedFula -= fulaToRelease;
+            storageToken.safeTransfer(info.creator, fulaToRelease);
+        }
+        emit NftBurned(tokenId, holder, amount, fulaToRelease, info.creator);
+
+        _reimburseRelayer(claimKey);
+    }
+
+    /// @notice Transfer an NFT back to its creator via meta-transaction (gasless for the holder).
+    function transferBackMeta(
+        bytes32 claimKey,
+        uint256 tokenId,
+        address holder,
+        uint256 deadline,
+        uint256 nonce,
+        bytes calldata sig
+    ) external whenNotPaused nonReentrant {
+        MetaTxLib.verifyTransferBackSig(claimKey, tokenId, holder, deadline, nonce, sig, metaNonces[holder]);
+        metaNonces[holder]++;
+        emit MetaNonceUsed(holder, metaNonces[holder]);
+
+        address creator = tokenInfo[tokenId].creator;
+        if (creator == address(0)) revert InvalidTokenId(tokenId);
+
+        _safeTransferFrom(holder, creator, tokenId, 1, "");
+        emit NftTransferredBack(claimKey, tokenId, holder, creator);
+
+        _reimburseRelayer(claimKey);
+    }
+
+    /// @notice Withdraw unused gas deposit after a claim offer is no longer active.
+    function withdrawGasDeposit(bytes32 linkHash) external nonReentrant {
+        ClaimOffer storage offer = claimOffers[linkHash];
+        if (msg.sender != offer.sender) revert NotAuthorizedToCancel(msg.sender);
+        if (offer.status == 0) revert OfferStillActive(linkHash);
+        uint256 deposit = claimGasDeposits[linkHash];
+        if (deposit == 0) revert ZeroAmount();
+        claimGasDeposits[linkHash] = 0;
+        (bool ok,) = msg.sender.call{value: deposit}("");
+        if (!ok) revert ReimbursementFailed();
+        emit GasWithdrawn(linkHash, msg.sender, deposit);
+    }
+
+    /// @dev Reimburse the relay caller from the gas deposit for a claim link.
+    /// @dev Safe: all callers are nonReentrant. CEI ordering also maintained.
+    function _reimburseRelayer(bytes32 linkHash) internal {
+        uint256 deposit = claimGasDeposits[linkHash];
+        if (deposit == 0) return;
+        uint256 gp = tx.gasprice;
+        if (block.basefee > 0 && gp > 2 * block.basefee) gp = 2 * block.basefee;
+        uint256 r = 150_000 * gp;
+        if (r > deposit) r = deposit;
+        claimGasDeposits[linkHash] -= r;
+        (bool ok,) = msg.sender.call{value: r}("");
+        if (!ok) revert ReimbursementFailed();
+        emit GasReimbursed(linkHash, msg.sender, r);
     }
 
     // ========================================================================
@@ -341,6 +467,11 @@ contract FulaFileNFT is
     // ADMIN FUNCTIONS
     // ========================================================================
 
+    function setMinGasDeposit(uint256 newMin) external onlyRole(ProposalTypes.ADMIN_ROLE) {
+        minGasDeposit = newMin;
+        emit MinGasDepositUpdated(newMin);
+    }
+
     function setBaseUri(string calldata newBaseUri) external onlyRole(ProposalTypes.ADMIN_ROLE) whenNotPaused {
         _baseUri = newBaseUri;
         emit BaseUriUpdated(newBaseUri);
@@ -372,21 +503,6 @@ contract FulaFileNFT is
     {
         if (!_checkUpgrade(newImplementation)) revert UpgradeNotAuthorized();
     }
-
-    function _createCustomProposal(
-        uint8 proposalType,
-        uint40,
-        address,
-        bytes32,
-        uint96,
-        address
-    ) internal virtual override returns (bytes32) {
-        revert InvalidProposalType(proposalType);
-    }
-
-    function _executeCustomProposal(bytes32) internal virtual override {}
-
-    function _handleCustomProposalExpiry(bytes32) internal virtual override {}
 
     // ========================================================================
     // REQUIRED OVERRIDES

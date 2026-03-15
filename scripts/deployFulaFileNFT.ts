@@ -23,7 +23,20 @@ async function main() {
     const [deployer] = await ethers.getSigners();
     console.log("Deploying contracts with the account:", deployer.address);
 
-    const FulaFileNFT = await ethers.getContractFactory("FulaFileNFT");
+    // Deploy MetaTxLib (external library used by FulaFileNFT via delegatecall)
+    console.log("Deploying MetaTxLib...");
+    const MetaTxLib = await ethers.getContractFactory("MetaTxLib");
+    const metaTxLib = await MetaTxLib.deploy();
+    await metaTxLib.waitForDeployment();
+    const metaTxLibAddress = await metaTxLib.getAddress();
+    console.log("MetaTxLib deployed to:", metaTxLibAddress);
+
+    // Link MetaTxLib to FulaFileNFT
+    const FulaFileNFT = await ethers.getContractFactory("FulaFileNFT", {
+        libraries: {
+            MetaTxLib: metaTxLibAddress,
+        },
+    });
     console.log("Deploying FulaFileNFT...");
 
     // Validate environment variables
@@ -87,7 +100,7 @@ async function main() {
         {
             initializer: "initialize",
             kind: "uups",
-            unsafeAllow: ["constructor"],
+            unsafeAllow: ["constructor", "external-library-linking"],
             redeployImplementation: "always",
         }
     ) as FulaFileNFT;
@@ -115,6 +128,7 @@ async function main() {
     }
 
     console.log("\nDeployment addresses for subsequent deployments:");
+    console.log(`export METATX_LIB_ADDRESS=${metaTxLibAddress}`);
     console.log(`export NFT_CONTRACT_ADDRESS(proxy)=${proxyAddress}`);
     console.log(`export NFT_IMPLEMENTATION=${implementationAddress}`);
 }

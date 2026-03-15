@@ -50,7 +50,7 @@ const config: HardhatUserConfig = {
   networks: {
     // Mainnets
     ethereum: {
-      url: "https://eth-mainnet.g.alchemy.com/v2/_LnQrpSkygkgsX96sfS_fMl78FeAHnhw",
+      url: `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_KEY || ""}`,
       accounts: (() => {
         const accounts = [];
         if (vars.has("PK")) accounts.push(vars.get("PK"));
@@ -147,7 +147,7 @@ const config: HardhatUserConfig = {
     },
   },
   etherscan: {
-    apiKey: "JGD6ENM6P2G5XUS4VSCJJYGXR3RXCG2TEN",
+    apiKey: process.env.ETHERSCAN_API_KEY || "",
     /* //Activate for skale and iotex verify  and deactivate for base and ethereum verification
     apiKey: {
       mainnet: vars.has("ETHERSCAN_API_KEY")
