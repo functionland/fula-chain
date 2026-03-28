@@ -26,6 +26,44 @@ const config: HardhatUserConfig = {
       },
     ],
     overrides: {
+      "contracts/rewards/RewardsProgram.sol": {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 1,
+          },
+          viaIR: true,
+          evmVersion: "shanghai",
+          outputSelection: {
+            "*": {
+              "*": ["storageLayout"],
+            },
+          },
+        },
+      },
+      "contracts/rewards/RewardsExtension.sol": {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 1,
+          },
+          viaIR: true,
+          evmVersion: "shanghai",
+        },
+      },
+      "contracts/rewards/RewardsStorageBase.sol": {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 1,
+          },
+          viaIR: true,
+          evmVersion: "shanghai",
+        },
+      },
       "contracts/core/FulaFileNFT.sol": {
         version: "0.8.24",
         settings: {

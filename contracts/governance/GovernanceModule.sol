@@ -696,4 +696,7 @@ abstract contract GovernanceModule is
         emit ProposalExecuted(currentId, currentProposal.proposalType, target);
         return true;
     }
+
+    /// @dev Storage gap for future upgrades
+    uint256[40] private __gap;
 }
