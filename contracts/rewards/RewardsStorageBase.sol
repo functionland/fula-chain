@@ -48,7 +48,9 @@ abstract contract RewardsStorageBase is Initializable, GovernanceModule {
 
     mapping(uint32 => mapping(address => bytes32)) internal _editCodeHashes;
 
-    uint256[38] private __gap;
+    mapping(uint32 => uint8) internal _transferLimits; // 0=no limit, 1-100=max % client can transfer to parent
+
+    uint256[37] private __gap;
 
     // === SHARED INTERNAL HELPERS ===
 

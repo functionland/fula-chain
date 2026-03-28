@@ -1048,25 +1048,28 @@ describe("RewardsProgram", function () {
     });
 
     // M-2: Deactivated member balances are stranded
-    it("should strand deactivated member balances (known limitation)", async function () {
-      // Give PA2 some tokens and then deactivate
+    it("should prevent removal of member with balance (audit fix S-06)", async function () {
+      // Give PA2 some tokens
       const pa2 = otherAccount;
       await rewardsProgram.connect(owner).assignProgramAdmin(programId, pa2.address, toBytes12("PA002"), ethers.ZeroHash, MemberType.Free);
 
       await storageToken.connect(pa2).approve(await rewardsProgram.getAddress(), ethers.parseEther("5000"));
       await rewardsProgram.connect(pa2).addTokens(programId, ethers.parseEther("5000"), 0, "");
 
-      // Deactivate
-      await rewardsProgram.connect(owner).removeMember(programId, pa2.address);
-
-      // Deactivated member cannot withdraw
+      // Removal should be rejected — member has balance
       await expect(
-        rewardsProgram.connect(pa2).withdraw(programId, ethers.parseEther("100"))
-      ).to.be.revertedWithCustomError(rewardsProgram, "MemberNotFound");
+        rewardsProgram.connect(owner).removeMember(programId, pa2.address)
+      ).to.be.revertedWithCustomError(rewardsProgram, "InsufficientBalance");
 
-      // Balance is still there but inaccessible
-      const [avail] = await rewardsProgram.getBalance(programId, pa2.address);
-      expect(avail).to.equal(ethers.parseEther("5000"));
+      // Member should still be active
+      const member = await rewardsProgram.getMember(programId, pa2.address);
+      expect(member.active).to.be.true;
+
+      // Withdraw first, then removal succeeds
+      await rewardsProgram.connect(pa2).withdraw(programId, ethers.parseEther("5000"));
+      await rewardsProgram.connect(owner).removeMember(programId, pa2.address);
+      const memberAfter = await rewardsProgram.getMember(programId, pa2.address);
+      expect(memberAfter.active).to.be.false;
     });
 
     // Balance reconciliation after lock resolution
@@ -1871,6 +1874,350 @@ describe("RewardsProgram", function () {
       await expect(
         rewardsProgram.connect(otherAccount).setExtension(otherAccount.address)
       ).to.be.reverted;
+    });
+  });
+
+  // ============================================================
+  // TRANSFER CONTROL LIMIT
+  // ============================================================
+
+  describe("Transfer Control Limit", function () {
+    let programId: number;
+
+    beforeEach(async function () {
+      await rewardsProgram.connect(owner).createProgram(toBytes8("SRP"), "Solidity Rewards", "Desc");
+      programId = 1;
+      await rewardsProgram.connect(owner).assignProgramAdmin(programId, programAdmin1.address, toBytes12("PA001"), ethers.ZeroHash, MemberType.Free);
+      await rewardsProgram.connect(programAdmin1).addMember(programId, teamLeader1.address, toBytes12("TL001"), MemberRole.TeamLeader, ethers.ZeroHash, MemberType.Free);
+      await rewardsProgram.connect(teamLeader1).addMember(programId, client1.address, toBytes12("CL001"), MemberRole.Client, ethers.ZeroHash, MemberType.Free);
+
+      // Deposit and transfer tokens down: PA deposits 10000, sends 5000 to TL, TL sends 2000 to client
+      await storageToken.connect(programAdmin1).approve(await rewardsProgram.getAddress(), DEPOSIT_AMOUNT);
+      await rewardsProgram.connect(programAdmin1).addTokens(programId, DEPOSIT_AMOUNT, 0, "");
+      await rewardsProgram.connect(programAdmin1).transferToSubMember(
+        programId, teamLeader1.address, ethers.parseEther("5000"), false, 0
+      );
+      await rewardsProgram.connect(teamLeader1).transferToSubMember(
+        programId, client1.address, ethers.parseEther("2000"), false, 0
+      );
+    });
+
+    it("should allow admin to set transfer limit", async function () {
+      await extensionAtProxy.connect(owner).setTransferLimit(programId, 50);
+      const limit = await extensionAtProxy.getTransferLimit(programId);
+      expect(limit).to.equal(50);
+    });
+
+    it("should reject transfer limit > 100", async function () {
+      await expect(
+        extensionAtProxy.connect(owner).setTransferLimit(programId, 101)
+      ).to.be.revertedWithCustomError(extensionAtProxy, "InvalidTransferLimit");
+    });
+
+    it("should allow ProgramAdmin to set transfer limit for their program", async function () {
+      await extensionAtProxy.connect(programAdmin1).setTransferLimit(programId, 50);
+      expect(await extensionAtProxy.getTransferLimit(programId)).to.equal(50);
+
+      // ProgramAdmin can change it again
+      await extensionAtProxy.connect(programAdmin1).setTransferLimit(programId, 25);
+      expect(await extensionAtProxy.getTransferLimit(programId)).to.equal(25);
+    });
+
+    it("should reject non-admin non-PA from setting transfer limit", async function () {
+      await expect(
+        extensionAtProxy.connect(teamLeader1).setTransferLimit(programId, 50)
+      ).to.be.reverted;
+
+      await expect(
+        extensionAtProxy.connect(client1).setTransferLimit(programId, 50)
+      ).to.be.reverted;
+    });
+
+    it("should allow client transfer within limit", async function () {
+      // Set 50% limit
+      await extensionAtProxy.connect(owner).setTransferLimit(programId, 50);
+      // Client has 2000 balance, 50% of 2000 = 1000 max
+      const amount = ethers.parseEther("1000");
+      await rewardsProgram.connect(client1).transferToParent(programId, ZeroAddress, amount);
+      const [clientAvail] = await rewardsProgram.getBalance(programId, client1.address);
+      expect(clientAvail).to.equal(ethers.parseEther("1000"));
+    });
+
+    it("should reject client transfer over limit", async function () {
+      // Set 50% limit
+      await extensionAtProxy.connect(owner).setTransferLimit(programId, 50);
+      // Client has 2000 balance, 50% = 1000 max, try 1001
+      await expect(
+        rewardsProgram.connect(client1).transferToParent(programId, ZeroAddress, ethers.parseEther("1001"))
+      ).to.be.revertedWithCustomError(rewardsProgram, "TransferExceedsLimit");
+    });
+
+    it("should enforce minimum balance requirement", async function () {
+      // Set 50% limit. Transfer down only 999 to client2
+      await rewardsProgram.connect(teamLeader1).addMember(programId, client2.address, toBytes12("CL002"), MemberRole.Client, ethers.ZeroHash, MemberType.Free);
+      await rewardsProgram.connect(teamLeader1).transferToSubMember(
+        programId, client2.address, ethers.parseEther("999"), false, 0
+      );
+      await extensionAtProxy.connect(owner).setTransferLimit(programId, 50);
+      // Client2 has 999, max = 999*50/100 = 499. Trying 500 should fail.
+      await expect(
+        rewardsProgram.connect(client2).transferToParent(programId, ZeroAddress, ethers.parseEther("500"))
+      ).to.be.revertedWithCustomError(rewardsProgram, "TransferExceedsLimit");
+    });
+
+    it("should allow full transfer when limit is 0 (no restriction)", async function () {
+      // Default is 0 — no limit
+      const amount = ethers.parseEther("2000");
+      await rewardsProgram.connect(client1).transferToParent(programId, ZeroAddress, amount);
+      const [clientAvail] = await rewardsProgram.getBalance(programId, client1.address);
+      expect(clientAvail).to.equal(0);
+    });
+
+    it("should allow full transfer when limit is 100", async function () {
+      await extensionAtProxy.connect(owner).setTransferLimit(programId, 100);
+      const amount = ethers.parseEther("2000");
+      await rewardsProgram.connect(client1).transferToParent(programId, ZeroAddress, amount);
+      const [clientAvail] = await rewardsProgram.getBalance(programId, client1.address);
+      expect(clientAvail).to.equal(0);
+    });
+
+    it("should NOT apply limit to TeamLeader", async function () {
+      await extensionAtProxy.connect(owner).setTransferLimit(programId, 50);
+      // TL has 3000 (5000 - 2000 sent to client). Transfer all 3000 to parent — should work
+      await rewardsProgram.connect(teamLeader1).transferToParent(
+        programId, ZeroAddress, ethers.parseEther("3000")
+      );
+      const [tlAvail] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      expect(tlAvail).to.equal(0);
+    });
+
+    it("should NOT apply limit to ProgramAdmin", async function () {
+      await extensionAtProxy.connect(owner).setTransferLimit(programId, 50);
+      // PA has 5000 remaining. Transfer all to admin — should work
+      await rewardsProgram.connect(programAdmin1).transferToParent(
+        programId, ZeroAddress, ethers.parseEther("5000")
+      );
+      const [paAvail] = await rewardsProgram.getBalance(programId, programAdmin1.address);
+      expect(paAvail).to.equal(0);
+    });
+
+    it("should apply limit via actForMember (walletless client)", async function () {
+      // Create a walletless client under TL
+      await rewardsProgram.connect(teamLeader1).addMember(programId, ZeroAddress, toBytes12("WL001"), MemberRole.Client, ethers.ZeroHash, MemberType.Free);
+      // Get the walletless member's storage key
+      const member = await rewardsProgram.getMemberByID(toBytes12("WL001"), programId);
+      // TL acts to transfer tokens to the walletless member
+      await storageToken.connect(teamLeader1).approve(await rewardsProgram.getAddress(), ethers.parseEther("1000"));
+      await rewardsProgram.connect(teamLeader1).actForMember(
+        programId, toBytes12("WL001"), 1, ZeroAddress, ethers.parseEther("1000"),
+        false, 0, 0, ""
+      );
+      // Set 50% limit
+      await extensionAtProxy.connect(owner).setTransferLimit(programId, 50);
+      // Acting wallet (TL) tries to transfer 501 for walletless client (balance 1000, max 500)
+      await expect(
+        rewardsProgram.connect(teamLeader1).actForMember(
+          programId, toBytes12("WL001"), 3, ZeroAddress, ethers.parseEther("501"),
+          false, 0, 0, ""
+        )
+      ).to.be.revertedWithCustomError(rewardsProgram, "TransferExceedsLimit");
+    });
+
+    it("should enforce independent limits per program", async function () {
+      // Create second program
+      await rewardsProgram.connect(owner).createProgram(toBytes8("GTP"), "Game Token Program", "Desc");
+      const programId2 = 2;
+      await rewardsProgram.connect(owner).assignProgramAdmin(programId2, programAdmin1.address, toBytes12("PA002"), ethers.ZeroHash, MemberType.Free);
+      await rewardsProgram.connect(programAdmin1).addMember(programId2, teamLeader1.address, toBytes12("TL002"), MemberRole.TeamLeader, ethers.ZeroHash, MemberType.Free);
+      await rewardsProgram.connect(teamLeader1).addMember(programId2, client1.address, toBytes12("CL003"), MemberRole.Client, ethers.ZeroHash, MemberType.Free);
+      await storageToken.connect(programAdmin1).approve(await rewardsProgram.getAddress(), ethers.parseEther("10000"));
+      await rewardsProgram.connect(programAdmin1).addTokens(programId2, ethers.parseEther("10000"), 0, "");
+      await rewardsProgram.connect(programAdmin1).transferToSubMember(
+        programId2, teamLeader1.address, ethers.parseEther("5000"), false, 0
+      );
+      await rewardsProgram.connect(teamLeader1).transferToSubMember(
+        programId2, client1.address, ethers.parseEther("2000"), false, 0
+      );
+
+      // Set different limits: program1=50%, program2=25%
+      await extensionAtProxy.connect(owner).setTransferLimit(programId, 50);
+      await extensionAtProxy.connect(owner).setTransferLimit(programId2, 25);
+
+      // Program 1: client has 2000, max=1000 → transfer 1000 succeeds
+      await rewardsProgram.connect(client1).transferToParent(programId, ZeroAddress, ethers.parseEther("1000"));
+
+      // Program 2: client has 2000, max=500 → transfer 501 fails
+      await expect(
+        rewardsProgram.connect(client1).transferToParent(programId2, ZeroAddress, ethers.parseEther("501"))
+      ).to.be.revertedWithCustomError(rewardsProgram, "TransferExceedsLimit");
+
+      // Program 2: transfer 500 succeeds
+      await rewardsProgram.connect(client1).transferToParent(programId2, ZeroAddress, ethers.parseEther("500"));
+    });
+
+    it("should emit TransferLimitUpdated event", async function () {
+      await expect(
+        extensionAtProxy.connect(owner).setTransferLimit(programId, 50)
+      )
+        .to.emit(extensionAtProxy, "TransferLimitUpdated")
+        .withArgs(programId, 0, 50);
+
+      await expect(
+        extensionAtProxy.connect(owner).setTransferLimit(programId, 25)
+      )
+        .to.emit(extensionAtProxy, "TransferLimitUpdated")
+        .withArgs(programId, 50, 25);
+    });
+  });
+
+  // ========================================================================
+  // AUDIT FIXES
+  // ========================================================================
+
+  describe("Audit Fixes", function () {
+    let programId: number;
+
+    beforeEach(async function () {
+      // Create program
+      const tx = await rewardsProgram.connect(owner).createProgram(
+        toBytes8("AUDIT"), "Audit Test", "Audit test program"
+      );
+      const receipt = await tx.wait();
+      programId = Number(receipt?.logs[0]?.topics[1]);
+
+      // Add PA, TL, client hierarchy
+      await rewardsProgram.connect(owner).assignProgramAdmin(
+        programId, programAdmin1.address, toBytes12("APA1"),
+        ethers.ZeroHash, MemberType.Free
+      );
+      await rewardsProgram.connect(programAdmin1).addMember(
+        programId, teamLeader1.address, toBytes12("ATL1"),
+        MemberRole.TeamLeader, ethers.ZeroHash, MemberType.Free
+      );
+      await rewardsProgram.connect(teamLeader1).addMember(
+        programId, client1.address, toBytes12("ACL1"),
+        MemberRole.Client, ethers.ZeroHash, MemberType.Free
+      );
+    });
+
+    // S-03: actForMember reverts on invalid action code
+    it("S-03: actForMember reverts on invalid action code (action=5)", async function () {
+      await expect(
+        rewardsProgram.connect(owner).actForMember(
+          programId, toBytes12("ACL1"), 5,
+          ZeroAddress, 0, false, 0, 0, ""
+        )
+      ).to.be.reverted;
+    });
+
+    it("S-03: actForMember reverts on invalid action code (action=0)", async function () {
+      await expect(
+        rewardsProgram.connect(owner).actForMember(
+          programId, toBytes12("ACL1"), 0,
+          ZeroAddress, 0, false, 0, 0, ""
+        )
+      ).to.be.reverted;
+    });
+
+    // S-06: removeMember reverts when member has balance
+    it("S-06: removeMember reverts when member has available balance", async function () {
+      // Deposit tokens for client1
+      const amount = ethers.parseEther("100");
+      await storageToken.connect(client1).approve(await rewardsProgram.getAddress(), amount);
+      await rewardsProgram.connect(client1).addTokens(programId, amount, 0, "");
+
+      // Try to remove — should fail
+      await expect(
+        rewardsProgram.connect(programAdmin1).removeMember(programId, client1.address)
+      ).to.be.revertedWithCustomError(rewardsProgram, "InsufficientBalance");
+    });
+
+    it("S-06: removeMember reverts when member has permanently locked balance", async function () {
+      // Give teamLeader some tokens and transfer locked to client
+      const amount = ethers.parseEther("100");
+      await storageToken.connect(teamLeader1).approve(await rewardsProgram.getAddress(), amount);
+      await rewardsProgram.connect(teamLeader1).addTokens(programId, amount, 0, "");
+      await rewardsProgram.connect(teamLeader1).transferToSubMember(
+        programId, client1.address, amount, true, 0
+      );
+
+      // Try to remove — should fail (permanently locked)
+      await expect(
+        rewardsProgram.connect(programAdmin1).removeMember(programId, client1.address)
+      ).to.be.revertedWithCustomError(rewardsProgram, "InsufficientBalance");
+    });
+
+    it("S-06: removeMember reverts when member has time-locked balance", async function () {
+      // Give teamLeader some tokens and transfer time-locked to client
+      const amount = ethers.parseEther("100");
+      await storageToken.connect(teamLeader1).approve(await rewardsProgram.getAddress(), amount);
+      await rewardsProgram.connect(teamLeader1).addTokens(programId, amount, 0, "");
+      await rewardsProgram.connect(teamLeader1).transferToSubMember(
+        programId, client1.address, amount, false, 30
+      );
+
+      // Try to remove — should fail (time-locked)
+      await expect(
+        rewardsProgram.connect(programAdmin1).removeMember(programId, client1.address)
+      ).to.be.revertedWithCustomError(rewardsProgram, "InsufficientBalance");
+    });
+
+    it("S-06: removeMember succeeds when member has zero balance", async function () {
+      // Remove client with no balance — should succeed
+      await expect(
+        rewardsProgram.connect(programAdmin1).removeMember(programId, client1.address)
+      ).to.emit(rewardsProgram, "MemberRemoved");
+    });
+
+    // S-01: Extension functions revert when paused
+    it("S-01: addSubType and removeSubType revert when paused", async function () {
+      // Pause the contract (same pattern as existing pause test at line 895)
+      await rewardsProgram.connect(owner).emergencyAction(1);
+
+      const typeName = ethers.zeroPadBytes(ethers.toUtf8Bytes("TestSub"), 16) as `0x${string}`;
+
+      await expect(
+        extensionAtProxy.connect(programAdmin1).addSubType(programId, 1, 1, typeName)
+      ).to.be.reverted; // EnforcedPause
+
+      await expect(
+        extensionAtProxy.connect(programAdmin1).removeSubType(programId, 1, 1)
+      ).to.be.reverted; // EnforcedPause
+
+      // Unpause after cooldown
+      await time.increase(30 * 60 + 1);
+      await rewardsProgram.connect(owner).emergencyAction(2);
+    });
+
+    it("S-01: addRewardType and removeRewardType revert when paused", async function () {
+      await rewardsProgram.connect(owner).emergencyAction(1);
+
+      const typeName = ethers.zeroPadBytes(ethers.toUtf8Bytes("TestType"), 16) as `0x${string}`;
+
+      await expect(
+        extensionAtProxy.connect(owner).addRewardType(1, typeName)
+      ).to.be.reverted; // EnforcedPause
+
+      await expect(
+        extensionAtProxy.connect(owner).removeRewardType(1)
+      ).to.be.reverted; // EnforcedPause
+
+      // Unpause after cooldown
+      await time.increase(30 * 60 + 1);
+      await rewardsProgram.connect(owner).emergencyAction(2);
+    });
+
+    // S-02: setExtension reverts when paused
+    it("S-02: setExtension reverts when paused", async function () {
+      await rewardsProgram.connect(owner).emergencyAction(1);
+
+      await expect(
+        rewardsProgram.connect(owner).setExtension(ZeroAddress)
+      ).to.be.reverted; // EnforcedPause
+
+      // Unpause after cooldown
+      await time.increase(30 * 60 + 1);
+      await rewardsProgram.connect(owner).emergencyAction(2);
     });
   });
 });

@@ -41,6 +41,23 @@ contract RewardsExtension is RewardsStorageBase {
         emit IRewardsProgram.ProgramDeactivated(programId);
     }
 
+    function setTransferLimit(uint32 programId, uint8 limitPercent)
+        external
+        whenNotPaused
+        nonReentrant
+    {
+        _requireActiveProgram(programId);
+        _requireProgramAdminOrAdmin(programId);
+        if (limitPercent > 100) revert IRewardsProgram.InvalidTransferLimit();
+        uint8 old = _transferLimits[programId];
+        _transferLimits[programId] = limitPercent;
+        emit IRewardsProgram.TransferLimitUpdated(programId, old, limitPercent);
+    }
+
+    function getTransferLimit(uint32 programId) external view returns (uint8) {
+        return _transferLimits[programId];
+    }
+
     function updateMemberID(uint32 programId, bytes12 oldMemberID, bytes12 newMemberID)
         external
         whenNotPaused
@@ -91,6 +108,8 @@ contract RewardsExtension is RewardsStorageBase {
     /// @notice Register a reward type. typeId 0-255, name is a display label.
     function addRewardType(uint8 typeId, bytes16 name)
         external
+        whenNotPaused
+        nonReentrant
         onlyRole(ProposalTypes.ADMIN_ROLE)
     {
         validRewardTypes |= (1 << uint256(typeId));
@@ -101,6 +120,8 @@ contract RewardsExtension is RewardsStorageBase {
     /// @notice Remove a reward type from the valid set.
     function removeRewardType(uint8 typeId)
         external
+        whenNotPaused
+        nonReentrant
         onlyRole(ProposalTypes.ADMIN_ROLE)
     {
         validRewardTypes &= ~(1 << uint256(typeId));
@@ -112,6 +133,8 @@ contract RewardsExtension is RewardsStorageBase {
     /// @notice Add a sub-type under a reward type for a specific program.
     function addSubType(uint32 programId, uint8 rewardType, uint8 subTypeId, bytes16 name)
         external
+        whenNotPaused
+        nonReentrant
     {
         _requireProgramAdminOrAdmin(programId);
         validSubTypes[programId][rewardType] |= (1 << uint256(subTypeId));
@@ -122,6 +145,8 @@ contract RewardsExtension is RewardsStorageBase {
     /// @notice Remove a sub-type.
     function removeSubType(uint32 programId, uint8 rewardType, uint8 subTypeId)
         external
+        whenNotPaused
+        nonReentrant
     {
         _requireProgramAdminOrAdmin(programId);
         validSubTypes[programId][rewardType] &= ~(1 << uint256(subTypeId));
@@ -170,19 +195,19 @@ contract RewardsExtension is RewardsStorageBase {
     /// @notice Returns all active reward type IDs and their names.
     function getRewardTypes() external view returns (uint8[] memory ids, bytes16[] memory names) {
         uint256 bitmap = validRewardTypes;
+        uint8[256] memory temp;
         uint256 count;
         for (uint256 i; i < 256; i++) {
-            if (bitmap & (1 << i) != 0) count++;
+            if (bitmap & (1 << i) != 0) {
+                temp[count] = uint8(i);
+                count++;
+            }
         }
         ids = new uint8[](count);
         names = new bytes16[](count);
-        uint256 idx;
-        for (uint256 i; i < 256; i++) {
-            if (bitmap & (1 << i) != 0) {
-                ids[idx] = uint8(i);
-                names[idx] = rewardTypeNames[uint8(i)];
-                idx++;
-            }
+        for (uint256 i; i < count; i++) {
+            ids[i] = temp[i];
+            names[i] = rewardTypeNames[temp[i]];
         }
     }
 
@@ -191,19 +216,19 @@ contract RewardsExtension is RewardsStorageBase {
         external view returns (uint8[] memory ids, bytes16[] memory names)
     {
         uint256 bitmap = validSubTypes[programId][rewardType];
+        uint8[256] memory temp;
         uint256 count;
         for (uint256 i; i < 256; i++) {
-            if (bitmap & (1 << i) != 0) count++;
+            if (bitmap & (1 << i) != 0) {
+                temp[count] = uint8(i);
+                count++;
+            }
         }
         ids = new uint8[](count);
         names = new bytes16[](count);
-        uint256 idx;
-        for (uint256 i; i < 256; i++) {
-            if (bitmap & (1 << i) != 0) {
-                ids[idx] = uint8(i);
-                names[idx] = subTypeNames[programId][rewardType][uint8(i)];
-                idx++;
-            }
+        for (uint256 i; i < count; i++) {
+            ids[i] = temp[i];
+            names[i] = subTypeNames[programId][rewardType][temp[i]];
         }
     }
 

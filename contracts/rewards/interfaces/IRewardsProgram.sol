@@ -133,4 +133,8 @@ interface IRewardsProgram {
     error NoParentFound();
     error InvalidEditCode();
     error ExtensionNotSet();
+    error TransferExceedsLimit(uint256 requested, uint256 maxAllowed);
+    error InvalidTransferLimit();
+
+    event TransferLimitUpdated(uint32 indexed programId, uint8 oldLimit, uint8 newLimit);
 }

@@ -51,6 +51,8 @@ contract RewardsProgram is RewardsStorageBase {
     /// @notice Set the extension contract address (admin only).
     function setExtension(address ext)
         external
+        whenNotPaused
+        nonReentrant
         onlyRole(ProposalTypes.ADMIN_ROLE)
     {
         address old = extension;
@@ -189,6 +191,12 @@ contract RewardsProgram is RewardsStorageBase {
         IRewardsProgram.Member storage member = _members[programId][memberKey];
         if (!member.active) revert IRewardsProgram.MemberNotFound();
 
+        // Prevent removal of members with outstanding balance
+        if (_balances[programId][memberKey].available > 0
+            || _balances[programId][memberKey].permanentlyLocked > 0
+            || _timeLocks[programId][memberKey].length > 0)
+            revert IRewardsProgram.InsufficientBalance(0, 0);
+
         bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
         if (!isAdmin) {
             IRewardsProgram.Member storage caller = _members[programId][msg.sender];
@@ -291,6 +299,8 @@ contract RewardsProgram is RewardsStorageBase {
             _transferToParentCore(programId, key, to, amount);
         } else if (action == 4) {
             _withdrawCore(programId, key, msg.sender, amount);
+        } else {
+            revert IRewardsProgram.InvalidRole();
         }
     }
 
@@ -432,6 +442,15 @@ contract RewardsProgram is RewardsStorageBase {
             IRewardsProgram.TimeLockTranche[] storage tr = _timeLocks[programId][from];
             for (uint256 j = 0; j < tr.length; j++) {
                 totalBalance += tr[j].amount;
+            }
+        }
+        // Transfer control limit — only applies to Clients
+        {
+            uint8 limitPct = _transferLimits[programId];
+            if (limitPct > 0 && _members[programId][from].role == IRewardsProgram.MemberRole.Client) {
+                uint256 maxTransferable = (totalBalance * limitPct) / 100;
+                if (amount > maxTransferable)
+                    revert IRewardsProgram.TransferExceedsLimit(amount, maxTransferable);
             }
         }
         if (totalBalance < amount) {
