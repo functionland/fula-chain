@@ -64,14 +64,14 @@ contract StakingEngineLinearWithMigration is StakingEngineLinear {
         // Base index of the first migrated stake for this user
         uint256 baseIndex = stakes[user].length;
 
-        uint256 totalAmount90 = 0;
-        uint256 totalAmount180 = 0;
         uint256 totalAmount365 = 0;
+        uint256 totalAmount730 = 0;
+        uint256 totalAmount1095 = 0;
         uint256 totalAmountAll = 0;
         
         for (uint256 i = 0; i < length; i++) {
             require(amounts[i] > 0, "Amount must be greater than zero");
-            require(lockPeriods[i] == LOCK_PERIOD_1 || lockPeriods[i] == LOCK_PERIOD_2 || lockPeriods[i] == LOCK_PERIOD_3, "Invalid lock period");
+            require(lockPeriods[i] == LOCK_PERIOD_2 || lockPeriods[i] == LOCK_PERIOD_3 || lockPeriods[i] == LOCK_PERIOD_4, "Invalid lock period: must be 365, 730, or 1095 days");
             
             stakes[user].push(
                 StakeInfo({
@@ -87,12 +87,12 @@ contract StakingEngineLinearWithMigration is StakingEngineLinear {
             // Only count amounts toward active totals when the migrated stake is active
             if (isActiveFlags[i]) {
                 totalAmountAll += amounts[i];
-                if (lockPeriods[i] == LOCK_PERIOD_1) {
-                    totalAmount90 += amounts[i];
-                } else if (lockPeriods[i] == LOCK_PERIOD_2) {
-                    totalAmount180 += amounts[i];
-                } else if (lockPeriods[i] == LOCK_PERIOD_3) {
+                if (lockPeriods[i] == LOCK_PERIOD_2) {
                     totalAmount365 += amounts[i];
+                } else if (lockPeriods[i] == LOCK_PERIOD_3) {
+                    totalAmount730 += amounts[i];
+                } else if (lockPeriods[i] == LOCK_PERIOD_4) {
+                    totalAmount1095 += amounts[i];
                 }
             }
             
@@ -113,9 +113,9 @@ contract StakingEngineLinearWithMigration is StakingEngineLinear {
         }
         
         totalStaked += totalAmountAll;
-        totalStaked90Days += totalAmount90;
-        totalStaked180Days += totalAmount180;
         totalStaked365Days += totalAmount365;
+        totalStaked730Days += totalAmount730;
+        totalStaked1095Days += totalAmount1095;
         
         migratedUsers[user] = true;
         totalMigratedStakes += length;
@@ -160,23 +160,23 @@ contract StakingEngineLinearWithMigration is StakingEngineLinear {
                 
                 // Update period-specific stats for referrer
                 if (isActiveFlags[i]) {
-                    if (lockPeriod == LOCK_PERIOD_1) {
-                        referrerInfo.totalActiveStaked90Days += amounts[i];
-                    } else if (lockPeriod == LOCK_PERIOD_2) {
-                        referrerInfo.totalActiveStaked180Days += amounts[i];
-                    } else if (lockPeriod == LOCK_PERIOD_3) {
+                    if (lockPeriod == LOCK_PERIOD_2) {
                         referrerInfo.totalActiveStaked365Days += amounts[i];
+                    } else if (lockPeriod == LOCK_PERIOD_3) {
+                        referrerInfo.totalActiveStaked730Days += amounts[i];
+                    } else if (lockPeriod == LOCK_PERIOD_4) {
+                        referrerInfo.totalActiveStaked1095Days += amounts[i];
                     }
                 }
                 
                 // Calculate referrer reward percentage
                 uint256 referrerRewardPercent;
-                if (lockPeriod == LOCK_PERIOD_1) {
-                    referrerRewardPercent = REFERRER_REWARD_PERCENT_90_DAYS;
-                } else if (lockPeriod == LOCK_PERIOD_2) {
-                    referrerRewardPercent = REFERRER_REWARD_PERCENT_180_DAYS;
-                } else if (lockPeriod == LOCK_PERIOD_3) {
+                if (lockPeriod == LOCK_PERIOD_2) {
                     referrerRewardPercent = REFERRER_REWARD_PERCENT_365_DAYS;
+                } else if (lockPeriod == LOCK_PERIOD_3) {
+                    referrerRewardPercent = REFERRER_REWARD_PERCENT_730_DAYS;
+                } else if (lockPeriod == LOCK_PERIOD_4) {
+                    referrerRewardPercent = REFERRER_REWARD_PERCENT_1095_DAYS;
                 }
                 
                 // Create referrer reward entries (CRITICAL - was missing)
@@ -230,18 +230,16 @@ contract StakingEngineLinearWithMigration is StakingEngineLinear {
      */
     function setInitialTotalStaked(
         uint256 _totalStaked,
-        uint256 _totalStaked90Days,
-        uint256 _totalStaked180Days,
-        uint256 _totalStaked365Days
+        uint256 _totalStaked365Days,
+        uint256 _totalStaked730Days,
+        uint256 _totalStaked1095Days
     ) external onlyRole(ProposalTypes.ADMIN_ROLE) {
         if (!migrationMode) revert MigrationModeInactive();
         
         totalStaked = _totalStaked;
-        totalStaked90Days = _totalStaked90Days;
-        totalStaked180Days = _totalStaked180Days;
         totalStaked365Days = _totalStaked365Days;
-        
-
+        totalStaked730Days = _totalStaked730Days;
+        totalStaked1095Days = _totalStaked1095Days;
     }
     
     /// @notice Get migration status

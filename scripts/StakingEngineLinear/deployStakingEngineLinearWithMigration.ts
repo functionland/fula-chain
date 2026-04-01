@@ -77,3 +77,9 @@ main()
         console.error("Deployment failed:", error);
         process.exit(1);
     });
+
+// Run with environment variables:
+// set TOKEN_ADDRESS=0x92217cCaEDBdbc54C76c15feA18823db1558fDc9 && set INITIAL_OWNER=0x383a6A34C623C02dcf9BB7069FAE4482967fb713 && set INITIAL_ADMIN=0xFa8b02596a84F3b81B4144eA2F30482f8C33D446 && set APPROVAL_AMOUNT="100000000" && set DEPLOY_POOLS=true && set ETHERSCAN_API_KEY=JGD6ENM6P2G5XUS4VSCJJYGXR3RXCG2TEN && npx hardhat run scripts/StakingEngineLinear/deployStakingEngineLinearWithMigration.ts --network mainnet
+// 
+// Or for using existing pools:
+// TOKEN_ADDRESS=0x... STAKE_POOL_ADDRESS=0x... REWARD_POOL_ADDRESS=0x... npx hardhat run scripts/StakingEngineLinear/deployStakingEngineLinearWithMigration.ts --network mainnet
