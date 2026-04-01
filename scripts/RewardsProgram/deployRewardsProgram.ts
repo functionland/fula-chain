@@ -16,6 +16,29 @@ async function waitForImplementation(proxyAddress: string, maxAttempts = 10): Pr
   throw new Error(`Failed to read implementation address for ${proxyAddress} after ${maxAttempts} attempts`);
 }
 
+/// Wait until all pending transactions are confirmed and RPC nonce is stable.
+/// Base's public RPC can be slow to update nonces, causing "replacement transaction underpriced".
+async function waitUntilReady(deployer: any, label: string): Promise<number> {
+  console.log(`  [${label}] Waiting for pending txs to settle...`);
+  // Wait a fixed 10 seconds first — Base needs time to propagate
+  await new Promise(resolve => setTimeout(resolve, 10000));
+
+  for (let i = 0; i < 20; i++) {
+    const pending = await deployer.getNonce("pending");
+    const latest  = await deployer.getNonce("latest");
+    if (pending === latest) {
+      console.log(`  [${label}] Nonce settled at ${latest}. Ready.`);
+      return latest;
+    }
+    console.log(`  [${label}] pending=${pending} latest=${latest}, waiting... (${i + 1}/20)`);
+    await new Promise(resolve => setTimeout(resolve, 5000));
+  }
+  // Return latest even if not fully settled — let the caller decide
+  const nonce = await deployer.getNonce("latest");
+  console.log(`  [${label}] Proceeding with nonce ${nonce} (may not be fully settled)`);
+  return nonce;
+}
+
 async function main() {
   console.log("=== REWARDS PROGRAM DEPLOYMENT ===\n");
 
@@ -115,11 +138,35 @@ async function main() {
   const rpImplAddr = await waitForImplementation(rewardsProgramAddress);
   console.log("RewardsProgram Implementation:", rpImplAddr);
 
-  // 3. Set RewardsProgram as stakingEngine (if new StakingPool was deployed)
+  // 3. Deploy RewardsExtension and link to RewardsProgram
+  let nonce = await waitUntilReady(deployer, "pre-extension-deploy");
+  console.log("\nDeploying RewardsExtension...");
+  const RewardsExtension = await ethers.getContractFactory("RewardsExtension");
+  const extension = await RewardsExtension.deploy({ nonce });
+  await extension.waitForDeployment();
+  const extensionAddress = await extension.getAddress();
+  console.log("✅ RewardsExtension deployed to:", extensionAddress);
+
+  nonce = await waitUntilReady(deployer, "pre-setExtension");
+  console.log("Setting extension on RewardsProgram...");
+  const rpForExtension = await ethers.getContractAt("RewardsProgram", rewardsProgramAddress);
+  const extTx = await rpForExtension.connect(deployer).setExtension(extensionAddress, { nonce });
+  const extReceipt = await extTx.wait();
+  console.log("setExtension tx status:", extReceipt?.status === 1 ? "success" : "REVERTED");
+  const storedExt = await rpForExtension.extension();
+  if (storedExt.toLowerCase() === extensionAddress.toLowerCase()) {
+    console.log("✅ Extension set and verified");
+  } else {
+    console.error("⚠️  Extension address mismatch! Stored:", storedExt);
+    console.log("   Run setExtension.ts manually after deployment completes.");
+  }
+
+  // 4. Set RewardsProgram as stakingEngine (if new StakingPool was deployed)
   if (DEPLOY_STAKING_POOL) {
+    nonce = await waitUntilReady(deployer, "pre-setStakingEngine");
     console.log("\nSetting RewardsProgram as stakingEngine on StakingPool...");
     const stakingPool = await ethers.getContractAt("StakingPool", stakingPoolAddress);
-    const tx = await stakingPool.connect(deployer).setStakingEngine(rewardsProgramAddress);
+    const tx = await stakingPool.connect(deployer).setStakingEngine(rewardsProgramAddress, { nonce });
     await tx.wait();
     console.log("✅ StakingEngine set successfully");
   } else {
@@ -137,6 +184,7 @@ async function main() {
   console.log("\nImplementation Addresses:");
   console.log("  StakingPool:    ", DEPLOY_STAKING_POOL ? await waitForImplementation(stakingPoolAddress) : "N/A (existing)");
   console.log("  RewardsProgram: ", rpImplAddr);
+  console.log("  Extension:      ", extensionAddress);
 
   console.log("\n📋 NEXT STEPS:");
   console.log("1. Whitelist StakingPool address in FULA token contract via governance proposal");
@@ -145,6 +193,7 @@ async function main() {
   console.log("4. Verify contracts on block explorer:");
   console.log(`   npx hardhat verify --network ${hre.network.name} ${stakingPoolAddress}`);
   console.log(`   npx hardhat verify --network ${hre.network.name} ${rewardsProgramAddress}`);
+  console.log(`   npx hardhat verify --network ${hre.network.name} ${extensionAddress}`);
 }
 
 main()

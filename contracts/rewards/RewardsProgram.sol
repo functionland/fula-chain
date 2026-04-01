@@ -127,10 +127,11 @@ contract RewardsProgram is RewardsStorageBase {
     {
         _requireActiveProgram(programId);
         bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
-        _validateAddAuthority(programId, msg.sender, role, isAdmin);
+        address callerKey = _resolveStorageKey(programId, msg.sender);
+        _validateAddAuthority(programId, callerKey, role, isAdmin);
 
-        address storageKey = _addMember(programId, wallet, memberID, role, msg.sender, editCodeHash, memberType);
-        emit IRewardsProgram.MemberAdded(programId, storageKey, msg.sender, role, memberType, memberID);
+        address storageKey = _addMember(programId, wallet, memberID, role, callerKey, editCodeHash, memberType);
+        emit IRewardsProgram.MemberAdded(programId, storageKey, callerKey, role, memberType, memberID);
     }
 
     function addMemberUnder(
@@ -180,6 +181,15 @@ contract RewardsProgram is RewardsStorageBase {
 
         address oldWallet = member.wallet;
         member.wallet = newWallet;
+
+        // Update wallet→storageKey reverse mapping
+        if (oldWallet != address(0) && oldWallet != storageKey) {
+            delete _walletToStorageKey[programId][oldWallet];
+        }
+        if (newWallet != address(0) && newWallet != storageKey) {
+            _walletToStorageKey[programId][newWallet] = storageKey;
+        }
+
         emit IRewardsProgram.MemberWalletChanged(programId, storageKey, oldWallet, newWallet);
     }
 
@@ -199,13 +209,18 @@ contract RewardsProgram is RewardsStorageBase {
 
         bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
         if (!isAdmin) {
-            IRewardsProgram.Member storage caller = _members[programId][msg.sender];
+            address callerKey = _resolveStorageKey(programId, msg.sender);
+            IRewardsProgram.Member storage caller = _members[programId][callerKey];
             if (!caller.active || caller.role != IRewardsProgram.MemberRole.ProgramAdmin)
                 revert IRewardsProgram.UnauthorizedRole();
             if (member.role == IRewardsProgram.MemberRole.ProgramAdmin)
                 revert IRewardsProgram.UnauthorizedRole();
         }
 
+        // Clean up wallet→storageKey reverse mapping
+        if (member.wallet != address(0) && member.wallet != memberKey) {
+            delete _walletToStorageKey[programId][member.wallet];
+        }
         delete memberIDLookup[member.memberID][programId];
         member.active = false;
         emit IRewardsProgram.MemberRemoved(programId, memberKey);
@@ -230,6 +245,7 @@ contract RewardsProgram is RewardsStorageBase {
         if (keccak256(abi.encodePacked(editCode)) != storedHash) revert IRewardsProgram.InvalidEditCode();
 
         member.wallet = msg.sender;
+        _walletToStorageKey[programId][msg.sender] = storageKey;
         emit IRewardsProgram.MemberClaimed(programId, storageKey, msg.sender);
     }
 
@@ -258,9 +274,10 @@ contract RewardsProgram is RewardsStorageBase {
     function addTokens(uint32 programId, uint256 amount, uint8 rewardType, string calldata note)
         external whenNotPaused nonReentrant
     {
-        _requireMemberOrAdmin(programId, msg.sender);
+        address key = _resolveStorageKey(programId, msg.sender);
+        _requireMemberOrAdmin(programId, key);
         if (bytes(note).length > 128) revert IRewardsProgram.NoteTooLong();
-        _addTokensCore(programId, msg.sender, msg.sender, amount, rewardType, note);
+        _addTokensCore(programId, msg.sender, key, amount, rewardType, note);
     }
 
     function transferToSubMember(
@@ -268,16 +285,19 @@ contract RewardsProgram is RewardsStorageBase {
         bool locked, uint32 lockTimeDays
     ) external whenNotPaused nonReentrant {
         bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
-        _transferToSubCore(programId, msg.sender, to, amount, locked, lockTimeDays, isAdmin);
+        address key = _resolveStorageKey(programId, msg.sender);
+        _transferToSubCore(programId, key, to, amount, locked, lockTimeDays, isAdmin);
     }
 
     function transferToParent(uint32 programId, address to, uint256 amount) external whenNotPaused nonReentrant {
-        _transferToParentCore(programId, msg.sender, to, amount);
+        address key = _resolveStorageKey(programId, msg.sender);
+        _transferToParentCore(programId, key, to, amount);
     }
 
     function withdraw(uint32 programId, uint256 amount) external whenNotPaused nonReentrant {
-        _requireMemberOrAdmin(programId, msg.sender);
-        _withdrawCore(programId, msg.sender, msg.sender, amount);
+        address key = _resolveStorageKey(programId, msg.sender);
+        _requireMemberOrAdmin(programId, key);
+        _withdrawCore(programId, key, msg.sender, amount);
     }
 
     /// @notice Act on behalf of a walletless member.
@@ -313,7 +333,12 @@ contract RewardsProgram is RewardsStorageBase {
     function getMember(uint32 programId, address memberKey)
         external view returns (IRewardsProgram.Member memory)
     {
-        return _members[programId][memberKey];
+        IRewardsProgram.Member storage m = _members[programId][memberKey];
+        if (m.active) return m;
+        // Try reverse mapping for claimed walletless members
+        address resolved = _walletToStorageKey[programId][memberKey];
+        if (resolved != address(0)) return _members[programId][resolved];
+        return m;
     }
 
     function getMemberByID(bytes12 memberID, uint32 programId)
@@ -327,11 +352,12 @@ contract RewardsProgram is RewardsStorageBase {
     function getBalance(uint32 programId, address memberKey)
         external view returns (uint256 available, uint256 permanentlyLocked, uint256 totalTimeLocked)
     {
-        IRewardsProgram.Balance storage bal = _balances[programId][memberKey];
+        address key = _resolveStorageKey(programId, memberKey);
+        IRewardsProgram.Balance storage bal = _balances[programId][key];
         available = bal.available;
         permanentlyLocked = bal.permanentlyLocked;
 
-        IRewardsProgram.TimeLockTranche[] storage tranches = _timeLocks[programId][memberKey];
+        IRewardsProgram.TimeLockTranche[] storage tranches = _timeLocks[programId][key];
         for (uint256 i = 0; i < tranches.length; i++) {
             totalTimeLocked += tranches[i].amount;
         }

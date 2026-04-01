@@ -50,12 +50,25 @@ abstract contract RewardsStorageBase is Initializable, GovernanceModule {
 
     mapping(uint32 => uint8) internal _transferLimits; // 0=no limit, 1-100=max % client can transfer to parent
 
-    uint256[37] private __gap;
+    /// @dev Reverse mapping: wallet → storageKey for claimed walletless members.
+    /// When a walletless member claims via claimMember(), their data stays at the
+    /// virtual storage key. This mapping lets auth checks resolve wallet → storageKey.
+    mapping(uint32 => mapping(address => address)) internal _walletToStorageKey;
+
+    uint256[36] private __gap;
 
     // === SHARED INTERNAL HELPERS ===
 
     function _virtualAddr(bytes12 memberID, uint32 programId) internal pure returns (address) {
         return address(uint160(uint256(keccak256(abi.encodePacked(memberID, programId)))));
+    }
+
+    /// @dev Resolve a wallet address to its storage key. For members created with a
+    ///      wallet, the wallet IS the storage key (returns wallet). For claimed walletless
+    ///      members, returns the virtual storage key via the reverse mapping.
+    function _resolveStorageKey(uint32 programId, address wallet) internal view returns (address) {
+        address resolved = _walletToStorageKey[programId][wallet];
+        return resolved != address(0) ? resolved : wallet;
     }
 
     function _findActingWallet(uint32 programId, address storageKey) internal view returns (address) {
@@ -76,7 +89,8 @@ abstract contract RewardsStorageBase is Initializable, GovernanceModule {
 
     function _requireMemberOrAdmin(uint32 programId, address wallet) internal view {
         if (hasRole(ProposalTypes.ADMIN_ROLE, wallet)) return;
-        if (!_members[programId][wallet].active) revert IRewardsProgram.MemberNotFound();
+        address key = _resolveStorageKey(programId, wallet);
+        if (!_members[programId][key].active) revert IRewardsProgram.MemberNotFound();
     }
 
     function _isInParentChain(uint32 programId, address child, address ancestor) internal view returns (bool) {

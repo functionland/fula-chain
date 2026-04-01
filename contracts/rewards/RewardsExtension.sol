@@ -168,7 +168,8 @@ contract RewardsExtension is RewardsStorageBase {
         whenNotPaused
         nonReentrant
     {
-        _requireMemberOrAdmin(programId, msg.sender);
+        address key = _resolveStorageKey(programId, msg.sender);
+        _requireMemberOrAdmin(programId, key);
         if (bytes(note).length > 128) revert IRewardsProgram.NoteTooLong();
 
         // Validate sub-type data
@@ -182,11 +183,11 @@ contract RewardsExtension is RewardsStorageBase {
         if (subTotal != amount) revert IRewardsProgram.InvalidSubTypeData();
 
         // Perform deposit
-        _addTokensCore(programId, msg.sender, msg.sender, amount, rewardType, note);
+        _addTokensCore(programId, msg.sender, key, amount, rewardType, note);
 
         // Emit sub-type breakdown linked to the deposit
         emit IRewardsProgram.DepositSubTypes(
-            depositCount, programId, msg.sender, subTypeIds, subTypeQtys
+            depositCount, programId, key, subTypeIds, subTypeQtys
         );
     }
 
@@ -236,7 +237,8 @@ contract RewardsExtension is RewardsStorageBase {
 
     function _requireProgramAdminOrAdmin(uint32 programId) internal view {
         if (hasRole(ProposalTypes.ADMIN_ROLE, msg.sender)) return;
-        IRewardsProgram.Member storage m = _members[programId][msg.sender];
+        address key = _resolveStorageKey(programId, msg.sender);
+        IRewardsProgram.Member storage m = _members[programId][key];
         if (!m.active || m.role != IRewardsProgram.MemberRole.ProgramAdmin)
             revert IRewardsProgram.UnauthorizedRole();
     }
