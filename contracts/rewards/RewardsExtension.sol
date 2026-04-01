@@ -22,9 +22,9 @@ contract RewardsExtension is RewardsStorageBase {
         external
         whenNotPaused
         nonReentrant
-        onlyRole(ProposalTypes.ADMIN_ROLE)
     {
         _requireActiveProgram(programId);
+        _requireProgramAdminOrAdmin(programId);
         _programs[programId].name = name;
         _programs[programId].description = description;
         emit IRewardsProgram.ProgramUpdated(programId, name);
@@ -34,9 +34,9 @@ contract RewardsExtension is RewardsStorageBase {
         external
         whenNotPaused
         nonReentrant
-        onlyRole(ProposalTypes.ADMIN_ROLE)
     {
         _requireActiveProgram(programId);
+        _requireProgramAdminOrAdmin(programId);
         _programs[programId].active = false;
         emit IRewardsProgram.ProgramDeactivated(programId);
     }
@@ -103,15 +103,15 @@ contract RewardsExtension is RewardsStorageBase {
         emit IRewardsProgram.MemberTypeChanged(programId, storageKey, oldType, newType);
     }
 
-    // === REWARD TYPE MANAGEMENT (bitmap-based, admin only) ===
+    // === REWARD TYPE MANAGEMENT (bitmap-based, admin or PA) ===
 
     /// @notice Register a reward type. typeId 0-255, name is a display label.
     function addRewardType(uint8 typeId, bytes16 name)
         external
         whenNotPaused
         nonReentrant
-        onlyRole(ProposalTypes.ADMIN_ROLE)
     {
+        _requireAnyProgramAdminOrAdmin();
         validRewardTypes |= (1 << uint256(typeId));
         rewardTypeNames[typeId] = name;
         emit IRewardsProgram.RewardTypeAdded(typeId, name);
@@ -122,8 +122,8 @@ contract RewardsExtension is RewardsStorageBase {
         external
         whenNotPaused
         nonReentrant
-        onlyRole(ProposalTypes.ADMIN_ROLE)
     {
+        _requireAnyProgramAdminOrAdmin();
         validRewardTypes &= ~(1 << uint256(typeId));
         emit IRewardsProgram.RewardTypeRemoved(typeId);
     }
@@ -234,6 +234,19 @@ contract RewardsExtension is RewardsStorageBase {
     }
 
     // === INTERNAL ===
+
+    /// @notice Require caller to be a PA in any program, or a global admin.
+    /// Used for global actions (reward types) that any PA should be allowed to perform.
+    function _requireAnyProgramAdminOrAdmin() internal view {
+        if (hasRole(ProposalTypes.ADMIN_ROLE, msg.sender)) return;
+        // Check all programs for PA membership
+        for (uint32 i = 1; i <= programCount; i++) {
+            address key = _resolveStorageKey(i, msg.sender);
+            IRewardsProgram.Member storage m = _members[i][key];
+            if (m.active && m.role == IRewardsProgram.MemberRole.ProgramAdmin) return;
+        }
+        revert IRewardsProgram.UnauthorizedRole();
+    }
 
     function _requireProgramAdminOrAdmin(uint32 programId) internal view {
         if (hasRole(ProposalTypes.ADMIN_ROLE, msg.sender)) return;
