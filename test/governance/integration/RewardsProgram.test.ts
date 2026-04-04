@@ -42,7 +42,7 @@ const MemberType = {
 
 // Helper: commit-reveal claim flow (C2 security fix)
 async function commitAndClaim(
-  rewardsProgram: RewardsProgram,
+  ext: RewardsExtension,
   claimer: SignerWithAddress,
   programId: number,
   memberID: string,
@@ -51,9 +51,9 @@ async function commitAndClaim(
   const commitHash = ethers.keccak256(
     ethers.solidityPacked(["bytes12", "bytes32", "address"], [memberID, editCode, claimer.address])
   );
-  await rewardsProgram.connect(claimer).commitClaim(programId, commitHash);
+  await ext.connect(claimer).commitClaim(programId, commitHash);
   await time.increase(6); // MIN_COMMIT_DELAY = 5 seconds
-  await rewardsProgram.connect(claimer).claimMember(programId, memberID, editCode);
+  await ext.connect(claimer).claimMember(programId, memberID, editCode);
 }
 
 describe("RewardsProgram", function () {
@@ -283,7 +283,7 @@ describe("RewardsProgram", function () {
         .to.emit(rewardsProgram, "ProgramAdminAssigned")
         .withArgs(programId, programAdmin1.address, memberId);
 
-      const member = await rewardsProgram.getMember(programId, programAdmin1.address);
+      const member = await extensionAtProxy.getMember(programId, programAdmin1.address);
       expect(member.role).to.equal(MemberRole.ProgramAdmin);
       expect(member.active).to.be.true;
       expect(member.parent).to.equal(owner.address);
@@ -301,19 +301,19 @@ describe("RewardsProgram", function () {
       await rewardsProgram.connect(owner).assignProgramAdmin(1, programAdmin1.address, toBytes12("PA001"), ethers.ZeroHash, MemberType.Free);
       await rewardsProgram.connect(owner).assignProgramAdmin(2, programAdmin1.address, toBytes12("PA001"), ethers.ZeroHash, MemberType.Free);
 
-      expect((await rewardsProgram.getMember(1, programAdmin1.address)).active).to.be.true;
-      expect((await rewardsProgram.getMember(2, programAdmin1.address)).active).to.be.true;
+      expect((await extensionAtProxy.getMember(1, programAdmin1.address)).active).to.be.true;
+      expect((await extensionAtProxy.getMember(2, programAdmin1.address)).active).to.be.true;
 
     });
 
     it("should allow Admin to remove ProgramAdmin via removeMember", async function () {
       await rewardsProgram.connect(owner).assignProgramAdmin(programId, programAdmin1.address, toBytes12("PA001"), ethers.ZeroHash, MemberType.Free);
 
-      await expect(rewardsProgram.connect(owner).removeMember(programId, programAdmin1.address))
-        .to.emit(rewardsProgram, "MemberRemoved")
+      await expect(extensionAtProxy.connect(owner).removeMember(programId, programAdmin1.address))
+        .to.emit(extensionAtProxy, "MemberRemoved")
         .withArgs(programId, programAdmin1.address);
 
-      const member = await rewardsProgram.getMember(programId, programAdmin1.address);
+      const member = await extensionAtProxy.getMember(programId, programAdmin1.address);
       expect(member.active).to.be.false;
     });
 
@@ -332,8 +332,8 @@ describe("RewardsProgram", function () {
       await rewardsProgram.connect(owner).assignProgramAdmin(2, teamLeader1.address, memberId, ethers.ZeroHash, MemberType.Free);
 
       // Both should succeed - same memberID allowed in different programs
-      expect((await rewardsProgram.getMember(1, programAdmin1.address)).memberID).to.equal(memberId);
-      expect((await rewardsProgram.getMember(2, teamLeader1.address)).memberID).to.equal(memberId);
+      expect((await extensionAtProxy.getMember(1, programAdmin1.address)).memberID).to.equal(memberId);
+      expect((await extensionAtProxy.getMember(2, teamLeader1.address)).memberID).to.equal(memberId);
     });
   });
 
@@ -357,14 +357,14 @@ describe("RewardsProgram", function () {
         .to.emit(rewardsProgram, "MemberAdded")
         .withArgs(programId, teamLeader1.address, programAdmin1.address, MemberRole.TeamLeader, MemberType.Free, toBytes12("TL001"));
 
-      const member = await rewardsProgram.getMember(programId, teamLeader1.address);
+      const member = await extensionAtProxy.getMember(programId, teamLeader1.address);
       expect(member.role).to.equal(MemberRole.TeamLeader);
       expect(member.parent).to.equal(programAdmin1.address);
     });
 
     it("should allow ProgramAdmin to add Client", async function () {
       await rewardsProgram.connect(programAdmin1).addMember(programId, client1.address, toBytes12("CL001"), MemberRole.Client, ethers.ZeroHash, MemberType.Free);
-      const member = await rewardsProgram.getMember(programId, client1.address);
+      const member = await extensionAtProxy.getMember(programId, client1.address);
       expect(member.role).to.equal(MemberRole.Client);
       expect(member.parent).to.equal(programAdmin1.address);
     });
@@ -373,7 +373,7 @@ describe("RewardsProgram", function () {
       await rewardsProgram.connect(programAdmin1).addMember(programId, teamLeader1.address, toBytes12("TL001"), MemberRole.TeamLeader, ethers.ZeroHash, MemberType.Free);
       await rewardsProgram.connect(teamLeader1).addMember(programId, client1.address, toBytes12("CL001"), MemberRole.Client, ethers.ZeroHash, MemberType.Free);
 
-      const member = await rewardsProgram.getMember(programId, client1.address);
+      const member = await extensionAtProxy.getMember(programId, client1.address);
       expect(member.role).to.equal(MemberRole.Client);
       expect(member.parent).to.equal(teamLeader1.address);
     });
@@ -396,8 +396,8 @@ describe("RewardsProgram", function () {
       await rewardsProgram.connect(owner).addMember(programId, teamLeader1.address, toBytes12("TL001"), MemberRole.TeamLeader, ethers.ZeroHash, MemberType.Free);
       await rewardsProgram.connect(owner).addMember(programId, client1.address, toBytes12("CL001"), MemberRole.Client, ethers.ZeroHash, MemberType.Free);
 
-      expect((await rewardsProgram.getMember(programId, teamLeader1.address)).role).to.equal(MemberRole.TeamLeader);
-      expect((await rewardsProgram.getMember(programId, client1.address)).role).to.equal(MemberRole.Client);
+      expect((await extensionAtProxy.getMember(programId, teamLeader1.address)).role).to.equal(MemberRole.TeamLeader);
+      expect((await extensionAtProxy.getMember(programId, client1.address)).role).to.equal(MemberRole.Client);
     });
 
     it("should track parent hierarchy correctly", async function () {
@@ -405,11 +405,11 @@ describe("RewardsProgram", function () {
       await rewardsProgram.connect(teamLeader1).addMember(programId, client1.address, toBytes12("CL001"), MemberRole.Client, ethers.ZeroHash, MemberType.Free);
 
       // client1's parent is teamLeader1
-      expect((await rewardsProgram.getMember(programId, client1.address)).parent).to.equal(teamLeader1.address);
+      expect((await extensionAtProxy.getMember(programId, client1.address)).parent).to.equal(teamLeader1.address);
       // teamLeader1's parent is programAdmin1
-      expect((await rewardsProgram.getMember(programId, teamLeader1.address)).parent).to.equal(programAdmin1.address);
+      expect((await extensionAtProxy.getMember(programId, teamLeader1.address)).parent).to.equal(programAdmin1.address);
       // programAdmin1's parent is owner (the admin who assigned them)
-      expect((await rewardsProgram.getMember(programId, programAdmin1.address)).parent).to.equal(owner.address);
+      expect((await extensionAtProxy.getMember(programId, programAdmin1.address)).parent).to.equal(owner.address);
     });
 
     it("should look up member by memberID", async function () {
@@ -418,7 +418,7 @@ describe("RewardsProgram", function () {
         programId, teamLeader1.address, memberId, MemberRole.TeamLeader, ethers.ZeroHash, MemberType.Free
       );
 
-      const member = await rewardsProgram.getMemberByID(memberId, programId);
+      const member = await extensionAtProxy.getMemberByID(memberId, programId);
       expect(member.wallet).to.equal(teamLeader1.address);
       expect(member.role).to.equal(MemberRole.TeamLeader);
     });
@@ -451,7 +451,7 @@ describe("RewardsProgram", function () {
       expect(await storageToken.balanceOf(spAddr)).to.equal(DEPOSIT_AMOUNT);
 
       // Check member's balance
-      const [available, permLocked, timeLocked] = await rewardsProgram.getBalance(programId, programAdmin1.address);
+      const [available, permLocked, timeLocked] = await extensionAtProxy.getBalance(programId, programAdmin1.address);
       expect(available).to.equal(DEPOSIT_AMOUNT);
       expect(permLocked).to.equal(0);
       expect(timeLocked).to.equal(0);
@@ -474,7 +474,7 @@ describe("RewardsProgram", function () {
       await storageToken.connect(owner).approve(await rewardsProgram.getAddress(), DEPOSIT_AMOUNT);
       await rewardsProgram.connect(owner).addTokens(programId, DEPOSIT_AMOUNT, 0, "");
 
-      const [available] = await rewardsProgram.getBalance(programId, owner.address);
+      const [available] = await extensionAtProxy.getBalance(programId, owner.address);
       expect(available).to.equal(DEPOSIT_AMOUNT);
     });
   });
@@ -507,10 +507,10 @@ describe("RewardsProgram", function () {
       )
         .to.emit(rewardsProgram, "TokensTransferredToMember");
 
-      const [senderAvail] = await rewardsProgram.getBalance(programId, programAdmin1.address);
+      const [senderAvail] = await extensionAtProxy.getBalance(programId, programAdmin1.address);
       expect(senderAvail).to.equal(DEPOSIT_AMOUNT - amount);
 
-      const [receiverAvail] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      const [receiverAvail] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
       expect(receiverAvail).to.equal(amount);
     });
 
@@ -520,7 +520,7 @@ describe("RewardsProgram", function () {
         programId, client1.address, amount, false, 0, ""
       );
 
-      const [receiverAvail] = await rewardsProgram.getBalance(programId, client1.address);
+      const [receiverAvail] = await extensionAtProxy.getBalance(programId, client1.address);
       expect(receiverAvail).to.equal(amount);
     });
 
@@ -546,7 +546,7 @@ describe("RewardsProgram", function () {
         programId, teamLeader1.address, amount, true, 0, ""
       );
 
-      const [avail, permLocked] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      const [avail, permLocked] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
       expect(avail).to.equal(0);
       expect(permLocked).to.equal(amount);
     });
@@ -557,7 +557,7 @@ describe("RewardsProgram", function () {
         programId, teamLeader1.address, amount, false, 7, ""
       );
 
-      const [avail, permLocked, timeLocked] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      const [avail, permLocked, timeLocked] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
       expect(avail).to.equal(0);
       expect(permLocked).to.equal(0);
       expect(timeLocked).to.equal(amount);
@@ -625,10 +625,10 @@ describe("RewardsProgram", function () {
         .to.emit(rewardsProgram, "TokensTransferredToParent")
         .withArgs(programId, client1.address, teamLeader1.address, amount, "");
 
-      const [clientAvail] = await rewardsProgram.getBalance(programId, client1.address);
+      const [clientAvail] = await extensionAtProxy.getBalance(programId, client1.address);
       expect(clientAvail).to.equal(ethers.parseEther("1500"));
 
-      const [tlAvail] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      const [tlAvail] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
       expect(tlAvail).to.equal(ethers.parseEther("3000") + amount); // 3000 remaining + 500 back
     });
 
@@ -636,7 +636,7 @@ describe("RewardsProgram", function () {
       const amount = ethers.parseEther("500");
       await rewardsProgram.connect(client1).transferToParent(programId, programAdmin1.address, amount, "");
 
-      const [paAvail] = await rewardsProgram.getBalance(programId, programAdmin1.address);
+      const [paAvail] = await extensionAtProxy.getBalance(programId, programAdmin1.address);
       expect(paAvail).to.equal(ethers.parseEther("5000") + amount); // 5000 remaining + 500 back
     });
 
@@ -644,7 +644,7 @@ describe("RewardsProgram", function () {
       const amount = ethers.parseEther("200");
       await rewardsProgram.connect(client1).transferToParent(programId, owner.address, amount, "");
 
-      const [adminAvail] = await rewardsProgram.getBalance(programId, owner.address);
+      const [adminAvail] = await extensionAtProxy.getBalance(programId, owner.address);
       expect(adminAvail).to.equal(amount);
     });
 
@@ -677,14 +677,14 @@ describe("RewardsProgram", function () {
       );
 
       // Client has 2000 available + 1000 locked
-      const [avail, permLocked] = await rewardsProgram.getBalance(programId, client1.address);
+      const [avail, permLocked] = await extensionAtProxy.getBalance(programId, client1.address);
       expect(avail).to.equal(ethers.parseEther("2000"));
       expect(permLocked).to.equal(ethers.parseEther("1000"));
 
       // Transfer back total 2500 (from available first, then locked)
       await rewardsProgram.connect(client1).transferToParent(programId, ZeroAddress, ethers.parseEther("2500"), "");
 
-      const [newAvail, newLocked] = await rewardsProgram.getBalance(programId, client1.address);
+      const [newAvail, newLocked] = await extensionAtProxy.getBalance(programId, client1.address);
       expect(newAvail).to.equal(0);
       expect(newLocked).to.equal(ethers.parseEther("500")); // 1000 - 500 used from locked
     });
@@ -717,7 +717,7 @@ describe("RewardsProgram", function () {
       const balAfter = await storageToken.balanceOf(programAdmin1.address);
       expect(balAfter - balBefore).to.equal(amount);
 
-      const [available] = await rewardsProgram.getBalance(programId, programAdmin1.address);
+      const [available] = await extensionAtProxy.getBalance(programId, programAdmin1.address);
       expect(available).to.equal(DEPOSIT_AMOUNT - amount);
     });
 
@@ -747,7 +747,7 @@ describe("RewardsProgram", function () {
       // (tokens were deposited by PA, so pool has them)
       await rewardsProgram.connect(teamLeader1).withdraw(programId, ethers.parseEther("1000"));
 
-      const [available, , timeLocked] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      const [available, , timeLocked] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
       expect(available).to.equal(0);
       expect(timeLocked).to.equal(0);
     });
@@ -785,7 +785,7 @@ describe("RewardsProgram", function () {
       await time.increase(7 * 24 * 60 * 60 + 1);
 
       await rewardsProgram.connect(teamLeader1).withdraw(programId, ethers.parseEther("1000"));
-      const [available] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      const [available] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
       expect(available).to.equal(0);
     });
   });
@@ -835,15 +835,15 @@ describe("RewardsProgram", function () {
       );
 
       // Client now has 0 balance
-      const [avail, locked] = await rewardsProgram.getBalance(programId, client1.address);
+      const [avail, locked] = await extensionAtProxy.getBalance(programId, client1.address);
       expect(avail).to.equal(0);
       expect(locked).to.equal(0);
 
       // Parents received tokens as available
-      const [tlAvail] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      const [tlAvail] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
       expect(tlAvail).to.equal(ethers.parseEther("200"));
 
-      const [paAvail] = await rewardsProgram.getBalance(programId, programAdmin1.address);
+      const [paAvail] = await extensionAtProxy.getBalance(programId, programAdmin1.address);
       // PA: 10000 - 500 (sent to client) + 200 (back from client) = 9700
       expect(paAvail).to.equal(ethers.parseEther("9700"));
     });
@@ -862,7 +862,7 @@ describe("RewardsProgram", function () {
       );
 
       // TL has 800 left in time-lock
-      const [, , timeLocked] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      const [, , timeLocked] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
       expect(timeLocked).to.equal(ethers.parseEther("800"));
 
       // Wait for lock to expire
@@ -870,7 +870,7 @@ describe("RewardsProgram", function () {
 
       // Now TL can withdraw remaining
       await rewardsProgram.connect(teamLeader1).withdraw(programId, ethers.parseEther("800"));
-      const [available, , tlRemaining] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      const [available, , tlRemaining] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
       expect(available).to.equal(0);
       expect(tlRemaining).to.equal(0);
     });
@@ -889,7 +889,7 @@ describe("RewardsProgram", function () {
       await time.increase(7 * 24 * 60 * 60 + 1);
 
       // getBalance still shows 100 as timeLocked (not yet resolved), but withdraw will resolve it
-      const [a1, , tl1] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      const [a1, , tl1] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
       expect(a1).to.equal(0); // nothing in available yet
       expect(tl1).to.equal(ethers.parseEther("300")); // both tranches still counted as time-locked
 
@@ -902,7 +902,7 @@ describe("RewardsProgram", function () {
       // Withdraw remaining 200 — triggers auto-resolve
       await rewardsProgram.connect(teamLeader1).withdraw(programId, ethers.parseEther("200"));
 
-      const [a2, , tl2] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      const [a2, , tl2] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
       expect(a2).to.equal(0);
       expect(tl2).to.equal(0);
     });
@@ -922,9 +922,9 @@ describe("RewardsProgram", function () {
       await rewardsProgram.connect(client1).transferToParent(programId, ZeroAddress, ethers.parseEther("500"), "");
 
       // Check balances
-      const [paAvail] = await rewardsProgram.getBalance(programId, programAdmin1.address);
-      const [tlAvail] = await rewardsProgram.getBalance(programId, teamLeader1.address);
-      const [clAvail] = await rewardsProgram.getBalance(programId, client1.address);
+      const [paAvail] = await extensionAtProxy.getBalance(programId, programAdmin1.address);
+      const [tlAvail] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
+      const [clAvail] = await extensionAtProxy.getBalance(programId, client1.address);
 
       // Total should equal original deposit
       expect(paAvail + tlAvail + clAvail).to.equal(totalDeposit);
@@ -1064,7 +1064,7 @@ describe("RewardsProgram", function () {
         programId, owner.address, ethers.parseEther("100"), ""
       );
 
-      const [clAvail] = await rewardsProgram.getBalance(programId, client1.address);
+      const [clAvail] = await extensionAtProxy.getBalance(programId, client1.address);
       expect(clAvail).to.equal(ethers.parseEther("300"));
     });
 
@@ -1110,17 +1110,17 @@ describe("RewardsProgram", function () {
 
       // Removal should be rejected — member has balance
       await expect(
-        rewardsProgram.connect(owner).removeMember(programId, pa2.address)
+        extensionAtProxy.connect(owner).removeMember(programId, pa2.address)
       ).to.be.revertedWithCustomError(rewardsProgram, "InsufficientBalance");
 
       // Member should still be active
-      const member = await rewardsProgram.getMember(programId, pa2.address);
+      const member = await extensionAtProxy.getMember(programId, pa2.address);
       expect(member.active).to.be.true;
 
       // Withdraw first, then removal succeeds
       await rewardsProgram.connect(pa2).withdraw(programId, ethers.parseEther("5000"));
-      await rewardsProgram.connect(owner).removeMember(programId, pa2.address);
-      const memberAfter = await rewardsProgram.getMember(programId, pa2.address);
+      await extensionAtProxy.connect(owner).removeMember(programId, pa2.address);
+      const memberAfter = await extensionAtProxy.getMember(programId, pa2.address);
       expect(memberAfter.active).to.be.false;
     });
 
@@ -1145,8 +1145,8 @@ describe("RewardsProgram", function () {
       expect(poolBalance).to.equal(0);
 
       // Both members should have 0 balance in the program
-      const [paAvail] = await rewardsProgram.getBalance(programId, programAdmin1.address);
-      const [tlAvail] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      const [paAvail] = await extensionAtProxy.getBalance(programId, programAdmin1.address);
+      const [tlAvail] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
       expect(paAvail).to.equal(0);
       expect(tlAvail).to.equal(0);
     });
@@ -1269,13 +1269,13 @@ describe("RewardsProgram", function () {
         .withArgs(programId, teamLeader1.address, oldID, newID);
 
       // New ID resolves to same wallet
-      const member = await rewardsProgram.getMemberByID(newID, programId);
+      const member = await extensionAtProxy.getMemberByID(newID, programId);
       expect(member.wallet).to.equal(teamLeader1.address);
       expect(member.memberID).to.equal(newID);
 
       // Old ID no longer resolves
       await expect(
-        rewardsProgram.getMemberByID(oldID, programId)
+        extensionAtProxy.getMemberByID(oldID, programId)
       ).to.be.revertedWithCustomError(rewardsProgram, "MemberNotFound");
     });
 
@@ -1317,32 +1317,32 @@ describe("RewardsProgram", function () {
 
     it("should allow admin to remove any member", async function () {
       await expect(
-        rewardsProgram.connect(owner).removeMember(programId, client1.address)
-      ).to.emit(rewardsProgram, "MemberRemoved").withArgs(programId, client1.address);
+        extensionAtProxy.connect(owner).removeMember(programId, client1.address)
+      ).to.emit(extensionAtProxy, "MemberRemoved").withArgs(programId, client1.address);
 
-      const member = await rewardsProgram.getMember(programId, client1.address);
+      const member = await extensionAtProxy.getMember(programId, client1.address);
       expect(member.active).to.equal(false);
     });
 
     it("should allow admin to remove a ProgramAdmin", async function () {
       await expect(
-        rewardsProgram.connect(owner).removeMember(programId, programAdmin1.address)
-      ).to.emit(rewardsProgram, "MemberRemoved").withArgs(programId, programAdmin1.address);
+        extensionAtProxy.connect(owner).removeMember(programId, programAdmin1.address)
+      ).to.emit(extensionAtProxy, "MemberRemoved").withArgs(programId, programAdmin1.address);
 
-      const member = await rewardsProgram.getMember(programId, programAdmin1.address);
+      const member = await extensionAtProxy.getMember(programId, programAdmin1.address);
       expect(member.active).to.equal(false);
     });
 
     it("should allow ProgramAdmin to remove a TeamLeader", async function () {
       await expect(
-        rewardsProgram.connect(programAdmin1).removeMember(programId, teamLeader1.address)
-      ).to.emit(rewardsProgram, "MemberRemoved").withArgs(programId, teamLeader1.address);
+        extensionAtProxy.connect(programAdmin1).removeMember(programId, teamLeader1.address)
+      ).to.emit(extensionAtProxy, "MemberRemoved").withArgs(programId, teamLeader1.address);
     });
 
     it("should allow ProgramAdmin to remove a Client", async function () {
       await expect(
-        rewardsProgram.connect(programAdmin1).removeMember(programId, client1.address)
-      ).to.emit(rewardsProgram, "MemberRemoved").withArgs(programId, client1.address);
+        extensionAtProxy.connect(programAdmin1).removeMember(programId, client1.address)
+      ).to.emit(extensionAtProxy, "MemberRemoved").withArgs(programId, client1.address);
     });
 
     it("should NOT allow ProgramAdmin to remove another ProgramAdmin", async function () {
@@ -1350,44 +1350,44 @@ describe("RewardsProgram", function () {
       await rewardsProgram.connect(owner).assignProgramAdmin(programId, otherAccount.address, toBytes12("PA002"), ethers.ZeroHash, MemberType.Free);
 
       await expect(
-        rewardsProgram.connect(programAdmin1).removeMember(programId, otherAccount.address)
+        extensionAtProxy.connect(programAdmin1).removeMember(programId, otherAccount.address)
       ).to.be.revertedWithCustomError(rewardsProgram, "UnauthorizedRole");
     });
 
     it("should NOT allow TeamLeader to remove members", async function () {
       await expect(
-        rewardsProgram.connect(teamLeader1).removeMember(programId, client1.address)
+        extensionAtProxy.connect(teamLeader1).removeMember(programId, client1.address)
       ).to.be.revertedWithCustomError(rewardsProgram, "UnauthorizedRole");
     });
 
     it("should NOT allow Client to remove members", async function () {
       await expect(
-        rewardsProgram.connect(client1).removeMember(programId, teamLeader1.address)
+        extensionAtProxy.connect(client1).removeMember(programId, teamLeader1.address)
       ).to.be.revertedWithCustomError(rewardsProgram, "UnauthorizedRole");
     });
 
     it("should reject removing non-existent member", async function () {
       await expect(
-        rewardsProgram.connect(owner).removeMember(programId, otherAccount.address)
+        extensionAtProxy.connect(owner).removeMember(programId, otherAccount.address)
       ).to.be.revertedWithCustomError(rewardsProgram, "MemberNotFound");
     });
 
     it("should clear memberID lookup on removal", async function () {
-      await rewardsProgram.connect(owner).removeMember(programId, client1.address);
+      await extensionAtProxy.connect(owner).removeMember(programId, client1.address);
 
       // Old memberID no longer resolves
       await expect(
-        rewardsProgram.getMemberByID(toBytes12("CL001"), programId)
+        extensionAtProxy.getMemberByID(toBytes12("CL001"), programId)
       ).to.be.revertedWithCustomError(rewardsProgram, "MemberNotFound");
     });
 
     it("should allow re-adding a member after removal with new memberID", async function () {
-      await rewardsProgram.connect(owner).removeMember(programId, client1.address);
+      await extensionAtProxy.connect(owner).removeMember(programId, client1.address);
 
       // Re-add with a new memberID
       await rewardsProgram.connect(teamLeader1).addMember(programId, client1.address, toBytes12("CL002"), MemberRole.Client, ethers.ZeroHash, MemberType.Free);
 
-      const member = await rewardsProgram.getMember(programId, client1.address);
+      const member = await extensionAtProxy.getMember(programId, client1.address);
       expect(member.active).to.equal(true);
       expect(member.memberID).to.equal(toBytes12("CL002"));
     });
@@ -1415,7 +1415,7 @@ describe("RewardsProgram", function () {
       );
 
       // Member should exist (via virtual address) and be active
-      const member = await rewardsProgram.getMemberByID(toBytes12("CL001"), programId);
+      const member = await extensionAtProxy.getMemberByID(toBytes12("CL001"), programId);
       expect(member.active).to.be.true;
       expect(member.wallet).to.equal(ethers.ZeroAddress);
     });
@@ -1427,10 +1427,10 @@ describe("RewardsProgram", function () {
       );
 
       // Claim using commit-reveal flow
-      await commitAndClaim(rewardsProgram, client1, programId, toBytes12("CL001"), editCode);
+      await commitAndClaim(extensionAtProxy, client1, programId, toBytes12("CL001"), editCode);
 
       // Verify wallet is now linked
-      const member = await rewardsProgram.getMemberByID(toBytes12("CL001"), programId);
+      const member = await extensionAtProxy.getMemberByID(toBytes12("CL001"), programId);
       expect(member.wallet).to.equal(client1.address);
     });
 
@@ -1444,11 +1444,11 @@ describe("RewardsProgram", function () {
       const commitHash = ethers.keccak256(
         ethers.solidityPacked(["bytes12", "bytes32", "address"], [toBytes12("CL001"), wrongCode, client1.address])
       );
-      await rewardsProgram.connect(client1).commitClaim(programId, commitHash);
+      await extensionAtProxy.connect(client1).commitClaim(programId, commitHash);
       await time.increase(6);
       await expect(
-        rewardsProgram.connect(client1).claimMember(programId, toBytes12("CL001"), wrongCode)
-      ).to.be.revertedWithCustomError(rewardsProgram, "InvalidEditCode");
+        extensionAtProxy.connect(client1).claimMember(programId, toBytes12("CL001"), wrongCode)
+      ).to.be.revertedWithCustomError(extensionAtProxy, "InvalidEditCode");
     });
 
     it("should reject claim when wallet is already linked", async function () {
@@ -1460,11 +1460,11 @@ describe("RewardsProgram", function () {
       const commitHash = ethers.keccak256(
         ethers.solidityPacked(["bytes12", "bytes32", "address"], [toBytes12("CL001"), editCode, client2.address])
       );
-      await rewardsProgram.connect(client2).commitClaim(programId, commitHash);
+      await extensionAtProxy.connect(client2).commitClaim(programId, commitHash);
       await time.increase(6);
       await expect(
-        rewardsProgram.connect(client2).claimMember(programId, toBytes12("CL001"), editCode)
-      ).to.be.revertedWithCustomError(rewardsProgram, "InvalidEditCode");
+        extensionAtProxy.connect(client2).claimMember(programId, toBytes12("CL001"), editCode)
+      ).to.be.revertedWithCustomError(extensionAtProxy, "InvalidEditCode");
     });
 
     it("should reject claim when no edit code hash is set", async function () {
@@ -1476,21 +1476,21 @@ describe("RewardsProgram", function () {
       const commitHash = ethers.keccak256(
         ethers.solidityPacked(["bytes12", "bytes32", "address"], [toBytes12("CL001"), editCode, client1.address])
       );
-      await rewardsProgram.connect(client1).commitClaim(programId, commitHash);
+      await extensionAtProxy.connect(client1).commitClaim(programId, commitHash);
       await time.increase(6);
       await expect(
-        rewardsProgram.connect(client1).claimMember(programId, toBytes12("CL001"), editCode)
-      ).to.be.revertedWithCustomError(rewardsProgram, "InvalidEditCode");
+        extensionAtProxy.connect(client1).claimMember(programId, toBytes12("CL001"), editCode)
+      ).to.be.revertedWithCustomError(extensionAtProxy, "InvalidEditCode");
     });
 
     it("should reject claim for non-existent member", async function () {
       const commitHash = ethers.keccak256(
         ethers.solidityPacked(["bytes12", "bytes32", "address"], [toBytes12("FAKE01"), editCode, client1.address])
       );
-      await rewardsProgram.connect(client1).commitClaim(programId, commitHash);
+      await extensionAtProxy.connect(client1).commitClaim(programId, commitHash);
       await time.increase(6);
       await expect(
-        rewardsProgram.connect(client1).claimMember(programId, toBytes12("FAKE01"), editCode)
+        extensionAtProxy.connect(client1).claimMember(programId, toBytes12("FAKE01"), editCode)
       ).to.be.revertedWithCustomError(rewardsProgram, "MemberNotFound");
     });
 
@@ -1500,17 +1500,17 @@ describe("RewardsProgram", function () {
       );
 
       // First claim succeeds
-      await commitAndClaim(rewardsProgram, client1, programId, toBytes12("CL001"), editCode);
+      await commitAndClaim(extensionAtProxy, client1, programId, toBytes12("CL001"), editCode);
 
       // Second claim fails — wallet is already linked
       const commitHash = ethers.keccak256(
         ethers.solidityPacked(["bytes12", "bytes32", "address"], [toBytes12("CL001"), editCode, client2.address])
       );
-      await rewardsProgram.connect(client2).commitClaim(programId, commitHash);
+      await extensionAtProxy.connect(client2).commitClaim(programId, commitHash);
       await time.increase(6);
       await expect(
-        rewardsProgram.connect(client2).claimMember(programId, toBytes12("CL001"), editCode)
-      ).to.be.revertedWithCustomError(rewardsProgram, "InvalidEditCode");
+        extensionAtProxy.connect(client2).claimMember(programId, toBytes12("CL001"), editCode)
+      ).to.be.revertedWithCustomError(extensionAtProxy, "InvalidEditCode");
     });
 
     it("should allow re-claim after parent removes wallet", async function () {
@@ -1519,15 +1519,15 @@ describe("RewardsProgram", function () {
       );
 
       // First user claims
-      await commitAndClaim(rewardsProgram, client1, programId, toBytes12("CL001"), editCode);
-      expect((await rewardsProgram.getMemberByID(toBytes12("CL001"), programId)).wallet).to.equal(client1.address);
+      await commitAndClaim(extensionAtProxy, client1, programId, toBytes12("CL001"), editCode);
+      expect((await extensionAtProxy.getMemberByID(toBytes12("CL001"), programId)).wallet).to.equal(client1.address);
 
       // Parent removes wallet
-      await rewardsProgram.connect(programAdmin1).setMemberWallet(programId, toBytes12("CL001"), ethers.ZeroAddress);
+      await extensionAtProxy.connect(programAdmin1).setMemberWallet(programId, toBytes12("CL001"), ethers.ZeroAddress);
 
       // Same edit code works again — new user claims
-      await commitAndClaim(rewardsProgram, client2, programId, toBytes12("CL001"), editCode);
-      expect((await rewardsProgram.getMemberByID(toBytes12("CL001"), programId)).wallet).to.equal(client2.address);
+      await commitAndClaim(extensionAtProxy, client2, programId, toBytes12("CL001"), editCode);
+      expect((await extensionAtProxy.getMemberByID(toBytes12("CL001"), programId)).wallet).to.equal(client2.address);
     });
 
     it("should allow parent to set edit code hash via setEditCodeHash", async function () {
@@ -1538,13 +1538,13 @@ describe("RewardsProgram", function () {
 
       // Parent sets edit code hash
       await expect(
-        rewardsProgram.connect(programAdmin1).setEditCodeHash(programId, toBytes12("CL001"), editCodeHash)
+        extensionAtProxy.connect(programAdmin1).setEditCodeHash(programId, toBytes12("CL001"), editCodeHash)
       )
-        .to.emit(rewardsProgram, "EditCodeHashSet");
+        .to.emit(extensionAtProxy, "EditCodeHashSet");
 
       // Now claim should work
-      await commitAndClaim(rewardsProgram, client1, programId, toBytes12("CL001"), editCode);
-      const member = await rewardsProgram.getMemberByID(toBytes12("CL001"), programId);
+      await commitAndClaim(extensionAtProxy, client1, programId, toBytes12("CL001"), editCode);
+      const member = await extensionAtProxy.getMemberByID(toBytes12("CL001"), programId);
       expect(member.wallet).to.equal(client1.address);
     });
 
@@ -1554,11 +1554,11 @@ describe("RewardsProgram", function () {
       );
 
       // Admin (owner) sets edit code hash
-      await rewardsProgram.connect(owner).setEditCodeHash(programId, toBytes12("CL001"), editCodeHash);
+      await extensionAtProxy.connect(owner).setEditCodeHash(programId, toBytes12("CL001"), editCodeHash);
 
       // Claim works
-      await commitAndClaim(rewardsProgram, client1, programId, toBytes12("CL001"), editCode);
-      const member = await rewardsProgram.getMemberByID(toBytes12("CL001"), programId);
+      await commitAndClaim(extensionAtProxy, client1, programId, toBytes12("CL001"), editCode);
+      const member = await extensionAtProxy.getMemberByID(toBytes12("CL001"), programId);
       expect(member.wallet).to.equal(client1.address);
     });
 
@@ -1569,7 +1569,7 @@ describe("RewardsProgram", function () {
 
       // client2 is not parent or admin
       await expect(
-        rewardsProgram.connect(client2).setEditCodeHash(programId, toBytes12("CL001"), editCodeHash)
+        extensionAtProxy.connect(client2).setEditCodeHash(programId, toBytes12("CL001"), editCodeHash)
       ).to.be.revertedWithCustomError(rewardsProgram, "UnauthorizedRole");
     });
 
@@ -1579,17 +1579,17 @@ describe("RewardsProgram", function () {
       );
 
       // First user claims
-      await commitAndClaim(rewardsProgram, client1, programId, toBytes12("CL001"), editCode);
+      await commitAndClaim(extensionAtProxy, client1, programId, toBytes12("CL001"), editCode);
 
       // Parent removes wallet and sets a new edit code
-      await rewardsProgram.connect(programAdmin1).setMemberWallet(programId, toBytes12("CL001"), ethers.ZeroAddress);
+      await extensionAtProxy.connect(programAdmin1).setMemberWallet(programId, toBytes12("CL001"), ethers.ZeroAddress);
       const newEditCode = ethers.encodeBytes32String("newsecret");
       const newEditCodeHash = ethers.keccak256(ethers.solidityPacked(["bytes32"], [newEditCode]));
-      await rewardsProgram.connect(programAdmin1).setEditCodeHash(programId, toBytes12("CL001"), newEditCodeHash);
+      await extensionAtProxy.connect(programAdmin1).setEditCodeHash(programId, toBytes12("CL001"), newEditCodeHash);
 
       // New user claims with new code
-      await commitAndClaim(rewardsProgram, client2, programId, toBytes12("CL001"), newEditCode);
-      const member = await rewardsProgram.getMemberByID(toBytes12("CL001"), programId);
+      await commitAndClaim(extensionAtProxy, client2, programId, toBytes12("CL001"), newEditCode);
+      const member = await extensionAtProxy.getMemberByID(toBytes12("CL001"), programId);
       expect(member.wallet).to.equal(client2.address);
     });
 
@@ -1600,8 +1600,8 @@ describe("RewardsProgram", function () {
       );
 
       // Claim it
-      await commitAndClaim(rewardsProgram, otherAccount, programId, toBytes12("PA002"), editCode);
-      const member = await rewardsProgram.getMemberByID(toBytes12("PA002"), programId);
+      await commitAndClaim(extensionAtProxy, otherAccount, programId, toBytes12("PA002"), editCode);
+      const member = await extensionAtProxy.getMemberByID(toBytes12("PA002"), programId);
       expect(member.wallet).to.equal(otherAccount.address);
       expect(member.role).to.equal(MemberRole.ProgramAdmin);
     });
@@ -1626,7 +1626,7 @@ describe("RewardsProgram", function () {
       await rewardsProgram.connect(programAdmin1).addMember(
         programId, teamLeader1.address, toBytes12("TL001"), MemberRole.TeamLeader, ethers.ZeroHash, MemberType.Vip
       );
-      const member = await rewardsProgram.getMember(programId, teamLeader1.address);
+      const member = await extensionAtProxy.getMember(programId, teamLeader1.address);
       expect(member.memberType).to.equal(MemberType.Vip);
     });
 
@@ -1637,7 +1637,7 @@ describe("RewardsProgram", function () {
       await extensionAtProxy.connect(programAdmin1).setMemberType(
         programId, toBytes12("TL001"), MemberType.Elite
       );
-      const member = await rewardsProgram.getMember(programId, teamLeader1.address);
+      const member = await extensionAtProxy.getMember(programId, teamLeader1.address);
       expect(member.memberType).to.equal(MemberType.Elite);
     });
 
@@ -1648,7 +1648,7 @@ describe("RewardsProgram", function () {
       await extensionAtProxy.connect(owner).setMemberType(
         programId, toBytes12("TL001"), MemberType.PSPartner
       );
-      const member = await rewardsProgram.getMember(programId, teamLeader1.address);
+      const member = await extensionAtProxy.getMember(programId, teamLeader1.address);
       expect(member.memberType).to.equal(MemberType.PSPartner);
     });
 
@@ -2017,7 +2017,7 @@ describe("RewardsProgram", function () {
       // Client has 2000 balance, 50% of 2000 = 1000 max
       const amount = ethers.parseEther("1000");
       await rewardsProgram.connect(client1).transferToParent(programId, ZeroAddress, amount, "");
-      const [clientAvail] = await rewardsProgram.getBalance(programId, client1.address);
+      const [clientAvail] = await extensionAtProxy.getBalance(programId, client1.address);
       expect(clientAvail).to.equal(ethers.parseEther("1000"));
     });
 
@@ -2047,7 +2047,7 @@ describe("RewardsProgram", function () {
       // Default is 0 — no limit
       const amount = ethers.parseEther("2000");
       await rewardsProgram.connect(client1).transferToParent(programId, ZeroAddress, amount, "");
-      const [clientAvail] = await rewardsProgram.getBalance(programId, client1.address);
+      const [clientAvail] = await extensionAtProxy.getBalance(programId, client1.address);
       expect(clientAvail).to.equal(0);
     });
 
@@ -2055,7 +2055,7 @@ describe("RewardsProgram", function () {
       await extensionAtProxy.connect(owner).setTransferLimit(programId, 100);
       const amount = ethers.parseEther("2000");
       await rewardsProgram.connect(client1).transferToParent(programId, ZeroAddress, amount, "");
-      const [clientAvail] = await rewardsProgram.getBalance(programId, client1.address);
+      const [clientAvail] = await extensionAtProxy.getBalance(programId, client1.address);
       expect(clientAvail).to.equal(0);
     });
 
@@ -2065,7 +2065,7 @@ describe("RewardsProgram", function () {
       await rewardsProgram.connect(teamLeader1).transferToParent(
         programId, ZeroAddress, ethers.parseEther("3000"), ""
       );
-      const [tlAvail] = await rewardsProgram.getBalance(programId, teamLeader1.address);
+      const [tlAvail] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
       expect(tlAvail).to.equal(0);
     });
 
@@ -2075,7 +2075,7 @@ describe("RewardsProgram", function () {
       await rewardsProgram.connect(programAdmin1).transferToParent(
         programId, ZeroAddress, ethers.parseEther("5000"), ""
       );
-      const [paAvail] = await rewardsProgram.getBalance(programId, programAdmin1.address);
+      const [paAvail] = await extensionAtProxy.getBalance(programId, programAdmin1.address);
       expect(paAvail).to.equal(0);
     });
 
@@ -2083,7 +2083,7 @@ describe("RewardsProgram", function () {
       // Create a walletless client under TL
       await rewardsProgram.connect(teamLeader1).addMember(programId, ZeroAddress, toBytes12("WL001"), MemberRole.Client, ethers.ZeroHash, MemberType.Free);
       // Get the walletless member's storage key
-      const member = await rewardsProgram.getMemberByID(toBytes12("WL001"), programId);
+      const member = await extensionAtProxy.getMemberByID(toBytes12("WL001"), programId);
       // TL acts to transfer tokens to the walletless member
       await storageToken.connect(teamLeader1).approve(await rewardsProgram.getAddress(), ethers.parseEther("1000"));
       await rewardsProgram.connect(teamLeader1).actForMember(
@@ -2206,7 +2206,7 @@ describe("RewardsProgram", function () {
 
       // Try to remove — should fail
       await expect(
-        rewardsProgram.connect(programAdmin1).removeMember(programId, client1.address)
+        extensionAtProxy.connect(programAdmin1).removeMember(programId, client1.address)
       ).to.be.revertedWithCustomError(rewardsProgram, "InsufficientBalance");
     });
 
@@ -2221,7 +2221,7 @@ describe("RewardsProgram", function () {
 
       // Try to remove — should fail (permanently locked)
       await expect(
-        rewardsProgram.connect(programAdmin1).removeMember(programId, client1.address)
+        extensionAtProxy.connect(programAdmin1).removeMember(programId, client1.address)
       ).to.be.revertedWithCustomError(rewardsProgram, "InsufficientBalance");
     });
 
@@ -2236,15 +2236,15 @@ describe("RewardsProgram", function () {
 
       // Try to remove — should fail (time-locked)
       await expect(
-        rewardsProgram.connect(programAdmin1).removeMember(programId, client1.address)
+        extensionAtProxy.connect(programAdmin1).removeMember(programId, client1.address)
       ).to.be.revertedWithCustomError(rewardsProgram, "InsufficientBalance");
     });
 
     it("S-06: removeMember succeeds when member has zero balance", async function () {
       // Remove client with no balance — should succeed
       await expect(
-        rewardsProgram.connect(programAdmin1).removeMember(programId, client1.address)
-      ).to.emit(rewardsProgram, "MemberRemoved");
+        extensionAtProxy.connect(programAdmin1).removeMember(programId, client1.address)
+      ).to.emit(extensionAtProxy, "MemberRemoved");
     });
 
     // S-01: Extension functions revert when paused
@@ -2379,8 +2379,8 @@ describe("RewardsProgram", function () {
 
       // No commit — should revert
       await expect(
-        rewardsProgram.connect(client1).claimMember(programId, toBytes12("CL001"), editCode)
-      ).to.be.revertedWithCustomError(rewardsProgram, "CommitRequired");
+        extensionAtProxy.connect(client1).claimMember(programId, toBytes12("CL001"), editCode)
+      ).to.be.revertedWithCustomError(extensionAtProxy, "CommitRequired");
     });
 
     it("C2: claimMember reverts if revealed too early (same block)", async function () {
@@ -2393,12 +2393,12 @@ describe("RewardsProgram", function () {
       const commitHash = ethers.keccak256(
         ethers.solidityPacked(["bytes12", "bytes32", "address"], [toBytes12("CL001"), editCode, client1.address])
       );
-      await rewardsProgram.connect(client1).commitClaim(programId, commitHash);
+      await extensionAtProxy.connect(client1).commitClaim(programId, commitHash);
 
       // Don't advance time — should revert
       await expect(
-        rewardsProgram.connect(client1).claimMember(programId, toBytes12("CL001"), editCode)
-      ).to.be.revertedWithCustomError(rewardsProgram, "CommitTooEarly");
+        extensionAtProxy.connect(client1).claimMember(programId, toBytes12("CL001"), editCode)
+      ).to.be.revertedWithCustomError(extensionAtProxy, "CommitTooEarly");
     });
 
     it("C2: claimMember reverts if commit expired", async function () {
@@ -2411,13 +2411,13 @@ describe("RewardsProgram", function () {
       const commitHash = ethers.keccak256(
         ethers.solidityPacked(["bytes12", "bytes32", "address"], [toBytes12("CL001"), editCode, client1.address])
       );
-      await rewardsProgram.connect(client1).commitClaim(programId, commitHash);
+      await extensionAtProxy.connect(client1).commitClaim(programId, commitHash);
 
       // Advance past MAX_COMMIT_WINDOW (1 hour)
       await time.increase(3601);
       await expect(
-        rewardsProgram.connect(client1).claimMember(programId, toBytes12("CL001"), editCode)
-      ).to.be.revertedWithCustomError(rewardsProgram, "CommitExpired");
+        extensionAtProxy.connect(client1).claimMember(programId, toBytes12("CL001"), editCode)
+      ).to.be.revertedWithCustomError(extensionAtProxy, "CommitExpired");
     });
 
     it("C2: front-runner cannot use stolen editCode (different msg.sender)", async function () {
@@ -2431,13 +2431,13 @@ describe("RewardsProgram", function () {
       const commitHash = ethers.keccak256(
         ethers.solidityPacked(["bytes12", "bytes32", "address"], [toBytes12("CL001"), editCode, client1.address])
       );
-      await rewardsProgram.connect(client1).commitClaim(programId, commitHash);
+      await extensionAtProxy.connect(client1).commitClaim(programId, commitHash);
       await time.increase(6);
 
       // Front-runner (client2) tries to use the editCode — no matching commit
       await expect(
-        rewardsProgram.connect(client2).claimMember(programId, toBytes12("CL001"), editCode)
-      ).to.be.revertedWithCustomError(rewardsProgram, "CommitRequired");
+        extensionAtProxy.connect(client2).claimMember(programId, toBytes12("CL001"), editCode)
+      ).to.be.revertedWithCustomError(extensionAtProxy, "CommitRequired");
     });
 
     // --- H1: Wallet collision check ---
@@ -2451,12 +2451,12 @@ describe("RewardsProgram", function () {
       );
 
       // Set wallet for CL001
-      await rewardsProgram.connect(programAdmin1).setMemberWallet(programId, toBytes12("CL001"), client1.address);
+      await extensionAtProxy.connect(programAdmin1).setMemberWallet(programId, toBytes12("CL001"), client1.address);
 
       // Try to set the same wallet for CL002 — should fail
       await expect(
-        rewardsProgram.connect(programAdmin1).setMemberWallet(programId, toBytes12("CL002"), client1.address)
-      ).to.be.revertedWithCustomError(rewardsProgram, "WalletAlreadyMapped");
+        extensionAtProxy.connect(programAdmin1).setMemberWallet(programId, toBytes12("CL002"), client1.address)
+      ).to.be.revertedWithCustomError(extensionAtProxy, "WalletAlreadyMapped");
     });
 
     // --- H2: removeMember hierarchy check ---
@@ -2474,7 +2474,7 @@ describe("RewardsProgram", function () {
 
       // PA2 tries to remove PA1's client — should fail (not in their parent chain)
       await expect(
-        rewardsProgram.connect(teamLeader1).removeMember(programId, client1.address)
+        extensionAtProxy.connect(teamLeader1).removeMember(programId, client1.address)
       ).to.be.revertedWithCustomError(rewardsProgram, "UnauthorizedRole");
     });
 
@@ -2485,8 +2485,8 @@ describe("RewardsProgram", function () {
 
       // PA1 can remove their own client
       await expect(
-        rewardsProgram.connect(programAdmin1).removeMember(programId, client1.address)
-      ).to.emit(rewardsProgram, "MemberRemoved");
+        extensionAtProxy.connect(programAdmin1).removeMember(programId, client1.address)
+      ).to.emit(extensionAtProxy, "MemberRemoved");
     });
 
     // --- H4: uint128 overflow ---
@@ -2548,17 +2548,17 @@ describe("RewardsProgram", function () {
       );
 
       // client1 claims CL001
-      await commitAndClaim(rewardsProgram, client1, programId, toBytes12("CL001"), editCode);
+      await commitAndClaim(extensionAtProxy, client1, programId, toBytes12("CL001"), editCode);
 
       // client1 tries to also claim CL002 — should fail (wallet already mapped)
       const commitHash = ethers.keccak256(
         ethers.solidityPacked(["bytes12", "bytes32", "address"], [toBytes12("CL002"), editCode2, client1.address])
       );
-      await rewardsProgram.connect(client1).commitClaim(programId, commitHash);
+      await extensionAtProxy.connect(client1).commitClaim(programId, commitHash);
       await time.increase(6);
       await expect(
-        rewardsProgram.connect(client1).claimMember(programId, toBytes12("CL002"), editCode2)
-      ).to.be.revertedWithCustomError(rewardsProgram, "WalletAlreadyMapped");
+        extensionAtProxy.connect(client1).claimMember(programId, toBytes12("CL002"), editCode2)
+      ).to.be.revertedWithCustomError(extensionAtProxy, "WalletAlreadyMapped");
     });
 
     // --- L2: String length validation ---

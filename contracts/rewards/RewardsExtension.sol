@@ -79,6 +79,175 @@ contract RewardsExtension is RewardsStorageBase {
         emit IRewardsProgram.MemberIDUpdated(programId, key, oldMemberID, newMemberID);
     }
 
+    // === MEMBER WALLET & REMOVAL (moved from RewardsProgram) ===
+
+    function setMemberWallet(uint32 programId, bytes12 memberID, address newWallet)
+        external
+        whenNotPaused
+        nonReentrant
+    {
+        address storageKey = memberIDLookup[memberID][programId];
+        if (storageKey == address(0)) revert IRewardsProgram.MemberNotFound();
+        IRewardsProgram.Member storage member = _members[programId][storageKey];
+        if (!member.active) revert IRewardsProgram.MemberNotActive();
+
+        bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
+        if (!isAdmin) {
+            address parentKey = member.parent;
+            if (parentKey == address(0)) revert IRewardsProgram.UnauthorizedRole();
+            if (_findActingWallet(programId, parentKey) != msg.sender) revert IRewardsProgram.UnauthorizedRole();
+        }
+
+        address oldWallet = member.wallet;
+
+        // H1: Prevent wallet collision
+        if (newWallet != address(0) && newWallet != storageKey) {
+            address existing = _walletToStorageKey[programId][newWallet];
+            if (existing != address(0) && existing != storageKey) revert IRewardsProgram.WalletAlreadyMapped();
+        }
+
+        member.wallet = newWallet;
+
+        // M3: Update PA counter when wallet changes
+        if (member.role == IRewardsProgram.MemberRole.ProgramAdmin) {
+            if (oldWallet != address(0)) _programAdminCount[oldWallet]--;
+            if (newWallet != address(0)) _programAdminCount[newWallet]++;
+        }
+
+        if (oldWallet != address(0) && oldWallet != storageKey) {
+            delete _walletToStorageKey[programId][oldWallet];
+        }
+        if (newWallet != address(0) && newWallet != storageKey) {
+            _walletToStorageKey[programId][newWallet] = storageKey;
+        }
+
+        emit IRewardsProgram.MemberWalletChanged(programId, storageKey, oldWallet, newWallet);
+    }
+
+    function removeMember(uint32 programId, address memberKey)
+        external
+        whenNotPaused
+        nonReentrant
+    {
+        IRewardsProgram.Member storage member = _members[programId][memberKey];
+        if (!member.active) revert IRewardsProgram.MemberNotFound();
+
+        if (_balances[programId][memberKey].available > 0
+            || _balances[programId][memberKey].permanentlyLocked > 0
+            || _timeLocks[programId][memberKey].length > 0)
+            revert IRewardsProgram.InsufficientBalance(0, 0);
+
+        bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
+        if (!isAdmin) {
+            address callerKey = _resolveStorageKey(programId, msg.sender);
+            IRewardsProgram.Member storage caller = _members[programId][callerKey];
+            if (!caller.active || caller.role != IRewardsProgram.MemberRole.ProgramAdmin)
+                revert IRewardsProgram.UnauthorizedRole();
+            if (member.role == IRewardsProgram.MemberRole.ProgramAdmin)
+                revert IRewardsProgram.UnauthorizedRole();
+            // H2: PA can only remove members in their own hierarchy
+            if (!_isInParentChain(programId, memberKey, callerKey))
+                revert IRewardsProgram.UnauthorizedRole();
+        }
+
+        // M3: Decrement PA counter
+        if (member.role == IRewardsProgram.MemberRole.ProgramAdmin && member.wallet != address(0)) {
+            _programAdminCount[member.wallet]--;
+        }
+
+        if (member.wallet != address(0) && member.wallet != memberKey) {
+            delete _walletToStorageKey[programId][member.wallet];
+        }
+
+        // M5: Clean up _children array (swap-and-pop)
+        address parentKey = member.parent;
+        if (parentKey != address(0)) {
+            address[] storage siblings = _children[programId][parentKey];
+            for (uint256 i = 0; i < siblings.length; i++) {
+                if (siblings[i] == memberKey) {
+                    siblings[i] = siblings[siblings.length - 1];
+                    siblings.pop();
+                    break;
+                }
+            }
+        }
+
+        delete memberIDLookup[member.memberID][programId];
+        member.active = false;
+        emit IRewardsProgram.MemberRemoved(programId, memberKey);
+    }
+
+    // === EDIT CODE / CLAIM (commit-reveal, moved from RewardsProgram) ===
+
+    function commitClaim(uint32 programId, bytes32 commitHash)
+        external
+        whenNotPaused
+        nonReentrant
+    {
+        _claimCommits[programId][msg.sender] = commitHash;
+        _claimCommitTimes[programId][msg.sender] = block.timestamp;
+        emit IRewardsProgram.ClaimCommitted(programId, msg.sender);
+    }
+
+    function claimMember(uint32 programId, bytes12 memberID, bytes32 editCode)
+        external
+        whenNotPaused
+        nonReentrant
+    {
+        bytes32 expectedCommit = keccak256(abi.encodePacked(memberID, editCode, msg.sender));
+        if (_claimCommits[programId][msg.sender] != expectedCommit) revert IRewardsProgram.CommitRequired();
+        uint256 commitTime = _claimCommitTimes[programId][msg.sender];
+        if (block.timestamp < commitTime + MIN_COMMIT_DELAY) revert IRewardsProgram.CommitTooEarly();
+        if (block.timestamp > commitTime + MAX_COMMIT_WINDOW) revert IRewardsProgram.CommitExpired();
+
+        delete _claimCommits[programId][msg.sender];
+        delete _claimCommitTimes[programId][msg.sender];
+
+        address storageKey = memberIDLookup[memberID][programId];
+        if (storageKey == address(0)) revert IRewardsProgram.MemberNotFound();
+        IRewardsProgram.Member storage member = _members[programId][storageKey];
+        if (!member.active) revert IRewardsProgram.MemberNotActive();
+
+        if (member.wallet != address(0)) revert IRewardsProgram.InvalidEditCode();
+
+        bytes32 storedHash = _editCodeHashes[programId][storageKey];
+        if (storedHash == bytes32(0)) revert IRewardsProgram.InvalidEditCode();
+        if (keccak256(abi.encodePacked(editCode)) != storedHash) revert IRewardsProgram.InvalidEditCode();
+
+        // M6: Prevent overwriting existing wallet mapping
+        if (_walletToStorageKey[programId][msg.sender] != address(0)) revert IRewardsProgram.WalletAlreadyMapped();
+
+        member.wallet = msg.sender;
+        _walletToStorageKey[programId][msg.sender] = storageKey;
+
+        // M3: Update PA counter if claiming a PA member
+        if (member.role == IRewardsProgram.MemberRole.ProgramAdmin) {
+            _programAdminCount[msg.sender]++;
+        }
+
+        emit IRewardsProgram.MemberClaimed(programId, storageKey, msg.sender);
+    }
+
+    function setEditCodeHash(uint32 programId, bytes12 memberID, bytes32 newHash)
+        external
+        whenNotPaused
+        nonReentrant
+    {
+        address storageKey = memberIDLookup[memberID][programId];
+        if (storageKey == address(0)) revert IRewardsProgram.MemberNotFound();
+        if (!_members[programId][storageKey].active) revert IRewardsProgram.MemberNotActive();
+
+        bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
+        if (!isAdmin) {
+            address parentKey = _members[programId][storageKey].parent;
+            if (parentKey == address(0)) revert IRewardsProgram.UnauthorizedRole();
+            if (_findActingWallet(programId, parentKey) != msg.sender) revert IRewardsProgram.UnauthorizedRole();
+        }
+
+        _editCodeHashes[programId][storageKey] = newHash;
+        emit IRewardsProgram.EditCodeHashSet(programId, storageKey);
+    }
+
     // === MEMBER TYPE MANAGEMENT ===
 
     /// @notice Change a member's type (parent or admin only).
@@ -195,6 +364,37 @@ contract RewardsExtension is RewardsStorageBase {
     }
 
     // === VIEW FUNCTIONS ===
+
+    function getMember(uint32 programId, address memberKey)
+        external view returns (IRewardsProgram.Member memory)
+    {
+        IRewardsProgram.Member storage m = _members[programId][memberKey];
+        if (m.active) return m;
+        address resolved = _walletToStorageKey[programId][memberKey];
+        if (resolved != address(0)) return _members[programId][resolved];
+        return m;
+    }
+
+    function getMemberByID(bytes12 memberID, uint32 programId)
+        external view returns (IRewardsProgram.Member memory)
+    {
+        address key = memberIDLookup[memberID][programId];
+        if (key == address(0)) revert IRewardsProgram.MemberNotFound();
+        return _members[programId][key];
+    }
+
+    function getBalance(uint32 programId, address memberKey)
+        external view returns (uint256 available, uint256 permanentlyLocked, uint256 totalTimeLocked)
+    {
+        address key = _resolveStorageKey(programId, memberKey);
+        IRewardsProgram.Balance storage bal = _balances[programId][key];
+        available = bal.available;
+        permanentlyLocked = bal.permanentlyLocked;
+        IRewardsProgram.TimeLockTranche[] storage tranches = _timeLocks[programId][key];
+        for (uint256 i = 0; i < tranches.length; i++) {
+            totalTimeLocked += tranches[i].amount;
+        }
+    }
 
     /// @notice Returns all active reward type IDs and their names.
     function getRewardTypes() external view returns (uint8[] memory ids, bytes16[] memory names) {

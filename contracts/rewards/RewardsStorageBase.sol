@@ -19,6 +19,8 @@ abstract contract RewardsStorageBase is Initializable, GovernanceModule {
     uint8 constant MAX_HIERARCHY_DEPTH = 50;
     uint8 constant MAX_TIME_LOCK_TRANCHES = 50;
     uint32 constant MAX_LOCK_TIME_DAYS = 1095;
+    uint256 constant MIN_COMMIT_DELAY = 5;       // seconds — prevent same-block reveal
+    uint256 constant MAX_COMMIT_WINDOW = 1 hours; // commit expires after this
 
     // === STATE VARIABLES (layout order matters for UUPS + delegatecall) ===
 
