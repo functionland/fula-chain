@@ -55,7 +55,21 @@ abstract contract RewardsStorageBase is Initializable, GovernanceModule {
     /// virtual storage key. This mapping lets auth checks resolve wallet → storageKey.
     mapping(uint32 => mapping(address => address)) internal _walletToStorageKey;
 
-    uint256[36] private __gap;
+    // --- Security audit additions (from __gap) ---
+
+    /// @dev C1: Two-phase extension change. Initial set (extension == 0) is immediate;
+    ///      subsequent changes require propose → 48h delay → execute.
+    address public pendingExtension;
+    uint64 public pendingExtensionTime;          // packed with pendingExtension
+
+    /// @dev M3: Cached PA count per wallet — avoids unbounded loop over all programs.
+    mapping(address => uint16) internal _programAdminCount;
+
+    /// @dev C2: Commit-reveal for claimMember front-running protection.
+    mapping(uint32 => mapping(address => bytes32)) internal _claimCommits;
+    mapping(uint32 => mapping(address => uint256)) internal _claimCommitTimes;
+
+    uint256[32] private __gap;
 
     // === SHARED INTERNAL HELPERS ===
 
@@ -117,7 +131,7 @@ abstract contract RewardsStorageBase is Initializable, GovernanceModule {
         if (amount == 0) revert IRewardsProgram.InvalidAmount();
         _requireActiveProgram(programId);
         token.safeTransferFrom(payer, stakingPool, amount);
-        IPool(stakingPool).receiveTokens(payer, amount);
+        if (!IPool(stakingPool).receiveTokens(payer, amount)) revert IRewardsProgram.PoolTransferFailed();
         _balances[programId][beneficiary].available += amount;
         depositCount++;
         emit IRewardsProgram.TokensDeposited(

@@ -49,15 +49,66 @@ contract RewardsProgram is RewardsStorageBase {
     }
 
     /// @notice Set the extension contract address (admin only).
+    /// @dev Only allowed when extension is not yet set (initial deployment).
+    ///      For subsequent changes, use proposeExtension → executeExtensionChange.
     function setExtension(address ext)
         external
         whenNotPaused
         nonReentrant
         onlyRole(ProposalTypes.ADMIN_ROLE)
     {
+        if (ext == address(0)) revert InvalidAddress();
+        if (extension != address(0)) revert IRewardsProgram.ExtensionAlreadySet();
+        extension = ext;
+        emit IRewardsProgram.ExtensionUpdated(address(0), ext);
+    }
+
+    uint48 constant EXTENSION_CHANGE_DELAY = 48 hours;
+
+    /// @notice Propose a new extension address. Requires 48-hour delay before execution.
+    function proposeExtension(address ext)
+        external
+        whenNotPaused
+        nonReentrant
+        onlyRole(ProposalTypes.ADMIN_ROLE)
+    {
+        if (ext == address(0)) revert InvalidAddress();
+        if (extension == address(0)) revert IRewardsProgram.ExtensionNotSet();
+        pendingExtension = ext;
+        pendingExtensionTime = uint64(block.timestamp);
+        emit IRewardsProgram.ExtensionChangeProposed(ext, block.timestamp + EXTENSION_CHANGE_DELAY);
+    }
+
+    /// @notice Execute a pending extension change after the timelock delay.
+    function executeExtensionChange()
+        external
+        whenNotPaused
+        nonReentrant
+        onlyRole(ProposalTypes.ADMIN_ROLE)
+    {
+        address ext = pendingExtension;
+        if (ext == address(0)) revert IRewardsProgram.NoPendingExtensionChange();
+        if (block.timestamp < uint256(pendingExtensionTime) + EXTENSION_CHANGE_DELAY)
+            revert IRewardsProgram.ExtensionChangeNotReady();
+
         address old = extension;
         extension = ext;
+        pendingExtension = address(0);
+        pendingExtensionTime = 0;
         emit IRewardsProgram.ExtensionUpdated(old, ext);
+    }
+
+    /// @notice Cancel a pending extension change.
+    function cancelExtensionChange()
+        external
+        nonReentrant
+        onlyRole(ProposalTypes.ADMIN_ROLE)
+    {
+        address ext = pendingExtension;
+        if (ext == address(0)) revert IRewardsProgram.NoPendingExtensionChange();
+        pendingExtension = address(0);
+        pendingExtensionTime = 0;
+        emit IRewardsProgram.ExtensionChangeCancelled(ext);
     }
 
     // === PROGRAM MANAGEMENT (Admin only) ===
@@ -75,6 +126,9 @@ contract RewardsProgram is RewardsStorageBase {
     {
         if (code == bytes8(0)) revert IRewardsProgram.InvalidProgramCode();
         if (programCodeToId[code] != 0) revert IRewardsProgram.DuplicateProgramCode();
+        // L2: Prevent unbounded string storage
+        if (bytes(name).length > 256) revert IRewardsProgram.NameTooLong();
+        if (bytes(description).length > 1024) revert IRewardsProgram.DescriptionTooLong();
 
         programCount++;
         uint32 programId = programCount;
@@ -180,7 +234,20 @@ contract RewardsProgram is RewardsStorageBase {
         }
 
         address oldWallet = member.wallet;
+
+        // H1: Prevent wallet collision — newWallet must not already map to a different member
+        if (newWallet != address(0) && newWallet != storageKey) {
+            address existing = _walletToStorageKey[programId][newWallet];
+            if (existing != address(0) && existing != storageKey) revert IRewardsProgram.WalletAlreadyMapped();
+        }
+
         member.wallet = newWallet;
+
+        // M3: Update PA counter when wallet changes for a PA member
+        if (member.role == IRewardsProgram.MemberRole.ProgramAdmin) {
+            if (oldWallet != address(0)) _programAdminCount[oldWallet]--;
+            if (newWallet != address(0)) _programAdminCount[newWallet]++;
+        }
 
         // Update wallet→storageKey reverse mapping
         if (oldWallet != address(0) && oldWallet != storageKey) {
@@ -215,24 +282,74 @@ contract RewardsProgram is RewardsStorageBase {
                 revert IRewardsProgram.UnauthorizedRole();
             if (member.role == IRewardsProgram.MemberRole.ProgramAdmin)
                 revert IRewardsProgram.UnauthorizedRole();
+            // H2: PA can only remove members in their own hierarchy
+            if (!_isInParentChain(programId, memberKey, callerKey))
+                revert IRewardsProgram.UnauthorizedRole();
+        }
+
+        // M3: Decrement PA counter if removing a PA member
+        if (member.role == IRewardsProgram.MemberRole.ProgramAdmin && member.wallet != address(0)) {
+            _programAdminCount[member.wallet]--;
         }
 
         // Clean up wallet→storageKey reverse mapping
         if (member.wallet != address(0) && member.wallet != memberKey) {
             delete _walletToStorageKey[programId][member.wallet];
         }
+
+        // M5: Clean up _children array (swap-and-pop)
+        address parentKey = member.parent;
+        if (parentKey != address(0)) {
+            address[] storage siblings = _children[programId][parentKey];
+            for (uint256 i = 0; i < siblings.length; i++) {
+                if (siblings[i] == memberKey) {
+                    siblings[i] = siblings[siblings.length - 1];
+                    siblings.pop();
+                    break;
+                }
+            }
+        }
+
         delete memberIDLookup[member.memberID][programId];
         member.active = false;
         emit IRewardsProgram.MemberRemoved(programId, memberKey);
     }
 
-    // === EDIT CODE / CLAIM ===
+    // === EDIT CODE / CLAIM (commit-reveal to prevent front-running) ===
 
+    uint256 constant MIN_COMMIT_DELAY = 5;      // seconds — prevent same-block reveal
+    uint256 constant MAX_COMMIT_WINDOW = 1 hours; // commit expires after this
+
+    /// @notice Phase 1: Commit a hash to claim a walletless member.
+    /// @param commitHash keccak256(abi.encodePacked(memberID, editCode, msg.sender))
+    function commitClaim(uint32 programId, bytes32 commitHash)
+        external
+        whenNotPaused
+        nonReentrant
+    {
+        _claimCommits[programId][msg.sender] = commitHash;
+        _claimCommitTimes[programId][msg.sender] = block.timestamp;
+        emit IRewardsProgram.ClaimCommitted(programId, msg.sender);
+    }
+
+    /// @notice Phase 2: Reveal and claim. Requires prior commitClaim.
     function claimMember(uint32 programId, bytes12 memberID, bytes32 editCode)
         external
         whenNotPaused
         nonReentrant
     {
+        // Verify commit-reveal
+        bytes32 expectedCommit = keccak256(abi.encodePacked(memberID, editCode, msg.sender));
+        if (_claimCommits[programId][msg.sender] != expectedCommit) revert IRewardsProgram.CommitRequired();
+        uint256 commitTime = _claimCommitTimes[programId][msg.sender];
+        if (block.timestamp < commitTime + MIN_COMMIT_DELAY) revert IRewardsProgram.CommitTooEarly();
+        if (block.timestamp > commitTime + MAX_COMMIT_WINDOW) revert IRewardsProgram.CommitExpired();
+
+        // Clean up commit
+        delete _claimCommits[programId][msg.sender];
+        delete _claimCommitTimes[programId][msg.sender];
+
+        // Original claim logic
         address storageKey = memberIDLookup[memberID][programId];
         if (storageKey == address(0)) revert IRewardsProgram.MemberNotFound();
         IRewardsProgram.Member storage member = _members[programId][storageKey];
@@ -244,8 +361,17 @@ contract RewardsProgram is RewardsStorageBase {
         if (storedHash == bytes32(0)) revert IRewardsProgram.InvalidEditCode();
         if (keccak256(abi.encodePacked(editCode)) != storedHash) revert IRewardsProgram.InvalidEditCode();
 
+        // M6: Prevent overwriting existing wallet mapping
+        if (_walletToStorageKey[programId][msg.sender] != address(0)) revert IRewardsProgram.WalletAlreadyMapped();
+
         member.wallet = msg.sender;
         _walletToStorageKey[programId][msg.sender] = storageKey;
+
+        // M3: Update PA counter if claiming a PA member
+        if (member.role == IRewardsProgram.MemberRole.ProgramAdmin) {
+            _programAdminCount[msg.sender]++;
+        }
+
         emit IRewardsProgram.MemberClaimed(programId, storageKey, msg.sender);
     }
 
@@ -282,16 +408,18 @@ contract RewardsProgram is RewardsStorageBase {
 
     function transferToSubMember(
         uint32 programId, address to, uint256 amount,
-        bool locked, uint32 lockTimeDays
+        bool locked, uint32 lockTimeDays, string calldata note
     ) external whenNotPaused nonReentrant {
+        if (bytes(note).length > 128) revert IRewardsProgram.NoteTooLong();
         bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
         address key = _resolveStorageKey(programId, msg.sender);
-        _transferToSubCore(programId, key, to, amount, locked, lockTimeDays, isAdmin);
+        _transferToSubCore(programId, key, to, amount, locked, lockTimeDays, isAdmin, note);
     }
 
-    function transferToParent(uint32 programId, address to, uint256 amount) external whenNotPaused nonReentrant {
+    function transferToParent(uint32 programId, address to, uint256 amount, string calldata note) external whenNotPaused nonReentrant {
+        if (bytes(note).length > 128) revert IRewardsProgram.NoteTooLong();
         address key = _resolveStorageKey(programId, msg.sender);
-        _transferToParentCore(programId, key, to, amount);
+        _transferToParentCore(programId, key, to, amount, note);
     }
 
     function withdraw(uint32 programId, uint256 amount) external whenNotPaused nonReentrant {
@@ -309,14 +437,14 @@ contract RewardsProgram is RewardsStorageBase {
         uint8 rewardType, string calldata note
     ) external whenNotPaused nonReentrant {
         address key = _resolveOnBehalf(programId, memberID);
+        if (bytes(note).length > 128) revert IRewardsProgram.NoteTooLong();
         if (action == 1) {
-            if (bytes(note).length > 128) revert IRewardsProgram.NoteTooLong();
             _addTokensCore(programId, msg.sender, key, amount, rewardType, note);
         } else if (action == 2) {
             bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
-            _transferToSubCore(programId, key, to, amount, locked, lockTimeDays, isAdmin);
+            _transferToSubCore(programId, key, to, amount, locked, lockTimeDays, isAdmin, note);
         } else if (action == 3) {
-            _transferToParentCore(programId, key, to, amount);
+            _transferToParentCore(programId, key, to, amount, note);
         } else if (action == 4) {
             _withdrawCore(programId, key, msg.sender, amount);
         } else {
@@ -391,6 +519,11 @@ contract RewardsProgram is RewardsStorageBase {
         if (editCodeHash != bytes32(0)) {
             _editCodeHashes[programId][storageKey] = editCodeHash;
         }
+
+        // M3: Maintain PA counter for scalable _requireAnyProgramAdminOrAdmin
+        if (role == IRewardsProgram.MemberRole.ProgramAdmin && wallet != address(0)) {
+            _programAdminCount[wallet]++;
+        }
     }
 
     function _validateAddAuthority(
@@ -414,7 +547,7 @@ contract RewardsProgram is RewardsStorageBase {
 
     function _transferToSubCore(
         uint32 programId, address from, address to, uint256 amount,
-        bool locked, uint32 lockTimeDays, bool isAdmin
+        bool locked, uint32 lockTimeDays, bool isAdmin, string calldata note
     ) internal {
         _requireActiveProgram(programId);
         if (!_isSubMember(programId, from, to, isAdmin)) revert IRewardsProgram.NotSubMember();
@@ -430,6 +563,12 @@ contract RewardsProgram is RewardsStorageBase {
         if (locked) {
             _balances[programId][to].permanentlyLocked += amount;
         } else if (lockTimeDays > 0) {
+            // H4: Prevent silent truncation when casting to uint128
+            if (amount > type(uint128).max) revert IRewardsProgram.InvalidAmount();
+            // L3: MAX_TIME_LOCK_TRANCHES (50) caps the array. A griefer with transfer
+            // rights could fill all 50 slots with tiny amounts, blocking legitimate
+            // time-locked transfers until tranches expire and are resolved.
+            // Mitigation: resolveTimeLocks() frees expired slots via swap-and-pop.
             IRewardsProgram.TimeLockTranche[] storage tranches = _timeLocks[programId][to];
             if (tranches.length >= MAX_TIME_LOCK_TRANCHES) {
                 revert IRewardsProgram.MaxTimeLockTranchesReached();
@@ -442,10 +581,10 @@ contract RewardsProgram is RewardsStorageBase {
             _balances[programId][to].available += amount;
         }
 
-        emit IRewardsProgram.TokensTransferredToMember(programId, from, to, amount, locked, lockTimeDays);
+        emit IRewardsProgram.TokensTransferredToMember(programId, from, to, amount, locked, lockTimeDays, note);
     }
 
-    function _transferToParentCore(uint32 programId, address from, address to, uint256 amount) internal {
+    function _transferToParentCore(uint32 programId, address from, address to, uint256 amount, string calldata note) internal {
         _requireActiveProgram(programId);
         if (!_members[programId][from].active) revert IRewardsProgram.MemberNotFound();
 
@@ -470,7 +609,10 @@ contract RewardsProgram is RewardsStorageBase {
                 totalBalance += tr[j].amount;
             }
         }
-        // Transfer control limit — only applies to Clients
+        // Transfer control limit — only applies to Clients.
+        // NOTE: Limit is per-transaction against current balance. Repeated transfers each
+        // get a fresh percentage of the remaining balance, converging asymptotically
+        // (remaining ≈ totalBalance × (1 - limitPct/100)^N). This is by design.
         {
             uint8 limitPct = _transferLimits[programId];
             if (limitPct > 0 && _members[programId][from].role == IRewardsProgram.MemberRole.Client) {
@@ -500,7 +642,7 @@ contract RewardsProgram is RewardsStorageBase {
         }
 
         _balances[programId][target].available += amount;
-        emit IRewardsProgram.TokensTransferredToParent(programId, from, target, amount);
+        emit IRewardsProgram.TokensTransferredToParent(programId, from, target, amount, note);
     }
 
     function _withdrawCore(uint32 programId, address storageKey, address recipient, uint256 amount) internal {
@@ -518,9 +660,13 @@ contract RewardsProgram is RewardsStorageBase {
         }
         bal.available -= amount;
 
-        IPool(stakingPool).transferTokens(amount);
-        token.safeTransfer(recipient, amount);
+        // M2: Emit before external calls (CEI pattern). Protected by nonReentrant on
+        // all entry points, but maintained for defense-in-depth.
         emit IRewardsProgram.TokensWithdrawn(programId, storageKey, amount);
+
+        // H5: Check return values from StakingPool
+        if (!IPool(stakingPool).transferTokens(amount)) revert IRewardsProgram.PoolTransferFailed();
+        token.safeTransfer(recipient, amount);
     }
 
     function _resolveExpiredLocks(uint32 programId, address wallet) internal returns (uint256 resolved) {

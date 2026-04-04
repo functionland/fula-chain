@@ -25,6 +25,9 @@ contract RewardsExtension is RewardsStorageBase {
     {
         _requireActiveProgram(programId);
         _requireProgramAdminOrAdmin(programId);
+        // L2: Prevent unbounded string storage
+        if (bytes(name).length > 256) revert IRewardsProgram.NameTooLong();
+        if (bytes(description).length > 1024) revert IRewardsProgram.DescriptionTooLong();
         _programs[programId].name = name;
         _programs[programId].description = description;
         emit IRewardsProgram.ProgramUpdated(programId, name);
@@ -236,15 +239,10 @@ contract RewardsExtension is RewardsStorageBase {
     // === INTERNAL ===
 
     /// @notice Require caller to be a PA in any program, or a global admin.
-    /// Used for global actions (reward types) that any PA should be allowed to perform.
+    /// @dev M3: Uses cached _programAdminCount for O(1) lookup instead of looping all programs.
     function _requireAnyProgramAdminOrAdmin() internal view {
         if (hasRole(ProposalTypes.ADMIN_ROLE, msg.sender)) return;
-        // Check all programs for PA membership
-        for (uint32 i = 1; i <= programCount; i++) {
-            address key = _resolveStorageKey(i, msg.sender);
-            IRewardsProgram.Member storage m = _members[i][key];
-            if (m.active && m.role == IRewardsProgram.MemberRole.ProgramAdmin) return;
-        }
+        if (_programAdminCount[msg.sender] > 0) return;
         revert IRewardsProgram.UnauthorizedRole();
     }
 

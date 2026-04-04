@@ -76,13 +76,15 @@ interface IRewardsProgram {
         address indexed to,
         uint256 amount,
         bool locked,
-        uint32 lockTimeDays
+        uint32 lockTimeDays,
+        string note
     );
     event TokensTransferredToParent(
         uint32 indexed programId,
         address indexed from,
         address indexed to,
-        uint256 amount
+        uint256 amount,
+        string note
     );
     event TokensWithdrawn(uint32 indexed programId, address indexed wallet, uint256 amount);
     event TimeLockResolved(uint32 indexed programId, address indexed wallet, uint256 amount);
@@ -106,6 +108,9 @@ interface IRewardsProgram {
         uint128[] quantities
     );
     event ExtensionUpdated(address indexed oldExtension, address indexed newExtension);
+    event ExtensionChangeProposed(address indexed proposedExtension, uint256 executeAfter);
+    event ExtensionChangeCancelled(address indexed cancelledExtension);
+    event ClaimCommitted(uint32 indexed programId, address indexed claimer);
 
     // === ERRORS ===
 
@@ -135,6 +140,16 @@ interface IRewardsProgram {
     error ExtensionNotSet();
     error TransferExceedsLimit(uint256 requested, uint256 maxAllowed);
     error InvalidTransferLimit();
+    error WalletAlreadyMapped();
+    error PoolTransferFailed();
+    error CommitRequired();
+    error CommitTooEarly();
+    error CommitExpired();
+    error ExtensionAlreadySet();
+    error ExtensionChangeNotReady();
+    error NoPendingExtensionChange();
+    error NameTooLong();
+    error DescriptionTooLong();
 
     event TransferLimitUpdated(uint32 indexed programId, uint8 oldLimit, uint8 newLimit);
 }
