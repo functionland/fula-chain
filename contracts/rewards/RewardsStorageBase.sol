@@ -42,8 +42,8 @@ abstract contract RewardsStorageBase is Initializable, GovernanceModule {
     mapping(uint32 => mapping(address => IRewardsProgram.Balance)) internal _balances;
     mapping(uint32 => mapping(address => IRewardsProgram.TimeLockTranche[])) internal _timeLocks;
 
-    uint256 public validRewardTypes;     // bitmap — was: transferCount (dead)
-    mapping(uint8 => bytes16) public rewardTypeNames; // was: _transfers (dead)
+    mapping(uint32 => uint256) public validRewardTypes; // bitmap per program — was: transferCount (dead)
+    mapping(uint32 => mapping(uint8 => bytes16)) public rewardTypeNames; // per program — was: _transfers (dead)
 
     mapping(uint32 => mapping(uint8 => uint256)) public validSubTypes; // was: _memberPrograms (dead)
     mapping(uint32 => mapping(uint8 => mapping(uint8 => bytes16))) public subTypeNames; // from __gap

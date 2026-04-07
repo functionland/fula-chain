@@ -232,12 +232,13 @@ contract RewardsProgram is RewardsStorageBase {
 
     function transferToSubMember(
         uint32 programId, address to, uint256 amount,
-        bool locked, uint32 lockTimeDays, string calldata note
+        bool locked, uint32 lockTimeDays,
+        uint8 rewardType, uint8 subTypeId, string calldata note
     ) external whenNotPaused nonReentrant {
         if (bytes(note).length > 128) revert IRewardsProgram.NoteTooLong();
         bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
         address key = _resolveStorageKey(programId, msg.sender);
-        _transferToSubCore(programId, key, to, amount, locked, lockTimeDays, isAdmin, note);
+        _transferToSubCore(programId, key, to, amount, locked, lockTimeDays, isAdmin, rewardType, subTypeId, note);
     }
 
     function transferToParent(uint32 programId, address to, uint256 amount, string calldata note) external whenNotPaused nonReentrant {
@@ -266,7 +267,7 @@ contract RewardsProgram is RewardsStorageBase {
             _addTokensCore(programId, msg.sender, key, amount, rewardType, note);
         } else if (action == 2) {
             bool isAdmin = hasRole(ProposalTypes.ADMIN_ROLE, msg.sender);
-            _transferToSubCore(programId, key, to, amount, locked, lockTimeDays, isAdmin, note);
+            _transferToSubCore(programId, key, to, amount, locked, lockTimeDays, isAdmin, rewardType, 0, note);
         } else if (action == 3) {
             _transferToParentCore(programId, key, to, amount, note);
         } else if (action == 4) {
@@ -340,7 +341,8 @@ contract RewardsProgram is RewardsStorageBase {
 
     function _transferToSubCore(
         uint32 programId, address from, address to, uint256 amount,
-        bool locked, uint32 lockTimeDays, bool isAdmin, string calldata note
+        bool locked, uint32 lockTimeDays, bool isAdmin,
+        uint8 rewardType, uint8 subTypeId, string calldata note
     ) internal {
         _requireActiveProgram(programId);
         if (!_isSubMember(programId, from, to, isAdmin)) revert IRewardsProgram.NotSubMember();
@@ -374,7 +376,7 @@ contract RewardsProgram is RewardsStorageBase {
             _balances[programId][to].available += amount;
         }
 
-        emit IRewardsProgram.TokensTransferredToMember(programId, from, to, amount, locked, lockTimeDays, note);
+        emit IRewardsProgram.TokensTransferredToMember(programId, from, to, amount, locked, lockTimeDays, rewardType, subTypeId, note);
     }
 
     function _transferToParentCore(uint32 programId, address from, address to, uint256 amount, string calldata note) internal {

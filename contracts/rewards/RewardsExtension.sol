@@ -275,29 +275,29 @@ contract RewardsExtension is RewardsStorageBase {
         emit IRewardsProgram.MemberTypeChanged(programId, storageKey, oldType, newType);
     }
 
-    // === REWARD TYPE MANAGEMENT (bitmap-based, admin or PA) ===
+    // === REWARD TYPE MANAGEMENT (bitmap-based, per program, PA or admin) ===
 
-    /// @notice Register a reward type. typeId 0-255, name is a display label.
-    function addRewardType(uint8 typeId, bytes16 name)
+    /// @notice Register a reward type for a program. typeId 0-255, name is a display label.
+    function addRewardType(uint32 programId, uint8 typeId, bytes16 name)
         external
         whenNotPaused
         nonReentrant
     {
-        _requireAnyProgramAdminOrAdmin();
-        validRewardTypes |= (1 << uint256(typeId));
-        rewardTypeNames[typeId] = name;
-        emit IRewardsProgram.RewardTypeAdded(typeId, name);
+        _requireProgramAdminOrAdmin(programId);
+        validRewardTypes[programId] |= (1 << uint256(typeId));
+        rewardTypeNames[programId][typeId] = name;
+        emit IRewardsProgram.RewardTypeAdded(programId, typeId, name);
     }
 
-    /// @notice Remove a reward type from the valid set.
-    function removeRewardType(uint8 typeId)
+    /// @notice Remove a reward type from the valid set for a program.
+    function removeRewardType(uint32 programId, uint8 typeId)
         external
         whenNotPaused
         nonReentrant
     {
-        _requireAnyProgramAdminOrAdmin();
-        validRewardTypes &= ~(1 << uint256(typeId));
-        emit IRewardsProgram.RewardTypeRemoved(typeId);
+        _requireProgramAdminOrAdmin(programId);
+        validRewardTypes[programId] &= ~(1 << uint256(typeId));
+        emit IRewardsProgram.RewardTypeRemoved(programId, typeId);
     }
 
     // === SUB-TYPE MANAGEMENT (per program, PA or admin) ===
@@ -396,9 +396,9 @@ contract RewardsExtension is RewardsStorageBase {
         }
     }
 
-    /// @notice Returns all active reward type IDs and their names.
-    function getRewardTypes() external view returns (uint8[] memory ids, bytes16[] memory names) {
-        uint256 bitmap = validRewardTypes;
+    /// @notice Returns all active reward type IDs and their names for a program.
+    function getRewardTypes(uint32 programId) external view returns (uint8[] memory ids, bytes16[] memory names) {
+        uint256 bitmap = validRewardTypes[programId];
         uint8[256] memory temp;
         uint256 count;
         for (uint256 i; i < 256; i++) {
@@ -411,7 +411,7 @@ contract RewardsExtension is RewardsStorageBase {
         names = new bytes16[](count);
         for (uint256 i; i < count; i++) {
             ids[i] = temp[i];
-            names[i] = rewardTypeNames[temp[i]];
+            names[i] = rewardTypeNames[programId][temp[i]];
         }
     }
 

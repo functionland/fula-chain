@@ -502,7 +502,7 @@ describe("RewardsProgram", function () {
       const amount = ethers.parseEther("1000");
       await expect(
         rewardsProgram.connect(programAdmin1).transferToSubMember(
-          programId, teamLeader1.address, amount, false, 0, ""
+          programId, teamLeader1.address, amount, false, 0, 0, 0, ""
         )
       )
         .to.emit(rewardsProgram, "TokensTransferredToMember");
@@ -517,7 +517,7 @@ describe("RewardsProgram", function () {
     it("should transfer to indirect child (grandchild)", async function () {
       const amount = ethers.parseEther("500");
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, client1.address, amount, false, 0, ""
+        programId, client1.address, amount, false, 0, 0, 0, ""
       );
 
       const [receiverAvail] = await extensionAtProxy.getBalance(programId, client1.address);
@@ -527,7 +527,7 @@ describe("RewardsProgram", function () {
     it("should reject transfer to non-sub-member", async function () {
       await expect(
         rewardsProgram.connect(programAdmin1).transferToSubMember(
-          programId, otherAccount.address, ethers.parseEther("100"), false, 0, ""
+          programId, otherAccount.address, ethers.parseEther("100"), false, 0, 0, 0, ""
         )
       ).to.be.revertedWithCustomError(rewardsProgram, "NotSubMember");
     });
@@ -535,7 +535,7 @@ describe("RewardsProgram", function () {
     it("should reject transfer exceeding available balance", async function () {
       await expect(
         rewardsProgram.connect(programAdmin1).transferToSubMember(
-          programId, teamLeader1.address, DEPOSIT_AMOUNT + 1n, false, 0, ""
+          programId, teamLeader1.address, DEPOSIT_AMOUNT + 1n, false, 0, 0, 0, ""
         )
       ).to.be.revertedWithCustomError(rewardsProgram, "InsufficientBalance");
     });
@@ -543,7 +543,7 @@ describe("RewardsProgram", function () {
     it("should credit permanentlyLocked when locked=true", async function () {
       const amount = ethers.parseEther("500");
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, amount, true, 0, ""
+        programId, teamLeader1.address, amount, true, 0, 0, 0, ""
       );
 
       const [avail, permLocked] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
@@ -554,7 +554,7 @@ describe("RewardsProgram", function () {
     it("should credit timeLocked when lockTimeDays > 0", async function () {
       const amount = ethers.parseEther("500");
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, amount, false, 7, ""
+        programId, teamLeader1.address, amount, false, 7, 0, 0, ""
       );
 
       const [avail, permLocked, timeLocked] = await extensionAtProxy.getBalance(programId, teamLeader1.address);
@@ -566,7 +566,7 @@ describe("RewardsProgram", function () {
     it("should reject lockTimeDays exceeding 3 years", async function () {
       await expect(
         rewardsProgram.connect(programAdmin1).transferToSubMember(
-          programId, teamLeader1.address, ethers.parseEther("100"), false, 1096, ""
+          programId, teamLeader1.address, ethers.parseEther("100"), false, 1096, 0, 0, ""
         )
       ).to.be.revertedWithCustomError(rewardsProgram, "LockTimeTooLong");
     });
@@ -575,18 +575,18 @@ describe("RewardsProgram", function () {
       const amount = ethers.parseEther("500");
       await expect(
         rewardsProgram.connect(programAdmin1).transferToSubMember(
-          programId, teamLeader1.address, amount, false, 0, "bonus for Q1"
+          programId, teamLeader1.address, amount, false, 0, 0, 0, "bonus for Q1"
         )
       )
         .to.emit(rewardsProgram, "TokensTransferredToMember")
-        .withArgs(programId, programAdmin1.address, teamLeader1.address, amount, false, 0, "bonus for Q1");
+        .withArgs(programId, programAdmin1.address, teamLeader1.address, amount, false, 0, 0, 0, "bonus for Q1");
     });
 
     it("should reject note exceeding 128 characters on transferToSubMember", async function () {
       const longNote = "a".repeat(129);
       await expect(
         rewardsProgram.connect(programAdmin1).transferToSubMember(
-          programId, teamLeader1.address, ethers.parseEther("100"), false, 0, longNote
+          programId, teamLeader1.address, ethers.parseEther("100"), false, 0, 0, 0, longNote
         )
       ).to.be.revertedWithCustomError(rewardsProgram, "NoteTooLong");
     });
@@ -610,10 +610,10 @@ describe("RewardsProgram", function () {
       await storageToken.connect(programAdmin1).approve(await rewardsProgram.getAddress(), DEPOSIT_AMOUNT);
       await rewardsProgram.connect(programAdmin1).addTokens(programId, DEPOSIT_AMOUNT, 0, "");
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, ethers.parseEther("5000"), false, 0, ""
+        programId, teamLeader1.address, ethers.parseEther("5000"), false, 0, 0, 0, ""
       );
       await rewardsProgram.connect(teamLeader1).transferToSubMember(
-        programId, client1.address, ethers.parseEther("2000"), false, 0, ""
+        programId, client1.address, ethers.parseEther("2000"), false, 0, 0, 0, ""
       );
     });
 
@@ -673,7 +673,7 @@ describe("RewardsProgram", function () {
     it("should transfer permanently locked tokens back to parent", async function () {
       // Transfer locked tokens to client
       await rewardsProgram.connect(teamLeader1).transferToSubMember(
-        programId, client1.address, ethers.parseEther("1000"), true, 0, ""
+        programId, client1.address, ethers.parseEther("1000"), true, 0, 0, 0, ""
       );
 
       // Client has 2000 available + 1000 locked
@@ -731,7 +731,7 @@ describe("RewardsProgram", function () {
       // Setup: PA transfers time-locked tokens to TL
       await rewardsProgram.connect(programAdmin1).addMember(programId, teamLeader1.address, toBytes12("TL001"), MemberRole.TeamLeader, ethers.ZeroHash, MemberType.Free);
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, ethers.parseEther("1000"), false, 7, ""
+        programId, teamLeader1.address, ethers.parseEther("1000"), false, 7, 0, 0, ""
       );
 
       // Can't withdraw during lock period
@@ -755,7 +755,7 @@ describe("RewardsProgram", function () {
     it("should reject withdrawal of permanently locked tokens", async function () {
       await rewardsProgram.connect(programAdmin1).addMember(programId, teamLeader1.address, toBytes12("TL001"), MemberRole.TeamLeader, ethers.ZeroHash, MemberType.Free);
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, ethers.parseEther("1000"), true, 0, ""
+        programId, teamLeader1.address, ethers.parseEther("1000"), true, 0, 0, 0, ""
       );
 
       // TL has only permanently locked balance
@@ -767,7 +767,7 @@ describe("RewardsProgram", function () {
     it("should reject withdrawal during lockTime period", async function () {
       await rewardsProgram.connect(programAdmin1).addMember(programId, teamLeader1.address, toBytes12("TL001"), MemberRole.TeamLeader, ethers.ZeroHash, MemberType.Free);
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, ethers.parseEther("1000"), false, 30, ""
+        programId, teamLeader1.address, ethers.parseEther("1000"), false, 30, 0, 0, ""
       );
 
       await expect(
@@ -778,7 +778,7 @@ describe("RewardsProgram", function () {
     it("should allow withdrawal after lockTime expires", async function () {
       await rewardsProgram.connect(programAdmin1).addMember(programId, teamLeader1.address, toBytes12("TL001"), MemberRole.TeamLeader, ethers.ZeroHash, MemberType.Free);
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, ethers.parseEther("1000"), false, 7, ""
+        programId, teamLeader1.address, ethers.parseEther("1000"), false, 7, 0, 0, ""
       );
 
       // Advance 7 days
@@ -811,7 +811,7 @@ describe("RewardsProgram", function () {
     it("full flow: locked tokens can only be transferred back up hierarchy", async function () {
       // PA transfers locked tokens directly to Client
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, client1.address, ethers.parseEther("500"), true, 0, ""
+        programId, client1.address, ethers.parseEther("500"), true, 0, 0, 0, ""
       );
 
       // Client cannot withdraw locked tokens
@@ -853,7 +853,7 @@ describe("RewardsProgram", function () {
 
       // PA sends time-locked tokens to TL
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, amount, false, 7, ""
+        programId, teamLeader1.address, amount, false, 7, 0, 0, ""
       );
 
       // TL can transfer back to PA even during lock
@@ -878,11 +878,11 @@ describe("RewardsProgram", function () {
     it("multiple transfers with different lock times resolve independently", async function () {
       // Transfer 1: 100 FULA, 7 day lock
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, ethers.parseEther("100"), false, 7, ""
+        programId, teamLeader1.address, ethers.parseEther("100"), false, 7, 0, 0, ""
       );
       // Transfer 2: 200 FULA, 30 day lock
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, ethers.parseEther("200"), false, 30, ""
+        programId, teamLeader1.address, ethers.parseEther("200"), false, 30, 0, 0, ""
       );
 
       // After 7 days: 100 should be withdrawable (time lock expired), 200 still locked
@@ -912,11 +912,11 @@ describe("RewardsProgram", function () {
 
       // PA -> TL: 5000
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, ethers.parseEther("5000"), false, 0, ""
+        programId, teamLeader1.address, ethers.parseEther("5000"), false, 0, 0, 0, ""
       );
       // TL -> Client: 2000
       await rewardsProgram.connect(teamLeader1).transferToSubMember(
-        programId, client1.address, ethers.parseEther("2000"), false, 0, ""
+        programId, client1.address, ethers.parseEther("2000"), false, 0, 0, 0, ""
       );
       // Client -> TL (back): 500
       await rewardsProgram.connect(client1).transferToParent(programId, ZeroAddress, ethers.parseEther("500"), "");
@@ -1014,7 +1014,7 @@ describe("RewardsProgram", function () {
       const overflowAmount = 2n ** 128n;
       await expect(
         rewardsProgram.connect(programAdmin1).transferToSubMember(
-          programId, teamLeader1.address, overflowAmount, false, 7, ""
+          programId, teamLeader1.address, overflowAmount, false, 7, 0, 0, ""
         )
       ).to.be.reverted; // Solidity arithmetic overflow on uint128(amount) cast
     });
@@ -1031,14 +1031,14 @@ describe("RewardsProgram", function () {
       // Create 50 time-lock tranches
       for (let i = 0; i < 50; i++) {
         await rewardsProgram.connect(programAdmin1).transferToSubMember(
-          programId, teamLeader1.address, smallAmount, false, 30, ""
+          programId, teamLeader1.address, smallAmount, false, 30, 0, 0, ""
         );
       }
 
       // 51st tranche should revert
       await expect(
         rewardsProgram.connect(programAdmin1).transferToSubMember(
-          programId, teamLeader1.address, smallAmount, false, 30, ""
+          programId, teamLeader1.address, smallAmount, false, 30, 0, 0, ""
         )
       ).to.be.revertedWithCustomError(rewardsProgram, "MaxTimeLockTranchesReached");
     });
@@ -1048,10 +1048,10 @@ describe("RewardsProgram", function () {
       // Build a chain: PA -> TL -> Client1 (already in beforeEach)
       // Verify isInParentChain works across the 3-deep chain
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, ethers.parseEther("1000"), false, 0, ""
+        programId, teamLeader1.address, ethers.parseEther("1000"), false, 0, 0, 0, ""
       );
       await rewardsProgram.connect(teamLeader1).transferToSubMember(
-        programId, client1.address, ethers.parseEther("500"), false, 0, ""
+        programId, client1.address, ethers.parseEther("500"), false, 0, 0, 0, ""
       );
 
       // Client can transfer back to grandparent (PA) - validates 2-deep chain traversal
@@ -1090,7 +1090,7 @@ describe("RewardsProgram", function () {
 
       await expect(
         rewardsProgram.connect(programAdmin1).transferToSubMember(
-          programId, teamLeader1.address, ethers.parseEther("100"), false, 0, ""
+          programId, teamLeader1.address, ethers.parseEther("100"), false, 0, 0, 0, ""
         )
       ).to.be.reverted;
 
@@ -1128,7 +1128,7 @@ describe("RewardsProgram", function () {
     it("should reconcile StakingPool balance after time-lock resolution and withdrawal", async function () {
       // Transfer with 7-day lock
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, ethers.parseEther("3000"), false, 7, ""
+        programId, teamLeader1.address, ethers.parseEther("3000"), false, 7, 0, 0, ""
       );
 
       // Fast-forward past lock
@@ -1157,7 +1157,7 @@ describe("RewardsProgram", function () {
 
       // Transfer with 7-day lock
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, lockAmount, false, 7, ""
+        programId, teamLeader1.address, lockAmount, false, 7, 0, 0, ""
       );
 
       // Fast-forward past lock
@@ -1686,6 +1686,8 @@ describe("RewardsProgram", function () {
   // ============================================================
 
   describe("Reward Type Management", function () {
+    let programId: number;
+
     function toBytes16(str: string): string {
       const bytes = ethers.toUtf8Bytes(str);
       if (bytes.length > 16) throw new Error("String too long for bytes16");
@@ -1694,47 +1696,53 @@ describe("RewardsProgram", function () {
       return ethers.hexlify(padded);
     }
 
+    beforeEach(async function () {
+      const tx = await rewardsProgram.connect(owner).createProgram(toBytes8("RTTEST"), "RT Test", "Reward type test program");
+      const receipt = await tx.wait();
+      programId = Number(receipt?.logs[0]?.topics[1]);
+    });
+
     it("should allow admin to add a reward type", async function () {
       await expect(
-        extensionAtProxy.connect(owner).addRewardType(0, toBytes16("MVP"))
+        extensionAtProxy.connect(owner).addRewardType(programId, 0, toBytes16("MVP"))
       ).to.emit(extensionAtProxy, "RewardTypeAdded")
-        .withArgs(0, toBytes16("MVP"));
+        .withArgs(programId, 0, toBytes16("MVP"));
 
-      expect(await rewardsProgram.validRewardTypes()).to.equal(1n); // bit 0 set
-      expect(await rewardsProgram.rewardTypeNames(0)).to.equal(toBytes16("MVP"));
+      expect(await rewardsProgram.validRewardTypes(programId)).to.equal(1n); // bit 0 set
+      expect(await rewardsProgram.rewardTypeNames(programId, 0)).to.equal(toBytes16("MVP"));
     });
 
     it("should add multiple reward types as bitmap", async function () {
-      await extensionAtProxy.connect(owner).addRewardType(0, toBytes16("MVP"));
-      await extensionAtProxy.connect(owner).addRewardType(1, toBytes16("Bonus"));
-      await extensionAtProxy.connect(owner).addRewardType(5, toBytes16("Marketing"));
+      await extensionAtProxy.connect(owner).addRewardType(programId, 0, toBytes16("MVP"));
+      await extensionAtProxy.connect(owner).addRewardType(programId, 1, toBytes16("Bonus"));
+      await extensionAtProxy.connect(owner).addRewardType(programId, 5, toBytes16("Marketing"));
 
       // bitmap: bit 0 + bit 1 + bit 5 = 1 + 2 + 32 = 35
-      expect(await rewardsProgram.validRewardTypes()).to.equal(35n);
+      expect(await rewardsProgram.validRewardTypes(programId)).to.equal(35n);
     });
 
     it("should allow admin to remove a reward type", async function () {
-      await extensionAtProxy.connect(owner).addRewardType(0, toBytes16("MVP"));
-      await extensionAtProxy.connect(owner).addRewardType(1, toBytes16("Bonus"));
+      await extensionAtProxy.connect(owner).addRewardType(programId, 0, toBytes16("MVP"));
+      await extensionAtProxy.connect(owner).addRewardType(programId, 1, toBytes16("Bonus"));
 
       await expect(
-        extensionAtProxy.connect(owner).removeRewardType(0)
-      ).to.emit(extensionAtProxy, "RewardTypeRemoved").withArgs(0);
+        extensionAtProxy.connect(owner).removeRewardType(programId, 0)
+      ).to.emit(extensionAtProxy, "RewardTypeRemoved").withArgs(programId, 0);
 
-      expect(await rewardsProgram.validRewardTypes()).to.equal(2n); // only bit 1
+      expect(await rewardsProgram.validRewardTypes(programId)).to.equal(2n); // only bit 1
     });
 
-    it("should reject non-admin adding reward types", async function () {
+    it("should reject non-PA/non-admin adding reward types", async function () {
       await expect(
-        extensionAtProxy.connect(programAdmin1).addRewardType(0, toBytes16("MVP"))
+        extensionAtProxy.connect(otherAccount).addRewardType(programId, 0, toBytes16("MVP"))
       ).to.be.reverted;
     });
 
     it("should return reward types via getRewardTypes", async function () {
-      await extensionAtProxy.connect(owner).addRewardType(0, toBytes16("MVP"));
-      await extensionAtProxy.connect(owner).addRewardType(3, toBytes16("Admin"));
+      await extensionAtProxy.connect(owner).addRewardType(programId, 0, toBytes16("MVP"));
+      await extensionAtProxy.connect(owner).addRewardType(programId, 3, toBytes16("Admin"));
 
-      const [ids, names] = await extensionAtProxy.getRewardTypes();
+      const [ids, names] = await extensionAtProxy.getRewardTypes(programId);
       expect(ids.length).to.equal(2);
       expect(ids[0]).to.equal(0);
       expect(ids[1]).to.equal(3);
@@ -1765,7 +1773,7 @@ describe("RewardsProgram", function () {
         programId, programAdmin1.address, toBytes12("PA001"), ethers.ZeroHash, MemberType.Free
       );
       // Add a reward type first
-      await extensionAtProxy.connect(owner).addRewardType(0, toBytes16("MVP"));
+      await extensionAtProxy.connect(owner).addRewardType(programId, 0, toBytes16("MVP"));
     });
 
     it("should allow PA to add sub-types for their program", async function () {
@@ -1834,7 +1842,7 @@ describe("RewardsProgram", function () {
       await storageToken.connect(programAdmin1).approve(rpAddr, ethers.parseEther("100000"));
 
       // Add reward types and sub-types
-      await extensionAtProxy.connect(owner).addRewardType(0, toBytes16("MVP"));
+      await extensionAtProxy.connect(owner).addRewardType(programId, 0, toBytes16("MVP"));
       await extensionAtProxy.connect(owner).addSubType(programId, 0, 0, toBytes16("3pShot"));
       await extensionAtProxy.connect(owner).addSubType(programId, 0, 1, toBytes16("2pShot"));
     });
@@ -1934,7 +1942,7 @@ describe("RewardsProgram", function () {
 
       // Calling an extension function without setExtension should fail
       await expect(
-        freshExt.connect(owner).addRewardType(0, ethers.zeroPadValue("0x", 16))
+        freshExt.connect(owner).addRewardType(1, 0, ethers.zeroPadValue("0x", 16))
       ).to.be.revertedWithCustomError(fresh, "ExtensionNotSet");
     });
 
@@ -1973,10 +1981,10 @@ describe("RewardsProgram", function () {
       await storageToken.connect(programAdmin1).approve(await rewardsProgram.getAddress(), DEPOSIT_AMOUNT);
       await rewardsProgram.connect(programAdmin1).addTokens(programId, DEPOSIT_AMOUNT, 0, "");
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId, teamLeader1.address, ethers.parseEther("5000"), false, 0, ""
+        programId, teamLeader1.address, ethers.parseEther("5000"), false, 0, 0, 0, ""
       );
       await rewardsProgram.connect(teamLeader1).transferToSubMember(
-        programId, client1.address, ethers.parseEther("2000"), false, 0, ""
+        programId, client1.address, ethers.parseEther("2000"), false, 0, 0, 0, ""
       );
     });
 
@@ -2034,7 +2042,7 @@ describe("RewardsProgram", function () {
       // Set 50% limit. Transfer down only 999 to client2
       await rewardsProgram.connect(teamLeader1).addMember(programId, client2.address, toBytes12("CL002"), MemberRole.Client, ethers.ZeroHash, MemberType.Free);
       await rewardsProgram.connect(teamLeader1).transferToSubMember(
-        programId, client2.address, ethers.parseEther("999"), false, 0, ""
+        programId, client2.address, ethers.parseEther("999"), false, 0, 0, 0, ""
       );
       await extensionAtProxy.connect(owner).setTransferLimit(programId, 50);
       // Client2 has 999, max = 999*50/100 = 499. Trying 500 should fail.
@@ -2111,10 +2119,10 @@ describe("RewardsProgram", function () {
       await storageToken.connect(programAdmin1).approve(await rewardsProgram.getAddress(), ethers.parseEther("10000"));
       await rewardsProgram.connect(programAdmin1).addTokens(programId2, ethers.parseEther("10000"), 0, "");
       await rewardsProgram.connect(programAdmin1).transferToSubMember(
-        programId2, teamLeader1.address, ethers.parseEther("5000"), false, 0, ""
+        programId2, teamLeader1.address, ethers.parseEther("5000"), false, 0, 0, 0, ""
       );
       await rewardsProgram.connect(teamLeader1).transferToSubMember(
-        programId2, client1.address, ethers.parseEther("2000"), false, 0, ""
+        programId2, client1.address, ethers.parseEther("2000"), false, 0, 0, 0, ""
       );
 
       // Set different limits: program1=50%, program2=25%
@@ -2216,7 +2224,7 @@ describe("RewardsProgram", function () {
       await storageToken.connect(teamLeader1).approve(await rewardsProgram.getAddress(), amount);
       await rewardsProgram.connect(teamLeader1).addTokens(programId, amount, 0, "");
       await rewardsProgram.connect(teamLeader1).transferToSubMember(
-        programId, client1.address, amount, true, 0, ""
+        programId, client1.address, amount, true, 0, 0, 0, ""
       );
 
       // Try to remove — should fail (permanently locked)
@@ -2231,7 +2239,7 @@ describe("RewardsProgram", function () {
       await storageToken.connect(teamLeader1).approve(await rewardsProgram.getAddress(), amount);
       await rewardsProgram.connect(teamLeader1).addTokens(programId, amount, 0, "");
       await rewardsProgram.connect(teamLeader1).transferToSubMember(
-        programId, client1.address, amount, false, 30, ""
+        programId, client1.address, amount, false, 30, 0, 0, ""
       );
 
       // Try to remove — should fail (time-locked)
@@ -2273,11 +2281,11 @@ describe("RewardsProgram", function () {
       const typeName = ethers.zeroPadBytes(ethers.toUtf8Bytes("TestType"), 16) as `0x${string}`;
 
       await expect(
-        extensionAtProxy.connect(owner).addRewardType(1, typeName)
+        extensionAtProxy.connect(owner).addRewardType(programId, 1, typeName)
       ).to.be.reverted; // EnforcedPause
 
       await expect(
-        extensionAtProxy.connect(owner).removeRewardType(1)
+        extensionAtProxy.connect(owner).removeRewardType(programId, 1)
       ).to.be.reverted; // EnforcedPause
 
       // Unpause after cooldown
@@ -2510,7 +2518,7 @@ describe("RewardsProgram", function () {
       // Transfer with time lock — should succeed for normal amounts
       await expect(
         rewardsProgram.connect(programAdmin1).transferToSubMember(
-          programId, teamLeader1.address, amount, false, 30, "locked"
+          programId, teamLeader1.address, amount, false, 30, 0, 0, "locked"
         )
       ).to.emit(rewardsProgram, "TokensTransferredToMember");
     });

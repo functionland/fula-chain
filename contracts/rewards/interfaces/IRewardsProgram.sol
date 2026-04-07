@@ -77,6 +77,8 @@ interface IRewardsProgram {
         uint256 amount,
         bool locked,
         uint32 lockTimeDays,
+        uint8 rewardType,
+        uint8 subTypeId,
         string note
     );
     event TokensTransferredToParent(
@@ -96,8 +98,8 @@ interface IRewardsProgram {
     event MemberClaimed(uint32 indexed programId, address indexed memberKey, address indexed wallet);
     event EditCodeHashSet(uint32 indexed programId, address indexed memberKey);
     event MemberTypeChanged(uint32 indexed programId, address indexed memberKey, uint8 oldType, uint8 newType);
-    event RewardTypeAdded(uint8 indexed typeId, bytes16 name);
-    event RewardTypeRemoved(uint8 indexed typeId);
+    event RewardTypeAdded(uint32 indexed programId, uint8 indexed typeId, bytes16 name);
+    event RewardTypeRemoved(uint32 indexed programId, uint8 indexed typeId);
     event SubTypeAdded(uint32 indexed programId, uint8 indexed rewardType, uint8 subTypeId, bytes16 name);
     event SubTypeRemoved(uint32 indexed programId, uint8 indexed rewardType, uint8 subTypeId);
     event DepositSubTypes(
