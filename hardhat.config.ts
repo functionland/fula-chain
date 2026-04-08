@@ -186,8 +186,8 @@ const config: HardhatUserConfig = {
   },
   etherscan: {
     apiKey: process.env.ETHERSCAN_API_KEY || "",
-    /* //Activate for skale and iotex verify  and deactivate for base and ethereum verification
-    apiKey: {
+     //Activate for skale and iotex verify  and deactivate for base and ethereum verification
+    /*apiKey: {
       mainnet: vars.has("ETHERSCAN_API_KEY")
         ? vars.get("ETHERSCAN_API_KEY")
         : "",
@@ -210,7 +210,7 @@ const config: HardhatUserConfig = {
       "skale-testnet": vars.has("SKALESCAN_API_KEY")
         ? vars.get("SKALESCAN_API_KEY")
         : "arbitrary",
-    },
+    },*/
     customChains: [
       {
         network: "base",
@@ -254,7 +254,7 @@ const config: HardhatUserConfig = {
         },
       },
     ],
-    */
+    
   },
   mocha: {
     timeout: 40000,
