@@ -71,7 +71,9 @@ abstract contract RewardsStorageBase is Initializable, GovernanceModule {
     mapping(uint32 => mapping(address => bytes32)) internal _claimCommits;
     mapping(uint32 => mapping(address => uint256)) internal _claimCommitTimes;
 
-    uint256[32] private __gap;
+    mapping(uint32 => string) internal _programLogos;
+
+    uint256[31] private __gap;
 
     // === SHARED INTERNAL HELPERS ===
 

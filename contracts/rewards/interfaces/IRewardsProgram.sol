@@ -113,6 +113,8 @@ interface IRewardsProgram {
     event ExtensionChangeProposed(address indexed proposedExtension, uint256 executeAfter);
     event ExtensionChangeCancelled(address indexed cancelledExtension);
     event ClaimCommitted(uint32 indexed programId, address indexed claimer);
+    event MemberRoleChanged(uint32 indexed programId, address indexed memberKey, MemberRole oldRole, MemberRole newRole);
+    event MemberProgramChanged(uint32 indexed oldProgramId, uint32 indexed newProgramId, address indexed memberKey, bytes12 memberID);
 
     // === ERRORS ===
 
@@ -152,6 +154,7 @@ interface IRewardsProgram {
     error NoPendingExtensionChange();
     error NameTooLong();
     error DescriptionTooLong();
+    error HasChildren();
 
     event TransferLimitUpdated(uint32 indexed programId, uint8 oldLimit, uint8 newLimit);
 }

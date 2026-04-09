@@ -111,42 +111,11 @@ contract RewardsProgram is RewardsStorageBase {
         emit IRewardsProgram.ExtensionChangeCancelled(ext);
     }
 
-    // === PROGRAM MANAGEMENT (Admin only) ===
+    // NOTE: createProgram, updateProgram, updateMemberID, deactivateProgram moved to RewardsExtension
 
-    function createProgram(
-        bytes8 code,
-        string calldata name,
-        string calldata description
-    )
-        external
-        whenNotPaused
-        nonReentrant
-        onlyRole(ProposalTypes.ADMIN_ROLE)
-        returns (uint32)
-    {
-        if (code == bytes8(0)) revert IRewardsProgram.InvalidProgramCode();
-        if (programCodeToId[code] != 0) revert IRewardsProgram.DuplicateProgramCode();
-        // L2: Prevent unbounded string storage
-        if (bytes(name).length > 256) revert IRewardsProgram.NameTooLong();
-        if (bytes(description).length > 1024) revert IRewardsProgram.DescriptionTooLong();
-
-        programCount++;
-        uint32 programId = programCount;
-
-        _programs[programId] = IRewardsProgram.Program({
-            id: programId,
-            code: code,
-            name: name,
-            description: description,
-            active: true
-        });
-        programCodeToId[code] = programId;
-
-        emit IRewardsProgram.ProgramCreated(programId, code, name);
-        return programId;
+    function getProgram(uint32 programId) external view returns (IRewardsProgram.Program memory) {
+        return _programs[programId];
     }
-
-    // NOTE: updateProgram, updateMemberID, deactivateProgram moved to RewardsExtension
 
     function assignProgramAdmin(
         uint32 programId,
@@ -261,7 +230,7 @@ contract RewardsProgram is RewardsStorageBase {
         bool locked, uint32 lockTimeDays,
         uint8 rewardType, string calldata note
     ) external whenNotPaused nonReentrant {
-        address key = _resolveOnBehalf(programId, memberID);
+        address key = _resolveOnBehalf(programId, memberID, action == 4);
         if (bytes(note).length > 128) revert IRewardsProgram.NoteTooLong();
         if (action == 1) {
             _addTokensCore(programId, msg.sender, key, amount, rewardType, note);
@@ -277,13 +246,7 @@ contract RewardsProgram is RewardsStorageBase {
         }
     }
 
-    // === VIEW FUNCTIONS ===
-
-    function getProgram(uint32 programId) external view returns (IRewardsProgram.Program memory) {
-        return _programs[programId];
-    }
-
-    // NOTE: getMember, getMemberByID, getBalance moved to RewardsExtension.
+    // NOTE: getProgram, getMember, getMemberByID, getBalance moved to RewardsExtension.
 
     // === INTERNAL HELPERS (main contract only) ===
 
@@ -388,7 +351,8 @@ contract RewardsProgram is RewardsStorageBase {
             target = _members[programId][from].parent;
             if (target == address(0)) revert IRewardsProgram.NoParentFound();
         } else {
-            if (!_isInParentChain(programId, from, target))
+            if (!_isInParentChain(programId, from, target) &&
+                !hasRole(ProposalTypes.ADMIN_ROLE, target))
                 revert IRewardsProgram.NotInParentChain();
         }
 
@@ -499,13 +463,45 @@ contract RewardsProgram is RewardsStorageBase {
         }
     }
 
-    function _resolveOnBehalf(uint32 programId, bytes12 memberID) internal view returns (address) {
-        address storageKey = memberIDLookup[memberID][programId];
-        if (storageKey == address(0)) revert IRewardsProgram.MemberNotFound();
-        if (!_members[programId][storageKey].active) revert IRewardsProgram.MemberNotActive();
-        if (hasRole(ProposalTypes.ADMIN_ROLE, msg.sender)) return storageKey;
-        if (_findActingWallet(programId, storageKey) != msg.sender) revert IRewardsProgram.UnauthorizedRole();
-        return storageKey;
+    /// @notice Resolve member storage key and authorize caller.
+    /// @param strict If true, narrow auth for withdraw safety. If false, expanded auth.
+    function _resolveOnBehalf(uint32 programId, bytes12 memberID, bool strict) internal view returns (address) {
+        address sk = memberIDLookup[memberID][programId];
+        if (sk == address(0)) revert IRewardsProgram.MemberNotFound();
+        if (!_members[programId][sk].active) revert IRewardsProgram.MemberNotActive();
+        if (hasRole(ProposalTypes.ADMIN_ROLE, msg.sender)) return sk;
+
+        if (_members[programId][sk].wallet == address(0)) {
+            // Walletless member
+            if (strict) {
+                // Withdraw: only nearest ancestor wallet (original behavior)
+                if (_findActingWallet(programId, sk) != msg.sender)
+                    revert IRewardsProgram.UnauthorizedRole();
+                return sk;
+            }
+            // Expanded: any ancestor with a wallet
+            address p = _members[programId][sk].parent;
+            for (uint256 i = 0; i < MAX_HIERARCHY_DEPTH && p != address(0); i++) {
+                if (_members[programId][p].wallet == msg.sender) return sk;
+                p = _members[programId][p].parent;
+            }
+            // Or: any TL or PA in same program
+            address ck = _resolveStorageKey(programId, msg.sender);
+            if (_members[programId][ck].active &&
+                _members[programId][ck].role >= IRewardsProgram.MemberRole.TeamLeader)
+                return sk;
+        } else {
+            // Has wallet: self always allowed
+            if (_members[programId][sk].wallet == msg.sender) return sk;
+            if (!strict) {
+                // Expanded: PA can also act
+                address ck = _resolveStorageKey(programId, msg.sender);
+                if (_members[programId][ck].active &&
+                    _members[programId][ck].role == IRewardsProgram.MemberRole.ProgramAdmin)
+                    return sk;
+            }
+        }
+        revert IRewardsProgram.UnauthorizedRole();
     }
 
     // === GOVERNANCE OVERRIDES ===
