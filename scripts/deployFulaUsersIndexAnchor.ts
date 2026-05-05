@@ -1,19 +1,21 @@
 // Deploy the FulaUsersIndexAnchor contract.
 //
 // Required env vars:
-//   INITIAL_OWNER  Multi-sig wallet that owns the contract (proposes
-//                  upgrades, role grants, emergency pause).
-//   INITIAL_ADMIN  Second admin signer required for the multi-sig
-//                  quorum (default 2). Will be timelocked 24h before
-//                  it can approve proposals.
-//
-// Optional env var:
-//   OPERATOR_ADDRESS  Address that will hold CONTRACT_OPERATOR_ROLE
-//                     to call publish() on behalf of master. NOT
-//                     granted by this script — granting requires the
-//                     governance AddRole proposal flow. We log the
-//                     address + the next steps the operator must
-//                     follow.
+//   INITIAL_OWNER     Multi-sig wallet that owns the contract (proposes
+//                     upgrades, role grants, emergency pause).
+//   INITIAL_ADMIN     Second admin signer required for the multi-sig
+//                     quorum (default 2). Timelocked 24h before it can
+//                     approve proposals.
+//   OPERATOR_ADDRESS  Address that holds CONTRACT_OPERATOR_ROLE to
+//                     call publish() on behalf of master. **Granted
+//                     immediately by this script via the contract's
+//                     `initialize(owner, admin, operator)` flow** —
+//                     the master's chain-anchor cron is functional
+//                     from the first block after deployment. This is
+//                     the only operator change that bypasses the
+//                     governance AddRole proposal flow; every
+//                     subsequent grant or revoke MUST go through
+//                     `createProposal(AddRole/RemoveRole, ...)`.
 //
 // Verification: set ETHERSCAN_API_KEY to verify the implementation
 // after deployment.
@@ -60,9 +62,35 @@ async function main() {
   if (!initialAdmin) {
     throw new Error("INITIAL_ADMIN environment variable not set");
   }
+  if (!operatorAddress) {
+    throw new Error(
+      "OPERATOR_ADDRESS environment variable not set — required at deploy time. " +
+        "This address receives CONTRACT_OPERATOR_ROLE during initialize() so the master's " +
+        "chain-anchor cron is functional immediately. Subsequent operator changes MUST " +
+        "go through governance (createProposal AddRole/RemoveRole).",
+    );
+  }
   if (initialOwner.toLowerCase() === initialAdmin.toLowerCase()) {
     throw new Error(
       "INITIAL_OWNER and INITIAL_ADMIN must be different addresses (multi-sig requires distinct signers)",
+    );
+  }
+  if (
+    operatorAddress.toLowerCase() === initialOwner.toLowerCase() ||
+    operatorAddress.toLowerCase() === initialAdmin.toLowerCase()
+  ) {
+    // Production deployments should keep these three roles distinct so
+    // a compromised hot key (the operator's chain-cron signer) can't
+    // also approve governance proposals. We warn but don't block —
+    // staging / dev deploys may legitimately run with a single EOA.
+    console.warn(
+      "\n⚠️  WARNING: OPERATOR_ADDRESS overlaps with INITIAL_OWNER or INITIAL_ADMIN.",
+    );
+    console.warn(
+      "    Production should use distinct addresses to preserve the multi-sig invariant.",
+    );
+    console.warn(
+      "    Continuing — set distinct addresses to suppress this warning.\n",
     );
   }
 
@@ -71,8 +99,8 @@ async function main() {
   console.log("  Initial Owner:", initialOwner);
   console.log("  Initial Admin:", initialAdmin);
   console.log(
-    "  Operator (advisory, not granted by this script):",
-    operatorAddress ?? "(not set — set OPERATOR_ADDRESS to print follow-up steps)",
+    "  Operator (granted CONTRACT_OPERATOR_ROLE at deploy):",
+    operatorAddress,
   );
 
   const balance = await ethers.provider.getBalance(deployer.address);
@@ -102,7 +130,7 @@ async function main() {
 
   const proxy = await upgrades.deployProxy(
     Factory,
-    [initialOwner, initialAdmin],
+    [initialOwner, initialAdmin, operatorAddress],
     {
       kind: "uups",
       initializer: "initialize",
@@ -147,38 +175,45 @@ async function main() {
   }
 
   console.log("");
+  console.log("✅ Operator already has CONTRACT_OPERATOR_ROLE — no AddRole");
+  console.log("   proposal needed. The cron can call publish() immediately.");
+  console.log("");
   console.log("Next steps (do these manually after deploy):");
   console.log(
-    "  1. Add the proxy address to the chain cron in mainnet-reward-server:",
+    "  1. Configure mainnet-rewards-server's 12h cron with the operator's",
   );
+  console.log("     private key + RPC URL + the deployed proxy address:");
   console.log(`       FULA_USERS_INDEX_ANCHOR_ADDRESS=${proxyAddress}`);
   console.log(
-    "  2. Set the role quorum on ADMIN_ROLE so proposals can be approved:",
+    `       FULA_USERS_INDEX_ANCHOR_${hre.network.name.toUpperCase()}=${proxyAddress}`,
   );
+  console.log(
+    "  2. Set the role quorum on ADMIN_ROLE so future governance proposals",
+  );
+  console.log("     (e.g., changing the operator) can be approved:");
   console.log(
     `       npx hardhat run scripts/setRoleQuorum.ts --network ${hre.network.name}`,
   );
   console.log(
     "     (Or call setRoleQuorum(ADMIN_ROLE, 2) directly via the multi-sig.)",
   );
-  console.log("  3. Wait 24h (ROLE_CHANGE_DELAY).");
-  console.log(
-    `  4. Grant CONTRACT_OPERATOR_ROLE to the master operator wallet (${
-      operatorAddress ?? "<set OPERATOR_ADDRESS env var>"
-    }):`,
-  );
-  console.log(
-    "       owner: createProposal(AddRole=1, 0, OPERATOR_ADDRESS, keccak256('CONTRACT_OPERATOR_ROLE'), 0, ZeroAddress)",
-  );
-  console.log("       wait 24h+1s, admin: approveProposal(<id>)");
-  console.log(
-    "  5. Configure mainnet-reward-server's 12h cron with the operator's private key + RPC URL.",
-  );
-  console.log("  6. Add to SDK config (fula-client):");
+  console.log("");
+  console.log("  3. Add to SDK config (fula-client):");
   console.log(`       users_index_anchor_address: ${proxyAddress}`);
   console.log(
     "       users_index_anchor_rpc_url:  <your RPC URL for this network>",
   );
+  console.log("");
+  console.log(
+    "Future operator changes (rotation / replacement / revocation) MUST go",
+  );
+  console.log(
+    "through governance — see `createProposal(AddRole|RemoveRole, ..., CONTRACT_OPERATOR_ROLE, ...)`.",
+  );
+  console.log(
+    "The deployment-time bypass is single-use and applies only to the address",
+  );
+  console.log("passed via OPERATOR_ADDRESS at this proxy's first initialize().");
 }
 
 main()

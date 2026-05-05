@@ -67,16 +67,51 @@ contract FulaUsersIndexAnchor is GovernanceModule {
     error EmptyCid();
 
     /// @notice Initialize the contract via the governance module's
-    ///         standard owner+admin pattern. The deployment script
-    ///         passes the master operator's address as `initialAdmin`
-    ///         and the multi-sig as `initialOwner`. Granting the
-    ///         actual `CONTRACT_OPERATOR_ROLE` to the master is a
-    ///         post-deploy step — see `scripts/deployFulaUsersIndexAnchor.ts`.
-    function initialize(address initialOwner, address initialAdmin)
+    ///         standard owner+admin pattern PLUS a deployment-time
+    ///         operator grant.
+    ///
+    /// @dev `initialOperator` is granted `CONTRACT_OPERATOR_ROLE`
+    ///      directly here (bypassing the governance AddRole proposal
+    ///      flow) so the master's chain-anchor cron can call `publish`
+    ///      immediately after deploy without waiting for the 1-day
+    ///      `ROLE_CHANGE_DELAY` × 2 round-trip of an AddRole proposal.
+    ///      This is the only fast-path: every subsequent grant or
+    ///      revoke of `CONTRACT_OPERATOR_ROLE` (whether to add a
+    ///      second operator, replace the initial one, or fully
+    ///      revoke it) MUST go through governance — see
+    ///      `_executeCommonProposal` in `GovernanceModule.sol`.
+    ///
+    ///      The operator's `roleChangeTimeLock` is set the same way
+    ///      owner/admin's are in `__GovernanceModule_init`: 1 day
+    ///      from `block.timestamp`. Without this, governance could
+    ///      re-grant or revoke the operator role at zero delay,
+    ///      defeating the role-change discipline that protects every
+    ///      other admin slot.
+    ///
+    ///      Trust model: the deployer is already trusted to ship the
+    ///      bytecode and choose `initialOwner`/`initialAdmin`; adding
+    ///      `initialOperator` as a constructor arg doesn't widen that
+    ///      trust surface — it only removes operational dead time on
+    ///      day one of every deployment.
+    ///
+    ///      `initialOperator` MAY equal `initialOwner` or
+    ///      `initialAdmin` (e.g., a single-EOA bootstrap on staging),
+    ///      but production deployments should keep all three distinct
+    ///      to preserve the multi-sig invariant. We don't enforce
+    ///      distinctness here — it's a deployment-time policy choice.
+    function initialize(
+        address initialOwner,
+        address initialAdmin,
+        address initialOperator
+    )
         public
         initializer
     {
-        if (initialOwner == address(0) || initialAdmin == address(0)) {
+        if (
+            initialOwner == address(0) ||
+            initialAdmin == address(0) ||
+            initialOperator == address(0)
+        ) {
             revert InvalidAddress();
         }
 
@@ -84,6 +119,17 @@ contract FulaUsersIndexAnchor is GovernanceModule {
         __ReentrancyGuard_init();
         __Pausable_init();
         __GovernanceModule_init(initialOwner, initialAdmin);
+
+        // Bootstrap: grant the operator role immediately so the
+        // master's chain-anchor cron is functional from the first
+        // block after deployment. Mirrors the pattern at
+        // `GovernanceModule.__GovernanceModule_init` lines 117-123
+        // for the owner/admin slots: grant role + set the same
+        // ROLE_CHANGE_DELAY timelock the governance flow would set.
+        _grantRole(ProposalTypes.CONTRACT_OPERATOR_ROLE, initialOperator);
+        timeConfigs[initialOperator].roleChangeTimeLock = uint64(
+            block.timestamp + ProposalTypes.ROLE_CHANGE_DELAY
+        );
     }
 
     /// @notice Submit the new users-index CID + sequence.
