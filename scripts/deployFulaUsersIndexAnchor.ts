@@ -134,7 +134,11 @@ async function main() {
     {
       kind: "uups",
       initializer: "initialize",
-      unsafeAllow: ["constructor"],
+      // Note: no `unsafeAllow: ["constructor"]` — the contract uses
+      // `initialize` (UUPS pattern), not a constructor. The flag was
+      // present historically and could mask OZ's deployment-time
+      // validation; removed so we get clearer diagnostics if a future
+      // change accidentally introduces unsafe inheritance.
     },
   );
   console.log(

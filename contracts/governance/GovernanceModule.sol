@@ -14,6 +14,16 @@ import "./libraries/ProposalTypes.sol";
 /// @notice Multi-sig and common features used across all contracts
 /// @dev Used to manage proposals for common features and delegates custom proposals to corresponding contracts
 /// @dev Handles proposal for Managing Roles, Upgrades, Ownerships
+///
+/// ⚠️  STORAGE LAYOUT WARNING — read `contracts/UPGRADING.md` BEFORE upgrading any child.
+///     This contract has no `__gap` at the end of its state. A `__gap[40]` was added
+///     in commit 97fae06 (2026-03-28) and later REMOVED (2026-05-12 upgrade) so that
+///     RewardEngine (deployed pre-97fae06, no parent gap in its live layout) could be
+///     safely upgraded. Any child contract whose live impl WAS recorded with the parent
+///     `__gap[40]` (see manifest entries) must declare `uint256[40] private __gap;` as
+///     its FIRST state variable, before any other state, to preserve its on-chain layout.
+///     Always run `upgrades.validateUpgrade(proxy, NewFactory)` against the live network
+///     before deploying any upgrade.
 abstract contract GovernanceModule is
     Initializable,
     OwnableUpgradeable,
@@ -697,6 +707,7 @@ abstract contract GovernanceModule is
         return true;
     }
 
-    /// @dev Storage gap for future upgrades
-    uint256[40] private __gap;
+    // NOTE: No `__gap` here. See the contract NatSpec for context. Children that
+    // were deployed when this gap existed must declare their own `uint256[40]
+    // private __gap;` as their first state variable. See `contracts/UPGRADING.md`.
 }

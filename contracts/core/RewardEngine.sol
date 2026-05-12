@@ -26,6 +26,11 @@ contract RewardEngine is GovernanceModule {
     // Events
     event MiningRewardsClaimed(address indexed account, bytes32 indexed peerId, uint32 indexed poolId, uint256 amount);
     event StorageRewardsClaimed(address indexed account, bytes32 indexed peerId, uint32 indexed poolId, uint256 amount);
+    /// @dev Emitted once per submitStorageRewardsBatch call. Mirrors
+    ///      OnlineStatusSubmitted with `amount` replacing `timestamp` and adding
+    ///      the credit/debit direction. `count` = peerIds.length, `amount` is
+    ///      the per-peer amount (uniform within the batch).
+    event StorageRewardsSubmitted(uint32 indexed poolId, address indexed submitter, uint256 count, uint256 amount, bool isCredit);
     event OnlineStatusSubmitted(uint32 indexed poolId, address indexed submitter, uint256 count, uint256 timestamp);
     event MonthlyRewardPerPeerUpdated(uint256 oldAmount, uint256 newAmount);
     event ExpectedPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
@@ -57,11 +62,12 @@ contract RewardEngine is GovernanceModule {
     error MigrationAlreadyComplete();
     error MigrationNotComplete();
     error ExpectedPeriodChangeBlocked();
+    error MonthlyCapExceeded();
 
     // Constants
     uint256 public constant MAX_BATCH_SIZE = 250;
-    uint256 public constant SECONDS_PER_YEAR = 365 days;
-    uint256 public constant SECONDS_PER_MONTH = 30 days;
+    uint256 internal constant SECONDS_PER_YEAR = 365 days;
+    uint256 internal constant SECONDS_PER_MONTH = 30 days;
     uint256 public constant DEFAULT_EXPECTED_PERIOD = 8 hours;
     uint256 public constant DEFAULT_MONTHLY_REWARD_PER_PEER = 8000 * 10**18; // 8000 tokens per peer per month
     uint256 public constant MAX_HISTORICAL_SUBMISSION = 7 days; // Maximum 1 week back
@@ -108,8 +114,12 @@ contract RewardEngine is GovernanceModule {
     // poolId => period => lastSubmissionTimestamp
     mapping(uint32 => mapping(uint256 => uint256)) public lastPeriodSubmission;
 
-    // Track monthly rewards per peer ID to enforce caps
-    // peerId => poolId => month => claimedAmount
+    // Track monthly mining rewards per peer ID to enforce MAX_MONTHLY_REWARD_PER_PEER cap.
+    // SEMANTIC SHIFT (storage-rewards upgrade): post-upgrade this counter increments
+    // by MINING rewards only. Storage rewards bypass the cap and are NOT included
+    // here — off-chain indexers that previously read this as "total claimed per
+    // peer per month" will see lower values vs the legacy combined accounting.
+    // peerId => poolId => month => mining-only claimed amount
     mapping(bytes32 => mapping(uint32 => mapping(uint256 => uint256))) public monthlyRewardsClaimed;
 
     // V2: Direct period indexing for O(1) lookups - solves O(n²) complexity
@@ -137,8 +147,24 @@ contract RewardEngine is GovernanceModule {
     mapping(address => uint256) public totalRewardsClaimed;
     uint256 public totalRewardsDistributed;
 
-    // I-03 Fix: Storage gap for future upgrades (50 slots reserved)
-    uint256[50] private __gap;
+    // Per-peer unclaimed storage rewards, credited by pool operators / admins.
+    // Keyed (poolId, peerId) — same shape as periodOnlineStatus, so the account
+    // that holds the peerId at claim time is the one entitled to claim. Stranded
+    // if the original holder leaves and no new account claims the peerId.
+    // NOTE: monthlyRewardsClaimed (mining cap counter) is NOT used by storage —
+    // storage has its own separate cap counter below.
+    mapping(uint32 => mapping(bytes32 => uint256)) internal unclaimedStoragePerPeer;
+
+    // Cumulative storage rewards CREDITED per peer per month (NOT decremented on
+    // debit). Mirrors monthlyRewardsClaimed shape and reuses _getCurrentMonth().
+    // Used to enforce the per-peer per-month allocation cap of
+    // DEFAULT_MONTHLY_REWARD_PER_PEER (8000 tokens) at submission time.
+    // poolId => peerId => month => credited amount
+    mapping(uint32 => mapping(bytes32 => mapping(uint256 => uint256))) internal monthlyStorageCredited;
+
+    // Storage gap for future upgrades — reduced from 50 to 48 (-2 for the two
+    // new mappings above).
+    uint256[48] private __gap;
 
     /// @notice Initialize the RewardEngine contract
     /// @param _token Address of the StorageToken contract
@@ -376,17 +402,6 @@ contract RewardEngine is GovernanceModule {
         emit ExpectedPeriodUpdated(oldPeriod, _expectedPeriod);
     }
 
-    /// @notice Submit online status for multiple peer IDs (batch operation) - DEPRECATED
-    /// @dev This function is deprecated. Use submitOnlineStatusBatchV2 instead.
-    /// @dev Kept for backwards compatibility - reverts to prevent new submissions with old method
-    function submitOnlineStatusBatch(
-        uint32,
-        bytes32[] calldata,
-        uint256
-    ) external pure {
-        revert DeprecatedFunction();
-    }
-
     /// @notice Submit online status for multiple peer IDs (batch operation) - V2 with O(1) lookups
     /// @param poolId The pool ID to submit status for
     /// @param peerIds Array of peer IDs that were online
@@ -582,15 +597,6 @@ contract RewardEngine is GovernanceModule {
         return (startTime, endTime, totalPeriods, onlinePeriods, rewardPerPeriod, totalReward);
     }
 
-    /// @notice Calculate eligible mining rewards - DEPRECATED, use calculateEligibleMiningRewardsV2
-    function calculateEligibleMiningRewards(
-        address,
-        bytes32,
-        uint32
-    ) external pure returns (uint256) {
-        revert DeprecatedFunction();
-    }
-
     /// @notice V2: Calculate eligible mining rewards using O(1) lookups
     /// @param account The member account
     /// @param peerId The peer ID
@@ -647,31 +653,79 @@ contract RewardEngine is GovernanceModule {
         return eligibleRewards;
     }
 
-    /// @notice Calculate eligible storage rewards for a specific account/peerId pair
-    /// @param account The member account
-    /// @param peerId The peer ID
-    /// @param poolId The pool ID
-    /// @return eligibleRewards Amount of eligible storage rewards (currently 0 as placeholder)
-    function calculateEligibleStorageRewards(
-        address account,
-        bytes32 peerId,
-        uint32 poolId
-    ) external view returns (uint256 eligibleRewards) {
-        return _calculateEligibleStorageRewardsInternal(account, peerId, poolId);
-    }
-    
-    /// @notice L-02 Fix: Internal version to avoid external self-calls
-    function _calculateEligibleStorageRewardsInternal(
-        address account,
-        bytes32 peerId,
-        uint32 poolId
-    ) internal view returns (uint256) {
-        // Verify the account and peerId are members of the pool
-        (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
-        if (memberAddress == address(0) || memberAddress != account) revert NotPoolMember();
+    /// @notice Submit a batch of storage-reward credits or saturating-debits for a
+    ///         pool. Mirrors the shape of submitOnlineStatusBatchV2 (poolId +
+    ///         flat peerIds + a single uniform amount).
+    /// @dev Authorized: pool creator (own pool only) | POOL_ADMIN_ROLE | ADMIN_ROLE.
+    ///      No per-entry membership check (mirrors submitOnlineStatusBatchV2): the
+    ///      claim path verifies the caller is the current member of the peerId.
+    ///      Per-peer monthly allocation cap = DEFAULT_MONTHLY_REWARD_PER_PEER
+    ///      (8000 tokens). Credits whose cumulative monthly total would exceed
+    ///      that for any peer in the batch REVERT with MonthlyCapExceeded —
+    ///      atomic, no partial state writes. Debits are saturating (clamp at 0)
+    ///      and do NOT refund the cap counter.
+    ///      Capped at MAX_BATCH_SIZE (250) per call.
+    ///      Stranded balance: if the original holder of a peerId leaves and no
+    ///      new account claims it, the credited balance becomes unclaimable.
+    ///      Admin can clear by submitting a large saturating debit.
+    /// @param poolId Pool ID (all entries apply to this pool)
+    /// @param peerIds Peer IDs to credit/debit
+    /// @param amount Amount applied to EACH peer in `peerIds` (must be > 0)
+    /// @param isCredit true = additive credit (cap-checked); false = saturating debit
+    function submitStorageRewardsBatch(
+        uint32 poolId,
+        bytes32[] calldata peerIds,
+        uint256 amount,
+        bool isCredit
+    ) external whenNotPaused {
+        // No nonReentrant: the only external call is `storagePool.pools(poolId)`
+        // (a view call, via _getPoolCreator) on the trusted storagePool contract.
+        // Views cannot mutate state, and the auth gating means re-entry has no
+        // privilege escalation path (callers must already hold creator/POOL_ADMIN/ADMIN).
+        if (peerIds.length == 0 || peerIds.length > MAX_BATCH_SIZE) revert BatchTooLarge();
+        if (amount == 0) revert InvalidAmount();
 
-        // Storage rewards are set to 0 as placeholder for now
-        return 0;
+        // Inline auth: pool creator (own pool only) | POOL_ADMIN_ROLE | ADMIN_ROLE.
+        // Single AND-chain so the optimizer can short-circuit cheaply.
+        // _getPoolCreator reverts InvalidPoolId for nonexistent pools (no creator
+        // recorded), which also blocks admin access to undeployed pools — a non-
+        // issue in this codebase (pools cannot be deleted, only emptied).
+        address poolCreator = _getPoolCreator(poolId);
+        if (
+            msg.sender != poolCreator
+            && !hasRole(ProposalTypes.POOL_ADMIN_ROLE, msg.sender)
+            && !hasRole(ProposalTypes.ADMIN_ROLE, msg.sender)
+        ) revert NotPoolCreator();
+
+        uint256 len = peerIds.length;
+        if (isCredit) {
+            uint256 month = _getCurrentMonth();
+            for (uint256 i = 0; i < len; ) {
+                bytes32 pid = peerIds[i];
+                // Per-peer monthly cap: cumulative credits per (poolId, peerId, month)
+                // must stay within DEFAULT_MONTHLY_REWARD_PER_PEER. Mirrors the
+                // read-then-compare-then-write idiom used by mining at :649-657.
+                // Checked add: if the cap is enforced (newMonthly <= 8000e18), the
+                // SSTORE addition for unclaimedStoragePerPeer is also bounded and
+                // cannot overflow in practice.
+                uint256 newMonthly = monthlyStorageCredited[poolId][pid][month] + amount;
+                if (newMonthly > DEFAULT_MONTHLY_REWARD_PER_PEER) revert MonthlyCapExceeded();
+                monthlyStorageCredited[poolId][pid][month] = newMonthly;
+                unchecked {
+                    unclaimedStoragePerPeer[poolId][pid] += amount;
+                    ++i;
+                }
+            }
+        } else {
+            for (uint256 i = 0; i < len; ) {
+                bytes32 pid = peerIds[i];
+                uint256 cur = unclaimedStoragePerPeer[poolId][pid];
+                unclaimedStoragePerPeer[poolId][pid] = amount > cur ? 0 : cur - amount;
+                unchecked { ++i; }
+            }
+        }
+
+        emit StorageRewardsSubmitted(poolId, msg.sender, peerIds.length, amount, isCredit);
     }
 
     /// @notice Get total eligible rewards (mining + storage) for a specific account/peerId pair
@@ -688,27 +742,10 @@ contract RewardEngine is GovernanceModule {
         uint32 poolId
     ) external view returns (uint256 miningRewards, uint256 storageRewards, uint256 totalRewards) {
         miningRewards = _calculateEligibleMiningRewardsV2Internal(account, peerId, poolId);
-        storageRewards = _calculateEligibleStorageRewardsInternal(account, peerId, poolId);
+        storageRewards = unclaimedStoragePerPeer[poolId][peerId];
         totalRewards = miningRewards + storageRewards;
 
         return (miningRewards, storageRewards, totalRewards);
-    }
-
-    /// @notice Claim eligible rewards - DEPRECATED, use claimRewardsV2
-    function claimRewards(
-        bytes32,
-        uint32
-    ) external pure {
-        revert DeprecatedFunction();
-    }
-
-    /// @notice Claim eligible rewards with limit - DEPRECATED, use claimRewardsWithLimitV2
-    function claimRewardsWithLimit(
-        bytes32,
-        uint32,
-        uint256
-    ) external pure {
-        revert DeprecatedFunction();
     }
 
     /// @notice V2: Claim eligible rewards using O(1) lookups (uses default period limit)
@@ -737,8 +774,11 @@ contract RewardEngine is GovernanceModule {
     }
 
     /// @notice V2: Internal function to claim rewards using O(1) lookups
-    /// @dev H-02 Fix: Blocks V2 claims if pool has unmigrated V1 data to prevent reward loss
-    /// @dev C-01 Fix: Timestamp only advances for actually paid periods, not all processed periods
+    /// @dev H-02: Blocks V2 claims if pool has unmigrated V1 data to prevent reward loss.
+    /// @dev C-01: Timestamp only advances for actually paid mining periods.
+    /// @dev Storage rewards are paid alongside mining in the same tx and bypass the
+    ///      MAX_MONTHLY_REWARD_PER_PEER cap. The cap counter (monthlyRewardsClaimed)
+    ///      is incremented by mining-only after this upgrade.
     /// @param peerId The peer ID to claim rewards for
     /// @param poolId The pool ID
     /// @param maxPeriodsToProcess Maximum periods to process
@@ -748,12 +788,10 @@ contract RewardEngine is GovernanceModule {
         uint256 maxPeriodsToProcess
     ) internal {
         // H-02: Prevent V2 claims for pools with unmigrated V1-only data
-        // Only block if: pool has V1 data AND pool has NO V2 submissions AND migration not complete
-        // Pools with V2 submissions have data already in V2 format (no migration needed)
         if (timestampHead[poolId] != 0 && !poolHasV2Submissions[poolId] && !migrationComplete[poolId]) {
             revert MigrationNotComplete();
         }
-        
+
         address account = msg.sender;
 
         (address memberAddress, ) = storagePool.getPeerIdInfo(poolId, peerId);
@@ -763,91 +801,102 @@ contract RewardEngine is GovernanceModule {
         uint256 lastClaimed = lastClaimedRewards[account][peerId][poolId];
         uint256 calculationStartTime = lastClaimed > 0 ? lastClaimed : joinDate;
 
-        if (calculationStartTime >= block.timestamp) revert NoRewardsToClaim();
+        // Read admin-credited storage balance up-front so storage-only claims still proceed.
+        // Storage is keyed by (poolId, peerId) — the current peerId holder is the
+        // one entitled to claim (membership is implicitly verified by the mining
+        // membership check above).
+        uint256 storageRewards = unclaimedStoragePerPeer[poolId][peerId];
 
-        // V2: Calculate eligible periods with O(1) lookups
-        (uint256 eligiblePeriods, uint256 newLastClaimedTime) = _calculateEligiblePeriodsLimitedV2(
-            peerId, poolId, joinDate, calculationStartTime, block.timestamp, maxPeriodsToProcess
-        );
-
-        // C-01 Fix: Do NOT update lastClaimedRewards here - wait until after cap is applied
-
-        if (eligiblePeriods == 0) {
-            // No eligible periods but still advance timestamp to skip empty periods
-            if (newLastClaimedTime > calculationStartTime) {
-                lastClaimedRewards[account][peerId][poolId] = newLastClaimedTime;
-            }
-            emit MiningRewardsClaimed(account, peerId, poolId, 0);
-            return;
+        // Fast-fail: nothing to claim AND no time has elapsed for mining accrual.
+        if (calculationStartTime >= block.timestamp && storageRewards == 0) {
+            revert NoRewardsToClaim();
         }
 
-        uint256 rewardPerPeriod = _calculateRewardPerPeriod();
-        if (rewardPerPeriod == 0) {
-            // No rewards but still advance timestamp
-            if (newLastClaimedTime > calculationStartTime) {
-                lastClaimedRewards[account][peerId][poolId] = newLastClaimedTime;
-            }
-            emit MiningRewardsClaimed(account, peerId, poolId, 0);
-            return;
-        }
+        // === MINING CALCULATION ===
+        uint256 miningRewards = 0;
+        uint256 actualPaidPeriods = 0;
+        uint256 eligiblePeriods = 0;
+        uint256 newLastClaimedTime = calculationStartTime;
 
-        uint256 miningRewards = rewardPerPeriod * eligiblePeriods;
-        uint256 storageRewards = 0;
-        uint256 totalRewards = miningRewards + storageRewards;
-        uint256 actualPaidPeriods = eligiblePeriods; // Track how many periods are actually paid
+        if (calculationStartTime < block.timestamp) {
+            (eligiblePeriods, newLastClaimedTime) = _calculateEligiblePeriodsLimitedV2(
+                peerId, poolId, joinDate, calculationStartTime, block.timestamp, maxPeriodsToProcess
+            );
 
-        uint256 currentMonth = _getCurrentMonth();
-        uint256 alreadyClaimed = monthlyRewardsClaimed[peerId][poolId][currentMonth];
-        if (alreadyClaimed >= MAX_MONTHLY_REWARD_PER_PEER) {
-            // Cap already hit - don't advance timestamp at all (user can try again next month)
-            emit MiningRewardsClaimed(account, peerId, poolId, 0);
-            return;
-        }
-        if (totalRewards + alreadyClaimed > MAX_MONTHLY_REWARD_PER_PEER) {
-            // C-01 Fix: Calculate actual paid periods based on capped rewards
-            totalRewards = MAX_MONTHLY_REWARD_PER_PEER - alreadyClaimed;
-            miningRewards = totalRewards;
-            // Calculate how many periods this actually covers
-            actualPaidPeriods = totalRewards / rewardPerPeriod;
-            
-            // H-01 Fix: If remaining cap is less than 1 period worth, don't pay partial amount
-            // This prevents stuck state where timestamp doesn't advance but tokens are paid
-            // User must wait until next month when cap resets
-            if (actualPaidPeriods == 0) {
-                emit MiningRewardsClaimed(account, peerId, poolId, 0);
-                return;
-            }
-        }
+            if (eligiblePeriods > 0) {
+                uint256 rewardPerPeriod = _calculateRewardPerPeriod();
+                if (rewardPerPeriod > 0) {
+                    miningRewards = rewardPerPeriod * eligiblePeriods;
+                    actualPaidPeriods = eligiblePeriods;
 
-        // C-01 Fix: Calculate adjusted timestamp based on ACTUAL paid periods
-        // Only advance timestamp for periods we're actually paying for
-        uint256 adjustedLastClaimedTime;
-        if (actualPaidPeriods == eligiblePeriods) {
-            // No cap hit - use the full newLastClaimedTime
-            adjustedLastClaimedTime = newLastClaimedTime;
-        } else {
-            // Cap hit - calculate timestamp for actual paid periods only
-            uint256 firstPeriodIndex = 0;
-            if (calculationStartTime > joinDate) {
-                firstPeriodIndex = (calculationStartTime - joinDate) / expectedPeriod;
-                if ((calculationStartTime - joinDate) % expectedPeriod != 0) {
-                    firstPeriodIndex++;
+                    // Apply mining-only monthly cap (storage bypasses cap)
+                    uint256 currentMonth = _getCurrentMonth();
+                    uint256 alreadyClaimed = monthlyRewardsClaimed[peerId][poolId][currentMonth];
+
+                    if (alreadyClaimed >= MAX_MONTHLY_REWARD_PER_PEER) {
+                        miningRewards = 0;
+                        actualPaidPeriods = 0;
+                    } else if (miningRewards + alreadyClaimed > MAX_MONTHLY_REWARD_PER_PEER) {
+                        uint256 cappedMining = MAX_MONTHLY_REWARD_PER_PEER - alreadyClaimed;
+                        actualPaidPeriods = cappedMining / rewardPerPeriod;
+                        // H-01: don't pay sub-period dust; user retries next month
+                        miningRewards = actualPaidPeriods * rewardPerPeriod;
+                    }
                 }
             }
-            // Advance only by actual paid periods (guaranteed > 0 due to H-01 fix above)
-            adjustedLastClaimedTime = joinDate + ((firstPeriodIndex + actualPaidPeriods) * expectedPeriod);
         }
 
-        // NOW update lastClaimedRewards with adjusted timestamp
-        // Note: With H-01 fix, actualPaidPeriods > 0, so adjustedLastClaimedTime > calculationStartTime is guaranteed
-        if (adjustedLastClaimedTime > calculationStartTime) {
-            lastClaimedRewards[account][peerId][poolId] = adjustedLastClaimedTime;
+        uint256 totalRewards = miningRewards + storageRewards;
+
+        // Nothing to actually pay this call: advance mining timestamp through empty
+        // periods if any were processed (preserves prior skip-empty-periods behavior).
+        if (totalRewards == 0) {
+            if (newLastClaimedTime > calculationStartTime) {
+                lastClaimedRewards[account][peerId][poolId] = newLastClaimedTime;
+            }
+            emit MiningRewardsClaimed(account, peerId, poolId, 0);
+            return;
         }
+
+        // === EFFECTS ===
+
+        // C-01: advance lastClaimedRewards based on ACTUAL paid mining periods only.
+        if (actualPaidPeriods > 0) {
+            uint256 adjustedLastClaimedTime;
+            if (actualPaidPeriods == eligiblePeriods) {
+                adjustedLastClaimedTime = newLastClaimedTime;
+            } else {
+                uint256 firstPeriodIndex = 0;
+                if (calculationStartTime > joinDate) {
+                    firstPeriodIndex = (calculationStartTime - joinDate) / expectedPeriod;
+                    if ((calculationStartTime - joinDate) % expectedPeriod != 0) {
+                        firstPeriodIndex++;
+                    }
+                }
+                adjustedLastClaimedTime = joinDate + ((firstPeriodIndex + actualPaidPeriods) * expectedPeriod);
+            }
+            if (adjustedLastClaimedTime > calculationStartTime) {
+                lastClaimedRewards[account][peerId][poolId] = adjustedLastClaimedTime;
+            }
+        } else if (newLastClaimedTime > calculationStartTime) {
+            // Storage-only payout but mining processed empty periods — still advance.
+            lastClaimedRewards[account][peerId][poolId] = newLastClaimedTime;
+        }
+
+        // Mining-only cap counter (storage bypasses cap by design).
+        if (miningRewards > 0) {
+            monthlyRewardsClaimed[peerId][poolId][_getCurrentMonth()] += miningRewards;
+        }
+
+        // Zero the credited storage balance before any external interaction.
+        if (storageRewards > 0) {
+            unclaimedStoragePerPeer[poolId][peerId] = 0;
+        }
+
+        // === INTERACTIONS ===
 
         uint256 stakingPoolTokenBalance = token.balanceOf(address(stakingPool));
         if (stakingPoolTokenBalance < totalRewards) revert InsufficientRewards();
-
-        monthlyRewardsClaimed[peerId][poolId][currentMonth] += totalRewards;
 
         bool success = stakingPool.transferTokens(totalRewards);
         if (!success) revert InsufficientRewards();
@@ -899,7 +948,7 @@ contract RewardEngine is GovernanceModule {
         uint32 poolId
     ) external view returns (uint256 unclaimedMining, uint256 unclaimedStorage, uint256 totalUnclaimed) {
         unclaimedMining = _calculateEligibleMiningRewardsV2Internal(account, peerId, poolId);
-        unclaimedStorage = _calculateEligibleStorageRewardsInternal(account, peerId, poolId);
+        unclaimedStorage = unclaimedStoragePerPeer[poolId][peerId];
         totalUnclaimed = unclaimedMining + unclaimedStorage;
         
         return (unclaimedMining, unclaimedStorage, totalUnclaimed);  // L-03: Explicit return for consistency

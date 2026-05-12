@@ -80,6 +80,26 @@ const config: HardhatUserConfig = {
           },
         },
       },
+      // RewardEngine: lower runs to keep deployed bytecode under the EIP-170
+      // 24KB cap after wiring per-peer storage rewards + per-month cap. Reward-
+      // claim path is user-triggered (not high-frequency), so the runtime-gas
+      // tradeoff is acceptable. Same pattern as RewardsProgram / RewardsExtension above.
+      "contracts/core/RewardEngine.sol": {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 1,
+          },
+          viaIR: true,
+          evmVersion: "shanghai",
+          outputSelection: {
+            "*": {
+              "*": ["storageLayout"],
+            },
+          },
+        },
+      },
     },
   },
   sourcify: {
@@ -201,9 +221,7 @@ const config: HardhatUserConfig = {
       "iotex-mainnet": vars.has("IOTEXSCAN_API_KEY")
         ? vars.get("IOTEXSCAN_API_KEY")
         : "arbitrary",
-      skale: vars.has("SKALESCAN_API_KEY")
-        ? vars.get("SKALESCAN_API_KEY")
-        : "arbitrary",
+      "skale": 'empty',
       "iotex-testnet": vars.has("IOTEXSCAN_API_KEY")
         ? vars.get("IOTEXSCAN_API_KEY")
         : "arbitrary",
@@ -240,8 +258,8 @@ const config: HardhatUserConfig = {
         network: "skale",
         chainId: 2046399126,
         urls: {
-          apiURL: "https://elated-tan-skat.explorer.mainnet.skalenodes.com/api",
-          browserURL: "https://elated-tan-skat.explorer.mainnet.skalenodes.com",
+          apiURL: "https://internal-hubs.explorer.mainnet.skalenodes.com:10021/api",
+          browserURL: "https://internal-hubs.explorer.mainnet.skalenodes.com",
         },
       },
       {
