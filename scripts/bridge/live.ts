@@ -26,7 +26,15 @@ export const PROPOSAL = {
 
 export const ROLE_CHANGE_DELAY = 24 * 60 * 60;
 export const MIN_PROPOSAL_EXECUTION_DELAY = 24 * 60 * 60;
-export const PROPOSAL_TIMEOUT = 48 * 60 * 60;
+/**
+ * Proposal expiry. Mirrors `ProposalTypes.PROPOSAL_TIMEOUT`, which is **3 days**.
+ *
+ * CORRECTED: this was previously 48h here, and `docs/bridge-design.md` still describes the
+ * execution window as `[T0+24h, T0+48h)`. The on-chain constant is 3 days, so the real window is
+ * `[T0+24h, T0+72h)`. Erring short is harmless for scheduling, but a script computing a deadline
+ * from a wrong constant is not — keep this equal to the contract.
+ */
+export const PROPOSAL_TIMEOUT = 3 * 24 * 60 * 60;
 
 /**
  * Live StorageToken proxies and the implementation each currently points at.
@@ -37,29 +45,51 @@ export const PROPOSAL_TIMEOUT = 48 * 60 * 60;
  * NOT evidence the chains run different code. Use verifyStorageTokenImplParity.ts to compare
  * actual bytecode.
  */
+/**
+ * ADMIN_ROLE holders, read from the `RoleGranted` logs emitted by `initialize` (verified
+ * 2026-07-26 on both chains — the SAME two addresses on Ethereum and Base).
+ *
+ * Recorded here because `StorageToken` does NOT inherit `AccessControlEnumerable`, so
+ * `getRoleMemberCount`/`getRoleMember` revert and admins cannot be discovered on-chain. Governance
+ * needs a quorum of 2, so any fork rehearsal must impersonate both. These are public on-chain
+ * addresses, not secrets.
+ *
+ * Ethereum grants: block 21969614. Base grants: block 27129443 (the deployment block).
+ */
+export const LIVE_ADMINS = [
+  "0x383a6a34c623c02dcf9bb7069fae4482967fb713",
+  "0xfa8b02596a84f3b81b4144ea2f30482f8c33d446",
+];
+
 export const LIVE: Record<
   string,
-  { proxy: string; expectedImpl: string; chainId: number }
+  { proxy: string; expectedImpl: string; chainId: number; admins: string[]; deployBlock?: number }
 > = {
   ethereum: {
     proxy: "0x92217cCaEDBdbc54C76c15feA18823db1558fDc9",
     expectedImpl: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
     chainId: 1,
+    admins: LIVE_ADMINS,
+    deployBlock: 21969614,
   },
   base: {
     proxy: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
     expectedImpl: "0x13Cd0bd6f577d937AD3268688D4907Afa4209DCb",
     chainId: 8453,
+    admins: LIVE_ADMINS,
+    deployBlock: 27129443,
   },
   skale: {
     proxy: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
     expectedImpl: "0x13Cd0bd6f577d937AD3268688D4907Afa4209DCb",
     chainId: 2046399126,
+    admins: LIVE_ADMINS,
   },
   "iotex-mainnet": {
     proxy: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
     expectedImpl: "0x13Cd0bd6f577d937AD3268688D4907Afa4209DCb",
     chainId: 4689,
+    admins: LIVE_ADMINS,
   },
 };
 

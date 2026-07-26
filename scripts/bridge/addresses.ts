@@ -78,23 +78,61 @@ export const DVNS: Record<string, Record<string, string>> = {
     horizen: "0x3a4636E9AB975d28d3Af808b4e1c9fd936374E30",
     polyhedra: "0xE014fe8c4d5C23EDB7AC4011F226e869ac7Ef5CC",
   },
+  // TESTNETS: only the LayerZero Labs DVN operates on these lanes. Read from the live default
+  // ULN config on 2026-07-26 via `scripts/bridge/readLzDefaults.ts` (requiredDVNCount == 1 in
+  // both directions) rather than copied from a doc page.
+  sepolia: {
+    layerzero: "0x8eebf8b423B73bFCa51a1Db4B7354AA0bFCA9193",
+  },
+  "base-sepolia": {
+    layerzero: "0xe1a12515F9AB2764b887bF60B923Ca494EBbB2d6",
+  },
 };
 
 /** Default policy: two independent required DVNs. */
 export const DEFAULT_REQUIRED_DVNS = ["layerzero", "nethermind"];
 
-export function requiredDvnAddresses(network: string, names = DEFAULT_REQUIRED_DVNS): string[] {
+/**
+ * Networks where a SINGLE required DVN is tolerated.
+ *
+ * Testnets only, and only because LayerZero runs just one DVN there — a 1-of-1 set cannot be
+ * avoided, and refusing outright would make the Stage-0 rehearsal impossible. The rehearsal still
+ * exercises everything that matters mechanically: the ABI encoding, the ascending-sorted
+ * requiredDVNs rule, and the send-side-A == receive-side-B symmetry that R-07 is about.
+ *
+ * NEVER add a mainnet here. A 1-of-1 DVN configuration is what enabled the ~$292M Kelp/rsETH loss.
+ */
+const SINGLE_DVN_ALLOWED = new Set(["sepolia", "base-sepolia"]);
+
+export function requiredDvnAddresses(network: string, names?: string[]): string[] {
   const table = DVNS[network];
   if (!table) throw new Error(`No DVN table for network "${network}"`);
-  const addrs = names.map((n) => {
+
+  // On a single-DVN testnet, default to whatever that network actually has rather than to the
+  // mainnet ["layerzero","nethermind"] policy, which would throw on an unknown name.
+  const wanted = names ?? (SINGLE_DVN_ALLOWED.has(network) ? Object.keys(table) : DEFAULT_REQUIRED_DVNS);
+
+  const addrs = wanted.map((n) => {
     const a = table[n];
     if (!a) throw new Error(`Unknown DVN "${n}" on ${network}`);
     return a;
   });
+
   if (addrs.length < 2) {
-    throw new Error("Refusing to build a DVN config with fewer than 2 required DVNs");
+    if (!SINGLE_DVN_ALLOWED.has(network)) {
+      throw new Error(
+        `Refusing to build a DVN config with fewer than 2 required DVNs on "${network}". ` +
+          `A 1-of-1 DVN set is the configuration behind the ~$292M Kelp loss.`
+      );
+    }
+    console.warn(
+      `\n  WARNING: ${network} has only ${addrs.length} DVN (${addrs.join(", ")}).\n` +
+        `  Permitted because it is a TESTNET and LayerZero operates no second DVN there.\n` +
+        `  This configuration must NEVER be used on mainnet.\n`
+    );
   }
-  // Ascending, deduplicated — UlnBase reverts otherwise.
+
+  // Ascending, deduplicated — UlnBase reverts LZ_ULN_Unsorted otherwise.
   return [...new Set(addrs.map((a) => a.toLowerCase()))].sort();
 }
 

@@ -118,6 +118,15 @@ adapter. These carry invariants that MUST survive every future upgrade:
 3. **`voluntarilyBurned` must keep being incremented by `burn(uint256)` / `burnFrom`.** The supply
    cap is computed as `totalSupply() + voluntarilyBurned`; without this, any holder could burn
    tokens to manufacture fresh mint headroom for the bridge.
+   ⚠️ **Known limitation (deliberate).** Both terms are PER-CHAIN but `TOTAL_SUPPLY` is the GLOBAL
+   2B cap, so the check is a conservative approximation. Voluntary burns permanently consume this
+   chain's inbound headroom even though they reduced global supply. If
+   `totalSupply() + voluntarilyBurned` ever reached `TOTAL_SUPPLY` on one chain, legitimate inbound
+   transfers there would park indefinitely, recoverable only by upgrade. It fails in the safe
+   direction (never over-mints; nothing is lost, transfers are retryable) and the staged rollout
+   caps are orders of magnitude below the threshold. Pinned by
+   `"PINNED: voluntarilyBurned permanently consumes this chain's inbound headroom"` in
+   `test/governance/integration/FulaOFTBridge.test.ts`.
 4. **Bridge minter proposal types 12 and 13 are contract-local** (defined in `StorageToken.sol`,
    reserved by comment in `ProposalTypes.sol`). They are deliberately NOT in the
    `ProposalTypes.ProposalType` enum so the shared library and `GovernanceModule` — inherited by
@@ -129,6 +138,17 @@ adapter. These carry invariants that MUST survive every future upgrade:
 6. **The rate limiter is fail-closed.** An adapter with no configured `RateLimitConfig` reverts
    every transfer with `RateLimitExceeded`. `setRateLimits` is a mandatory go-live step, not an
    optimization.
+7. **The rate limit is NET, not gross.** `_debit` calls `_outflow(dstEid)` and `_credit` calls
+   `_inflow(srcEid)`; for a single lane these are the SAME mapping key, so inbound transfers
+   subtract from the counter outbound transfers add to. A configured "10M / 24h" therefore bounds
+   net export per window, **not** total volume — capital that round-trips can move without limit.
+   The `limit = 0` kill switch is unaffected (`amountCanBeSent` is 0 regardless of inflow), and
+   inbound volume is bounded by `bridgeMinters.cap` rather than by the limiter. Verified by
+   `"PINNED: the rate limit is NET, not gross"` in
+   `test/governance/integration/FulaOFTBridge.test.ts`.
+   **This is an accepted, deliberate choice (owner decision 2026-07-26), not an oversight.** Size
+   per-window limits as a net-drain budget. If a GROSS ceiling is ever wanted instead, remove the
+   `_inflow` call from `FulaOFTAdapter._credit` and invert that test.
 
 `StorageToken` sits close to the EIP-170 limit (23.9 KiB of 24.0). `hardhat.config.ts` pins it to
 `runs: 100`; the measured size at each optimizer setting is recorded there. Optimizer runs do not

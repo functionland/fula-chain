@@ -83,11 +83,20 @@ const config: HardhatUserConfig = {
       // StorageToken: lower runs to keep deployed bytecode under the EIP-170 24KB cap after
       // adding the LayerZero OFT mint/burn path and bridge-minter governance. Deliberately NOT
       // runs:1 like the contracts below — `transfer` is a hot, user-facing path and low runs
-      // would raise gas for every holder. Measured deployed sizes (limit 24.000 KiB):
-      //   runs=200 -> 24.041 (OVER)   runs=150 -> 23.955   runs=100 -> 23.905
-      //   runs=50  -> 23.784          runs=1   -> 23.743
-      // runs=100 keeps optimization high while leaving ~95 bytes of headroom. If a future change
-      // overflows again, step down to 50 before considering 1.
+      // would raise gas for every holder.
+      //
+      // ⚠️ HEADROOM IS ~50 BYTES, NOT ~95. Measured by `hardhat-contract-sizer` on this branch
+      // (limit 24.000 KiB):
+      //   runs=100 -> 23.950 deployed  =>  ~51 bytes of headroom
+      // The figures previously recorded here (23.905 at runs=100, and the 200/150/50/1 rows) came
+      // from a different environment and read ~45 bytes low; only the runs=100 row has been
+      // re-measured here, so treat the others as indicative, not authoritative.
+      //
+      // PRACTICAL CONSEQUENCE: adding ANY code to StorageToken.sol is very likely to overflow.
+      // Re-run `npx hardhat compile` and read the sizer table after every edit to this contract —
+      // `contractSizer.strict` fails the build on overflow. If it overflows, step down to runs=50
+      // before considering runs=1.
+      //
       // Optimizer runs do NOT affect storage layout, so this is upgrade-safe.
       "contracts/core/StorageToken.sol": {
         version: "0.8.24",
@@ -145,6 +154,20 @@ const config: HardhatUserConfig = {
       // Uncomment if you need higher gas limits (adjust as needed)
       // gas: 2100000,
     },
+    // Keyless, READ-ONLY Ethereum mainnet endpoint. The `ethereum` entry above requires
+    // ALCHEMY_KEY; without it the URL is malformed and every call fails. This mirrors the
+    // existing `base-alt` / `base-alt2` pattern so read-only gates (Phase 0 bytecode parity,
+    // `checkProxyStorage.ts`, `verifyStorageTokenImplParity.ts`) can run with no secrets.
+    //
+    // `accounts` is DELIBERATELY EMPTY: this network cannot sign or send a transaction, so it
+    // is safe to point verification scripts at mainnet. Use `ethereum` for anything that writes.
+    "ethereum-alt": {
+      url: "https://ethereum-rpc.publicnode.com",
+      accounts: [],
+      chainId: 1,
+      gasPrice: "auto",
+      timeout: 60000,
+    },
     base: {
       url: "https://mainnet.base.org",
       accounts: (() => {
@@ -191,14 +214,41 @@ const config: HardhatUserConfig = {
     },
 
     // Testnets
+    // TESTNETS USE DEDICATED THROWAWAY KEYS ONLY — never PK / ADMIN_PK.
+    //
+    // WHY: the production `PK` is `0x383a6A34...`, which is a LIVE ADMIN_ROLE HOLDER on the
+    // mainnet FULA token. Wiring it into testnet entries means one mistyped `--network` could
+    // sign a mainnet transaction with an admin key. `PK_TEST` / `ADMIN_PK_TEST` are freshly
+    // generated wallets with no authority anywhere.
+    //
+    // TWO signers are required, not one: StorageToken governance needs an ADMIN_ROLE quorum of 2,
+    // and `createProposal` auto-approves for its proposer, so a proposal can only reach quorum if
+    // a DIFFERENT admin calls `approveProposal`. With a single key, NO governance action can ever
+    // execute — including authorizing a bridge minter.
+    //
+    // Set them with:  npx hardhat vars set PK_TEST   /   npx hardhat vars set ADMIN_PK_TEST
     sepolia: {
       url: "https://ethereum-sepolia.publicnode.com",
-      accounts: vars.has("PK") ? [vars.get("PK")] : [],
+      accounts: (() => {
+        const accounts: string[] = [];
+        if (vars.has("PK_TEST")) accounts.push(vars.get("PK_TEST"));
+        if (vars.has("ADMIN_PK_TEST")) accounts.push(vars.get("ADMIN_PK_TEST"));
+        return accounts;
+      })(),
       chainId: 11155111,
     },
     "base-sepolia": {
-      url: "https://sepolia.base.org",
-      accounts: vars.has("PK") ? [vars.get("PK")] : [],
+      // `https://sepolia.base.org` serves STALE state immediately after a deployment: a contract
+      // that was just created reads back as `0x` for several seconds, which makes post-deploy
+      // verification spuriously fail (observed twice on 2026-07-26 — the deploys had in fact
+      // succeeded). publicnode is consistent; override with BASE_SEPOLIA_RPC if needed.
+      url: process.env.BASE_SEPOLIA_RPC || "https://base-sepolia-rpc.publicnode.com",
+      accounts: (() => {
+        const accounts: string[] = [];
+        if (vars.has("PK_TEST")) accounts.push(vars.get("PK_TEST"));
+        if (vars.has("ADMIN_PK_TEST")) accounts.push(vars.get("ADMIN_PK_TEST"));
+        return accounts;
+      })(),
       chainId: 84532,
     },
     amoy: {
@@ -234,6 +284,19 @@ const config: HardhatUserConfig = {
               ...(process.env.FORK_BLOCK
                 ? { blockNumber: Number(process.env.FORK_BLOCK) }
                 : {}),
+            },
+            // Hardhat ships a hardfork-activation history only for chains it knows (mainnet,
+            // sepolia, ...). Forking any other chain fails in `before all` with:
+            //   "No known hardfork for execution on historical block N ... in chain with id X.
+            //    The node was not configured with a hardfork activation history."
+            // Declaring the history here is what makes `FORK_TARGET=base` actually runnable.
+            // All of these chains are past Cancun, so activating it at genesis is correct for
+            // any block we would realistically fork.
+            chains: {
+              8453: { hardforkHistory: { cancun: 0 } }, // Base
+              2046399126: { hardforkHistory: { cancun: 0 } }, // SKALE Europa
+              4689: { hardforkHistory: { cancun: 0 } }, // IoTeX
+              84532: { hardforkHistory: { cancun: 0 } }, // Base Sepolia
             },
           }
         : {}),

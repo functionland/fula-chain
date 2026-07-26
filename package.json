@@ -19,6 +19,7 @@
     "test:mining": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/TestnetMiningRewards.test.ts",
     "test:bridge": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/TokenBridgeContract.test.ts",
     "test:bridge:oft": "set REPORT_GAS=true && yarn hardhat test test/governance/integration/FulaOFTBridge.test.ts",
+    "test:layout": "yarn hardhat test test/governance/integration/StorageTokenLayout.test.ts",
     "test:fork:token": "yarn hardhat test test/fork/StorageTokenUpgrade.fork.test.ts",
     "bridge:rehearse": "yarn hardhat run scripts/bridge/rehearseUpgradeOnFork.ts",
     "bridge:preflight": "DRY_RUN=1 yarn hardhat run scripts/bridge/deployStorageTokenImpl.ts",

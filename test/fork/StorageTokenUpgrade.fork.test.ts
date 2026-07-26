@@ -72,16 +72,33 @@ const TARGET = (process.env.FORK_TARGET?.trim() || "base") as keyof typeof LIVE;
     if (!live) throw new Error(`Unknown FORK_TARGET "${TARGET}"`);
     token = await ethers.getContractAt("StorageToken", live.proxy);
 
-    // Discover admins.
-    const found: string[] = [];
+    // Discover admins. StorageToken does NOT inherit AccessControlEnumerable, so
+    // getRoleMemberCount reverts on the live contract; the recorded LIVE_ADMINS (read from the
+    // `RoleGranted` logs emitted by `initialize`) are the reliable source. Env ADMIN1/ADMIN2
+    // override for a chain whose admin set has since changed.
+    let found: string[] = [];
     try {
       const count = await token.getRoleMemberCount(ADMIN_ROLE);
       for (let i = 0n; i < count; i++) found.push(await token.getRoleMember(ADMIN_ROLE, i));
     } catch {
-      found.push(await token.owner());
-      if (process.env.ADMIN2) found.push(process.env.ADMIN2.trim());
+      found = [];
     }
-    expect(found.length, "need 2 ADMIN_ROLE holders (set ADMIN2 if not enumerable)").to.be.gte(2);
+    if (found.length < 2) {
+      const override = [process.env.ADMIN1?.trim(), process.env.ADMIN2?.trim()].filter(
+        Boolean
+      ) as string[];
+      found = override.length >= 2 ? override : [...live.admins];
+    }
+
+    // Only keep addresses that really hold ADMIN_ROLE right now — a stale record must fail loudly
+    // rather than silently impersonate a non-admin and produce a meaningless green run.
+    const verified: string[] = [];
+    for (const a of found) if (await token.hasRole(ADMIN_ROLE, a)) verified.push(a);
+    expect(
+      verified.length,
+      `need 2 live ADMIN_ROLE holders; checked ${found.join(", ")} — set ADMIN1/ADMIN2 to override`
+    ).to.be.gte(2);
+    found = verified;
 
     admin1 = await impersonate(found[0]);
     admin2 = await impersonate(found[1]);

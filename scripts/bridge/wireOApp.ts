@@ -84,21 +84,58 @@ async function main() {
   const adapter = await ethers.getContractAt("FulaOFTAdapter", adapterAddr);
   const endpoint = await ethers.getContractAt(
     [
-      "function setSendLibrary(address,uint32,address) external",
-      "function setReceiveLibrary(address,uint32,address,uint256) external",
-      "function setConfig(address,address,(uint32,uint32,bytes)[]) external",
-      "function getConfig(address,address,uint32,uint32) external view returns (bytes)",
+      "function setSendLibrary(address _oapp, uint32 _eid, address _newLib) external",
+      "function setReceiveLibrary(address _oapp, uint32 _eid, address _newLib, uint256 _gracePeriod) external",
+      // NOTE: the tuple components MUST be named. With an anonymous tuple
+      // `(uint32,uint32,bytes)[]` ethers v6 only accepts POSITIONAL arrays and throws
+      // "cannot encode object for signature with missing names" on the `{eid, configType, config}`
+      // objects built below. Caught by the Sepolia rehearsal; it would have failed identically on
+      // mainnet.
+      "function setConfig(address _oapp, address _lib, (uint32 eid, uint32 configType, bytes config)[] _params) external",
+      "function getConfig(address _oapp, address _lib, uint32 _eid, uint32 _configType) external view returns (bytes)",
+      "function getSendLibrary(address _sender, uint32 _dstEid) external view returns (address)",
+      "function getReceiveLibrary(address _receiver, uint32 _srcEid) external view returns (address lib, bool isDefault)",
     ],
     local.endpoint
   );
 
+  // --- idempotence helpers -------------------------------------------------
+  // The endpoint REVERTS when a library is set to the value it already holds, so a naive re-run
+  // after a partial failure (an RPC nonce race, a dropped tx, a funding hiccup) dies on the first
+  // already-applied step and never reaches the ones that still need doing. That is exactly the
+  // situation a runbook has to survive on mainnet, so each step declares how to detect that it is
+  // already done and is skipped rather than attempted.
+  async function sendLibAlreadySet(): Promise<boolean> {
+    try {
+      const cur = await endpoint.getSendLibrary(adapterAddr, remote.eid);
+      return String(cur).toLowerCase() === local.sendUln302.toLowerCase();
+    } catch {
+      return false;
+    }
+  }
+  async function receiveLibAlreadySet(): Promise<boolean> {
+    try {
+      const [lib, isDefault] = await endpoint.getReceiveLibrary(adapterAddr, remote.eid);
+      return !isDefault && String(lib).toLowerCase() === local.receiveUln302.toLowerCase();
+    } catch {
+      return false;
+    }
+  }
+  async function peerAlreadySet(): Promise<boolean> {
+    try {
+      return (await adapter.peers(remote.eid)).toLowerCase() === peerBytes32.toLowerCase();
+    } catch {
+      return false;
+    }
+  }
+
   const peerBytes32 = ethers.zeroPadValue(remoteAdapterAddr, 32);
   const enforced = [{ eid: remote.eid, msgType: 1, options: lzReceiveOption(lzReceiveGas) }];
 
-  const txs: Array<[string, { to: string; data: string }]> = [
-    ["adapter.setPeer", { to: adapterAddr, data: adapter.interface.encodeFunctionData("setPeer", [remote.eid, peerBytes32]) }],
-    ["endpoint.setSendLibrary", { to: local.endpoint, data: endpoint.interface.encodeFunctionData("setSendLibrary", [adapterAddr, remote.eid, local.sendUln302]) }],
-    ["endpoint.setReceiveLibrary", { to: local.endpoint, data: endpoint.interface.encodeFunctionData("setReceiveLibrary", [adapterAddr, remote.eid, local.receiveUln302, 0]) }],
+  const txs: Array<[string, { to: string; data: string }, (() => Promise<boolean>)?]> = [
+    ["adapter.setPeer", { to: adapterAddr, data: adapter.interface.encodeFunctionData("setPeer", [remote.eid, peerBytes32]) }, peerAlreadySet],
+    ["endpoint.setSendLibrary", { to: local.endpoint, data: endpoint.interface.encodeFunctionData("setSendLibrary", [adapterAddr, remote.eid, local.sendUln302]) }, sendLibAlreadySet],
+    ["endpoint.setReceiveLibrary", { to: local.endpoint, data: endpoint.interface.encodeFunctionData("setReceiveLibrary", [adapterAddr, remote.eid, local.receiveUln302, 0]) }, receiveLibAlreadySet],
     ["endpoint.setConfig(send)", { to: local.endpoint, data: endpoint.interface.encodeFunctionData("setConfig", [adapterAddr, local.sendUln302, [
       { eid: remote.eid, configType: CONFIG_TYPE_ULN, config: ulnConfig },
       { eid: remote.eid, configType: CONFIG_TYPE_EXECUTOR, config: executorConfig },
@@ -110,14 +147,21 @@ async function main() {
     ["adapter.setRateLimits", { to: adapterAddr, data: adapter.interface.encodeFunctionData("setRateLimits", [[{ dstEid: remote.eid, limit: rateLimit, window: rateWindow }]]) }],
   ];
 
-  for (const [name, tx] of txs) {
+  const [signer] = await ethers.getSigners();
+  for (const [name, tx, alreadyDone] of txs) {
     if (dryRun) {
       console.log(`\n${name}\n  to:   ${tx.to}\n  data: ${tx.data}`);
       continue;
     }
+    if (alreadyDone && (await alreadyDone())) {
+      console.log(`\n${name} ... SKIP (already set)`);
+      continue;
+    }
     console.log(`\n${name} ...`);
-    const [signer] = await ethers.getSigners();
-    const sent = await signer.sendTransaction(tx);
+    // Pin the nonce explicitly. Public RPCs occasionally serve a stale transaction count, which
+    // produced a "nonce too low" mid-run here on base-sepolia and aborted the wiring halfway.
+    const nonce = await ethers.provider.getTransactionCount(signer.address, "pending");
+    const sent = await signer.sendTransaction({ ...tx, nonce });
     await sent.wait();
     console.log(`  ok (${sent.hash})`);
   }

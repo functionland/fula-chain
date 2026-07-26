@@ -10,7 +10,12 @@
 //   ADAPTER=0x.. REMOTE=base npx hardhat run scripts/bridge/verifyOAppConfig.ts --network ethereum
 //
 // To cross-check both directions, run on each chain and compare the printed
-// "send ULN digest" on A with the "receive ULN digest" on B.
+// "CROSS-CHAIN" digest: A's SEND digest must equal B's RECEIVE digest.
+//
+// Use the CROSS-CHAIN digest, never the address-based one. A DVN operator has a DIFFERENT
+// contract address on every chain, so the address-based digest cannot match across chains even
+// when the configuration is perfectly correct. The cross-chain digest identifies DVNs by operator
+// NAME (resolved through the DVNS table in addresses.ts), which is what R-07 actually cares about.
 import { ethers, network } from "hardhat";
 import { chainFor, requiredDvnAddresses, DVNS } from "./addresses";
 
@@ -150,8 +155,10 @@ async function main() {
     );
     check(unknown.length === 0, `${label}: all DVNs are recognised operators`, unknown.join(", "));
 
-    // digest to compare across chains
-    const digest = ethers.keccak256(
+    // LOCAL digest — includes raw DVN addresses. Valid ONLY for comparing send vs receive on
+    // THIS chain. It is meaningless across chains: a DVN operator has a different address on
+    // every chain, so two correctly-matched configs will always produce different local digests.
+    const localDigest = ethers.keccak256(
       abi.encode(
         ["uint64", "uint8", "uint8", "uint8", "address[]", "address[]"],
         [
@@ -164,11 +171,35 @@ async function main() {
         ]
       )
     );
-    console.log(`     ${label} ULN digest: ${digest}`);
-    console.log(
-      `     ^ compare this with the ${label === "send" ? "RECEIVE" : "SEND"} digest on ${remote.network}`
+
+    // CROSS-CHAIN digest — identifies DVNs by OPERATOR NAME rather than address, so it is
+    // chain-independent and CAN legitimately match. This is the one that answers the question
+    // R-07 actually asks: "does A's send side require the same verifier set that B's receive
+    // side expects?". Sorted by name so ordering cannot affect the hash.
+    const nameOf = (d: string) => dvnName(local.network, d);
+    const crossDigest = ethers.keccak256(
+      ethers.toUtf8Bytes(
+        JSON.stringify({
+          confirmations: confirmations.toString(),
+          requiredCount: Number(requiredCount),
+          optionalCount: Number(optionalCount),
+          optionalThreshold: Number(optionalThreshold),
+          required: [...requiredDvns].map(nameOf).sort(),
+          optional: [...optionalDvns].map(nameOf).sort(),
+        })
+      )
     );
-    return { digest, requiredDvns };
+
+    console.log(`     ${label} ULN digest (local, address-based):  ${localDigest}`);
+    console.log(`     ${label} ULN digest (CROSS-CHAIN, by operator): ${crossDigest}`);
+    console.log(
+      `     ^ THIS is the value to compare with the ${label === "send" ? "RECEIVE" : "SEND"} cross-chain digest on ${remote.network}.`
+    );
+    console.log(
+      `       Do NOT compare the address-based digest across chains — DVN operators have`
+    );
+    console.log(`       different addresses per chain, so it can never match even when correct.`);
+    return { digest: localDigest, crossDigest, requiredDvns };
   }
 
   const send = await readUln(local.sendUln302, "send");

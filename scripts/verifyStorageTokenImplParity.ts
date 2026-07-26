@@ -18,7 +18,10 @@ const IMPL_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d3
 
 const PROXY_BY_NETWORK: Record<string, string> = {
   ethereum: "0x92217cCaEDBdbc54C76c15feA18823db1558fDc9",
+  // Same chain as `ethereum`, but a keyless read-only endpoint with no signing accounts.
+  "ethereum-alt": "0x92217cCaEDBdbc54C76c15feA18823db1558fDc9",
   base: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
+  "base-alt": "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
   skale: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
   "iotex-mainnet": "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
 };
@@ -31,6 +34,31 @@ function stripMetadata(hex: string): string {
   const trailer = (len + 2) * 2; // bytes -> hex chars
   if (trailer >= body.length) return body;
   return body.slice(0, body.length - trailer);
+}
+
+/** Return just the CBOR metadata trailer (the part stripMetadata removes). */
+function metadataTrailer(hex: string): string {
+  const body = hex.startsWith("0x") ? hex.slice(2) : hex;
+  return body.slice(stripMetadata(hex).length);
+}
+
+/**
+ * Neutralize the UUPS `__self` immutable before comparing two implementations.
+ *
+ * WHY THIS IS REQUIRED, NOT COSMETIC: `UUPSUpgradeable` declares
+ * `address private immutable __self = address(this)`. Immutables are baked into DEPLOYED
+ * bytecode at construction, so the same source deployed to two different addresses produces
+ * bytecode that differs in exactly those slots. A raw keccak comparison therefore ALWAYS reports
+ * "different" for a UUPS implementation on two chains — which would push an operator onto the
+ * two-reference-source fallback path for no reason.
+ *
+ * Measured on the live deployments (2026-07-26): Ethereum and Base differ in exactly 38 bytes
+ * across 2 regions, each region holding that chain's own implementation address. Masking those
+ * occurrences makes the comparison meaningful.
+ */
+function maskSelfImmutable(strippedHex: string, implAddress: string): string {
+  const needle = implAddress.toLowerCase().replace(/^0x/, "");
+  return strippedHex.toLowerCase().split(needle).join("0".repeat(needle.length));
 }
 
 async function main() {
@@ -49,10 +77,22 @@ async function main() {
 
   const strippedLive = stripMetadata(deployed);
   const liveHash = ethers.keccak256("0x" + strippedLive);
+  const maskedLive = maskSelfImmutable(strippedLive, impl);
+  const maskedHash = ethers.keccak256("0x" + maskedLive);
+  const trailer = metadataTrailer(deployed);
+
   console.log(`\nlive impl bytecode (metadata stripped)`);
-  console.log(`  length: ${strippedLive.length / 2} bytes`);
-  console.log(`  keccak: ${liveHash}`);
-  console.log(`  ^ compare this value across networks to answer "same implementation?"`);
+  console.log(`  length:      ${strippedLive.length / 2} bytes`);
+  console.log(`  keccak:      ${liveHash}`);
+  console.log(`  ^ RAW hash. Do NOT compare this across networks — it always differs, because`);
+  console.log(`    UUPSUpgradeable bakes 'immutable __self = address(this)' into the bytecode.`);
+  console.log(`  keccak(masked): ${maskedHash}`);
+  console.log(`  ^ THIS is the cross-network comparison value (__self occurrences zeroed).`);
+
+  console.log(`\nsolc metadata trailer  ${trailer}`);
+  console.log(`  ^ STRONGEST same-source signal: the CBOR trailer embeds a hash of the SOURCE and`);
+  console.log(`    the COMPILER SETTINGS. Identical trailers on two chains => identical source,`);
+  console.log(`    identical settings, identical solc version.`);
 
   // Compare against repo HEAD.
   const artifact = await artifacts.readArtifact("StorageToken");

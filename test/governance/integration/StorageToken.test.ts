@@ -4,6 +4,7 @@ import { StorageToken } from "../typechain-types";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 import { ZeroAddress, BytesLike } from "ethers";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
+const { anyValue } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
 
 const ADMIN_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
 const BRIDGE_OPERATOR_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("BRIDGE_OPERATOR_ROLE"));
@@ -552,11 +553,24 @@ describe("transferFromContract", function () {
       const initialSupply = await storageToken.totalSupply();
       const initialContractBalance = await storageToken.balanceOf(await storageToken.getAddress());
   
-      await expect(storageToken.connect(bridgeOperator).bridgeOp(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE, 1))
+      // The 5th argument is `block.timestamp` of the mined transaction. It was previously
+      // asserted as `await time.latest()`, which is read while BUILDING the assertion — i.e.
+      // before the tx is mined — so it is off by one whenever the next block advances the clock.
+      // That made this test order-dependent: green alone, red when an earlier suite had moved
+      // time. Match the timestamp loosely and assert the exact value separately below.
+      const tx = await storageToken
+        .connect(bridgeOperator)
+        .bridgeOp(MINT_AMOUNT, SOURCE_CHAIN_ID, NONCE, 1);
+      await expect(tx)
         .to.emit(storageToken, "BridgeOperationDetails")
-        .withArgs(bridgeOperator.address, 1, MINT_AMOUNT, SOURCE_CHAIN_ID, await time.latest())
+        .withArgs(bridgeOperator.address, 1, MINT_AMOUNT, SOURCE_CHAIN_ID, anyValue);
+
+      // ...and pin the timestamp exactly, against the block the tx actually landed in.
+      const receipt = await tx.wait();
+      const minedAt = (await ethers.provider.getBlock(receipt!.blockNumber))!.timestamp;
+      await expect(tx)
         .to.emit(storageToken, "BridgeOperationDetails")
-        .withArgs(await bridgeOperator.getAddress(), 1, MINT_AMOUNT, SOURCE_CHAIN_ID, await time.latest());
+        .withArgs(bridgeOperator.address, 1, MINT_AMOUNT, SOURCE_CHAIN_ID, minedAt);
   
       expect(await storageToken.totalSupply()).to.equal(initialSupply + MINT_AMOUNT);
       expect(await storageToken.balanceOf(await storageToken.getAddress())).to.equal(initialContractBalance + MINT_AMOUNT);
