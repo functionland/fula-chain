@@ -223,6 +223,20 @@ const config: HardhatUserConfig = {
     },
     hardhat: {
       allowUnlimitedContractSize: true,
+      // Mainnet forking for upgrade rehearsals and fork tests.
+      // Enable by setting FORK_RPC_URL (and optionally FORK_BLOCK for a pinned, reproducible run):
+      //   FORK_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/$ALCHEMY_KEY npx hardhat test test/fork/...
+      // Leave unset for normal local runs.
+      ...(process.env.FORK_RPC_URL
+        ? {
+            forking: {
+              url: process.env.FORK_RPC_URL,
+              ...(process.env.FORK_BLOCK
+                ? { blockNumber: Number(process.env.FORK_BLOCK) }
+                : {}),
+            },
+          }
+        : {}),
     },
     localhost: {
       url: "http://127.0.0.1:8545",
