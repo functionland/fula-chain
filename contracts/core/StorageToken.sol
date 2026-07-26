@@ -24,6 +24,15 @@ contract StorageToken is
     uint256 private constant TOTAL_SUPPLY = 2_000_000_000 * TOKEN_UNIT;
     uint256 private constant WHITELIST_LOCK_DURATION = 1 days;
 
+    /// @notice Contract-local proposal types for bridge-minter administration.
+    /// @dev `GovernanceModule.createProposal` dispatches any unrecognized `uint8` to
+    ///      {_createCustomProposal}, and `UnifiedProposal.proposalType` is a raw `uint8`. These
+    ///      values are therefore defined HERE rather than in `ProposalTypes.ProposalType`, so that
+    ///      the shared `ProposalTypes` library and `GovernanceModule` — inherited by ~10 other live
+    ///      contracts — do not have to change. Values 12/13 are reserved in ProposalTypes.sol.
+    uint8 private constant PROPOSAL_SET_BRIDGE_MINTER = 12;
+    uint8 private constant PROPOSAL_REMOVE_BRIDGE_MINTER = 13;
+
     mapping(uint256 => mapping(uint256 => uint8)) private _usedNonces;
     mapping(address => bool) public blacklisted;
 
@@ -33,6 +42,41 @@ contract StorageToken is
     uint256 private platformFeeBps;
 
     PackedVars private packedVars;
+
+    // ---------------------------------------------------------------------
+    // Cross-chain bridge state (LayerZero OFT).
+    //
+    // STORAGE SAFETY: everything below is APPENDED after `packedVars` and must
+    // never be reordered or removed. `StorageToken` is in the "Legacy" group
+    // (first child slot 11) per contracts/UPGRADING.md, so there is no parent
+    // `__gap` absorber; new state lands at slot 16 onward. See UPGRADING.md
+    // before touching any declaration in this contract.
+    // ---------------------------------------------------------------------
+
+    /// @notice Authorization + accounting for a cross-chain bridge adapter.
+    /// @dev Packs into a single slot (1 + 12 + 12 = 25 bytes).
+    /// @param enabled Whether this address may call {mint} / {burn}.
+    /// @param cap Ceiling on `netMinted`, in wei. Governance-set; the staged-rollout lever.
+    /// @param netMinted (bridge mints - bridge burns). MAY be negative when this chain is a
+    ///        net exporter, which is why it is signed. Bridge mints are not issuance: each is
+    ///        1:1 backed by a burn on the source chain, so a monotonic counter would wrongly
+    ///        strangle the bridge after enough round trips.
+    struct BridgeMinter {
+        bool enabled;
+        uint96 cap;
+        int96 netMinted;
+    }
+
+    /// @notice Addresses authorized to mint/burn for cross-chain transfers. Slot 16.
+    mapping(address => BridgeMinter) public bridgeMinters;
+
+    /// @notice Cumulative tokens destroyed via the permissionless {burn}/{burnFrom} entry points. Slot 17.
+    /// @dev Tracked so that voluntary burns do not silently manufacture fresh headroom under
+    ///      the `totalSupply()`-based supply cap. See {bridgeOp} and {mint}.
+    uint256 public voluntarilyBurned;
+
+    /// @dev Reserved for future upgrades. Slots 18..64.
+    uint256[47] private __gap;
 
     /// @notice Initialize the token contract
     /// @param initialOwner Address of the initial owner
@@ -89,7 +133,18 @@ contract StorageToken is
         if (block.timestamp < lockTime) revert LocktimeActive(to);
     }
 
-    /// @notice blocking transfers from/to blacklisted wallets and transfer the platform to treasury from the transaction 
+    /// @notice blocking transfers from/to blacklisted wallets and transfer the platform to treasury from the transaction
+    /// @dev The platform fee applies to TRANSFERS ONLY. It must never be charged on a mint
+    ///      (`from == address(0)`) or a burn (`to == address(0)`), both of which route through
+    ///      this hook in OpenZeppelin v5 (`_mint` -> `_update(0, to, v)`, `_burn` -> `_update(from, 0, v)`).
+    ///      Charging it there is not merely a fee leak, it breaks supply conservation:
+    ///        - burn: `super._update(from, treasury, fee)` is a plain TRANSFER, so `burn(x)` would
+    ///          destroy only `x - fee` while a bridge credits the full `x` on the destination chain,
+    ///          inflating global supply by up to MAX_BPS (5%) on every hop, round-trippable.
+    ///        - mint: the recipient would silently receive `amount - fee`.
+    ///      The blacklist checks stay outside the branch so they still apply to mints and burns.
+    ///      `blacklisted[address(0)]` can never be set (see {_blacklistOp} and {_createCustomProposal}),
+    ///      so the zero address is never spuriously blocked.
     function _update(
         address from,
         address to,
@@ -97,8 +152,9 @@ contract StorageToken is
     ) internal virtual override(ERC20Upgradeable) {
         if (blacklisted[from]) revert BlacklistedAddress(from);
         if (blacklisted[to]) revert BlacklistedAddress(to);
-        if (platformFeeBps > 0) {
-            uint256 fee = (amount * platformFeeBps) / 10000;
+        uint256 feeBps = platformFeeBps;
+        if (feeBps > 0 && from != address(0) && to != address(0)) {
+            uint256 fee = (amount * feeBps) / 10000;
             super._update(from, address(treasury), fee);
             super._update(from, to, amount - fee);
         } else {
@@ -170,7 +226,98 @@ contract StorageToken is
         return true;
     }
 
+    // ---------------------------------------------------------------------
+    // LayerZero OFT bridge: IMintableBurnable surface
+    // ---------------------------------------------------------------------
+
+    /// @notice Mint tokens credited by an inbound cross-chain transfer.
+    /// @dev Implements `IMintableBurnable.mint`. MUST return bool: the adapter's external call is
+    ///      ABI-decoded as `returns (bool)`, and empty returndata would revert every inbound transfer.
+    ///      Reverts on failure; never returns false.
+    ///      Reverting here is SAFE and non-destructive: a failed `lzReceive` restores the inbound
+    ///      payload hash, so anyone may permissionlessly retry once the blocking condition (pause,
+    ///      blacklist, cap) clears. A revert delays a transfer, it never destroys one.
+    /// @param to Recipient of the minted tokens.
+    /// @param amount Amount to mint, in wei.
+    /// @return success Always true; failures revert.
+    function mint(address to, uint256 amount)
+        external
+        whenNotPaused
+        nonReentrant
+        returns (bool)
+    {
+        BridgeMinter storage minter = bridgeMinters[msg.sender];
+        if (!minter.enabled) revert NotBridgeMinter(msg.sender);
+        if (to == address(0)) revert InvalidAddress();
+        if (amount == 0) revert AmountMustBePositive();
+
+        // Absolute per-chain backstop. `voluntarilyBurned` is added back so that permissionless
+        // burns cannot manufacture fresh mint headroom against the cap.
+        if (totalSupply() + voluntarilyBurned + amount > TOTAL_SUPPLY) {
+            revert ExceedsMaximumSupply(amount, TOTAL_SUPPLY);
+        }
+
+        // Per-minter net position ceiling: the primary, governance-tunable blast-radius control.
+        int256 net = int256(minter.netMinted) + int256(amount);
+        if (net > int256(uint256(minter.cap))) revert BridgeMintCapExceeded(net, minter.cap);
+        minter.netMinted = int96(net);
+
+        _mint(to, amount);
+        _updateActivityTimestamp();
+        emit BridgeMint(msg.sender, to, amount);
+        return true;
+    }
+
+    /// @notice Burn tokens being sent out by an outbound cross-chain transfer.
+    /// @dev Implements `IMintableBurnable.burn`. MUST return bool (see {mint}).
+    ///      SECURITY: this burns from `from` with NO allowance check, which is what
+    ///      `MintBurnOFTAdapter._debit` requires (it passes the message sender). Consequently an
+    ///      authorized bridge minter can burn ANY holder's balance. Only ever authorize immutable,
+    ///      non-upgradeable, source-verified adapter contracts; {_createCustomProposal} enforces
+    ///      that the target is a contract, and authorization requires full governance approval.
+    /// @param from Holder whose tokens are burned.
+    /// @param amount Amount to burn, in wei.
+    /// @return success Always true; failures revert.
+    function burn(address from, uint256 amount)
+        external
+        whenNotPaused
+        nonReentrant
+        returns (bool)
+    {
+        BridgeMinter storage minter = bridgeMinters[msg.sender];
+        if (!minter.enabled) revert NotBridgeMinter(msg.sender);
+        if (from == address(0)) revert InvalidAddress();
+        if (amount == 0) revert AmountMustBePositive();
+
+        // May go negative: this chain is then a net exporter of supply.
+        minter.netMinted = int96(int256(minter.netMinted) - int256(amount));
+
+        _burn(from, amount);
+        _updateActivityTimestamp();
+        emit BridgeBurn(msg.sender, from, amount);
+        return true;
+    }
+
+    /// @notice Burn caller's own tokens.
+    /// @dev Overridden ONLY to record `voluntarilyBurned`; guards are intentionally left as
+    ///      inherited (see contracts/UPGRADING.md — deliberate scope boundary). Without this
+    ///      accounting a holder could burn tokens to create fresh headroom under the
+    ///      `totalSupply()`-based supply cap used by {mint} and {bridgeOp}.
+    function burn(uint256 value) public virtual override {
+        voluntarilyBurned += value;
+        super.burn(value);
+    }
+
+    /// @notice Burn tokens from `account` using the caller's allowance.
+    /// @dev See {burn(uint256)} for why this is overridden.
+    function burnFrom(address account, uint256 value) public virtual override {
+        voluntarilyBurned += value;
+        super.burnFrom(account, value);
+    }
+
     /// @notice Bridge mint function for cross-chain transfers for minting tokens or burning tokens to be minted on another chain
+    /// @custom:deprecated Superseded by the LayerZero OFT adapter path ({mint}/{burn} + {bridgeMinters}).
+    ///                    Retained for operational continuity; scheduled for removal in a follow-up upgrade.
     /// @param amount is the amount ot burn or mint
     /// @param chain is the id of the chain to burn or mint tokens on
     /// @param nonce is the pre-defined one-time code for this operation on this chain
@@ -184,7 +331,8 @@ contract StorageToken is
         if (_usedNonces[chain][nonce] == 0) revert UsedNonce(nonce);
         if (amount == 0) revert AmountMustBePositive();
         
-        uint256 currentSupply = totalSupply();
+        // `voluntarilyBurned` is added back so permissionless burns cannot manufacture mint headroom.
+        uint256 currentSupply = totalSupply() + voluntarilyBurned;
         if ((op == 1 && currentSupply + amount > TOTAL_SUPPLY) || (op ==2 && balanceOf(address(this)) < amount)) revert ExceedsMaximumSupply(amount, balanceOf(address(this)));
 
         ProposalTypes.RoleConfig storage roleConfig = roleConfigs[ProposalTypes.BRIDGE_OPERATOR_ROLE];
@@ -237,13 +385,36 @@ contract StorageToken is
             }
         } else if (proposalType == uint8(ProposalTypes.ProposalType.ChangeTreasuryFee)) {
             if (amount > MAX_BPS) revert FeeExceedsMax(amount);
+        } else if (proposalType == PROPOSAL_SET_BRIDGE_MINTER) {
+            if (target == address(0)) revert InvalidAddress();
+            // A bridge minter can burn ANY holder's balance without allowance (see {burn}).
+            // Restricting to contracts blocks authorizing an EOA, which would be catastrophic.
+            if (target.code.length == 0) revert MinterMustBeContract(target);
+            // A zero cap would authorize a minter that can never mint; reject as operator error.
+            if (amount == 0) revert AmountMustBePositive();
+            // Bound the cap to int96 range. {mint} checks `net <= cap` and then downcasts to
+            // int96, and an explicit int256->int96 conversion TRUNCATES SILENTLY in Solidity.
+            // `cap` is a uint96 (max ~7.9e28) while int96 tops out at ~3.96e28, so without this
+            // a cap above int96 max would let `netMinted` wrap negative and silently reset cap
+            // consumption. Unreachable today (TOTAL_SUPPLY is 2e27) but the invariant is cheap
+            // to pin here rather than depend on the supply cap never changing.
+            if (amount > uint96(uint256(int256(type(int96).max)))) revert BridgeMintCapTooHigh(amount);
+            if (pendingProposals[target].proposalType != 0) revert ExistingActiveProposal(target);
+            // NOTE: deliberately allowed on an already-enabled minter — re-issuing is how
+            // governance RAISES the cap during staged rollout.
+        } else if (proposalType == PROPOSAL_REMOVE_BRIDGE_MINTER) {
+            if (target == address(0)) revert InvalidAddress();
+            if (!bridgeMinters[target].enabled) revert NotBridgeMinter(target);
+            if (pendingProposals[target].proposalType != 0) revert ExistingActiveProposal(target);
         }
 
-        if (proposalType == uint8(ProposalTypes.ProposalType.AddWhitelist) || 
-            proposalType == uint8(ProposalTypes.ProposalType.RemoveWhitelist) || 
-            proposalType == uint8(ProposalTypes.ProposalType.AddToBlacklist) || 
-            proposalType == uint8(ProposalTypes.ProposalType.RemoveFromBlacklist) || 
-            proposalType == uint8(ProposalTypes.ProposalType.ChangeTreasuryFee)
+        if (proposalType == uint8(ProposalTypes.ProposalType.AddWhitelist) ||
+            proposalType == uint8(ProposalTypes.ProposalType.RemoveWhitelist) ||
+            proposalType == uint8(ProposalTypes.ProposalType.AddToBlacklist) ||
+            proposalType == uint8(ProposalTypes.ProposalType.RemoveFromBlacklist) ||
+            proposalType == uint8(ProposalTypes.ProposalType.ChangeTreasuryFee) ||
+            proposalType == PROPOSAL_SET_BRIDGE_MINTER ||
+            proposalType == PROPOSAL_REMOVE_BRIDGE_MINTER
         ) {
             bytes32 proposalId = _createProposalId(
                 proposalType,
@@ -257,8 +428,17 @@ contract StorageToken is
             );
             
             proposal.proposalType = proposalType;
+            // Persist the amount for the value-carrying proposal types.
+            // BUGFIX: `ChangeTreasuryFee` previously never stored `amount`, so execution always
+            // read `proposal.amount == 0` and silently set the platform fee to 0 regardless of
+            // what was proposed. The new bridge-minter cap depends on the same field.
+            if (proposalType == uint8(ProposalTypes.ProposalType.ChangeTreasuryFee) ||
+                proposalType == PROPOSAL_SET_BRIDGE_MINTER
+            ) {
+                proposal.amount = amount;
+            }
             pendingProposals[target].proposalType = proposalType;
-            
+
             return proposalId;
         }
         
@@ -297,6 +477,17 @@ contract StorageToken is
             _blacklistOp(target, 2);
         } else if (proposalTypeVal == uint8(ProposalTypes.ProposalType.ChangeTreasuryFee)) {
             _setPlatformFee(proposal.amount);
+        } else if (proposalTypeVal == PROPOSAL_SET_BRIDGE_MINTER) {
+            BridgeMinter storage minter = bridgeMinters[target];
+            minter.enabled = true;
+            minter.cap = proposal.amount;
+            emit BridgeMinterSet(target, proposal.amount, msg.sender);
+        } else if (proposalTypeVal == PROPOSAL_REMOVE_BRIDGE_MINTER) {
+            // Revoke authorization but PRESERVE `netMinted`: it is the accounting record of this
+            // minter's net position. Zeroing it would lose the audit trail and, if the minter were
+            // ever re-authorized, would reset its cap consumption to zero.
+            bridgeMinters[target].enabled = false;
+            emit BridgeMinterRemoved(target, msg.sender);
         }
         else {
             revert InvalidProposalType(proposalTypeVal);

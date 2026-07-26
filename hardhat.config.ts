@@ -80,6 +80,31 @@ const config: HardhatUserConfig = {
           },
         },
       },
+      // StorageToken: lower runs to keep deployed bytecode under the EIP-170 24KB cap after
+      // adding the LayerZero OFT mint/burn path and bridge-minter governance. Deliberately NOT
+      // runs:1 like the contracts below — `transfer` is a hot, user-facing path and low runs
+      // would raise gas for every holder. Measured deployed sizes (limit 24.000 KiB):
+      //   runs=200 -> 24.041 (OVER)   runs=150 -> 23.955   runs=100 -> 23.905
+      //   runs=50  -> 23.784          runs=1   -> 23.743
+      // runs=100 keeps optimization high while leaving ~95 bytes of headroom. If a future change
+      // overflows again, step down to 50 before considering 1.
+      // Optimizer runs do NOT affect storage layout, so this is upgrade-safe.
+      "contracts/core/StorageToken.sol": {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 100,
+          },
+          viaIR: true,
+          evmVersion: "shanghai",
+          outputSelection: {
+            "*": {
+              "*": ["storageLayout"],
+            },
+          },
+        },
+      },
       // RewardEngine: lower runs to keep deployed bytecode under the EIP-170
       // 24KB cap after wiring per-peer storage rewards + per-month cap. Reward-
       // claim path is user-triggered (not high-frequency), so the runtime-gas

@@ -19,6 +19,13 @@ library ProposalTypes {
         AddToBlacklist, // Adding a wallet address to Blacklist for restrictions
         RemoveFromBlacklist, // Removing a wallet from blacklist
         ChangeTreasuryFee // change hte fee that goes to treasury from transfers
+        // RESERVED — do not reuse these values in this enum:
+        //   12 = SetBridgeMinter    (StorageToken, LayerZero OFT bridge)
+        //   13 = RemoveBridgeMinter (StorageToken, LayerZero OFT bridge)
+        // They are contract-local proposal types defined in StorageToken.sol. `proposalType` is
+        // carried as a raw uint8 and unrecognized values dispatch to `_createCustomProposal`, so
+        // they deliberately do NOT appear here — adding them would change a library shared by
+        // ~10 already-deployed contracts for no runtime benefit.
     }
 
     /// @notice Time-related constants for proposal lifecycle
