@@ -351,8 +351,9 @@ sybil chunk size and is the cheapest dial for tightening it.
 
 The membership multiplier is the brake, and it is a *cost* brake, not a proof of personhood. If
 `StoragePool.createPoolLockAmount` is zero on the live deployment, creating pools is free and a
-motivated actor can self-approve sybil members; `minPoolJoinStake` and `minMembershipAge` then
-carry the whole defence. **The deploy script reads this value and warns.**
+motivated actor can self-approve sybil members; `minPoolJoinStake` then carries the whole defence,
+since the membership-age gate had to be removed as grievable (F-16). **The deploy script reads
+this value and warns.**
 
 This is whale *friction* and provider-weighting. Documentation and UI must not describe it as
 whale resistance.

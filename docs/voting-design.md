@@ -229,7 +229,7 @@ Measured sizes along the way:
 The array makes both get and set O(1) with no branching. The cost is a few extra cold SLOADs per
 call — worth a fraction of a cent on Base — and it also removes a whole class of packing bug,
 since no field is ever masked into a shared slot. Values are read with `paramValue(id)` or
-`allParams()`.
+`paramValue(id)`.
 
 ### 10.3 Parameter proposals are serialised
 
