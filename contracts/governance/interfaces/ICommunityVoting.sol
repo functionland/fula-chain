@@ -10,28 +10,6 @@ interface ICommunityVoting {
     // Types
     // ---------------------------------------------------------------------
 
-    /// @notice Tunable economic and timing parameters. Packed into three slots.
-    /// @dev Every field is clamped to a compile-time MIN/MAX bound at both proposal
-    ///      creation and execution. See {CommunityVoting.paramBounds}.
-    struct Params {
-        // --- slot 1 ---
-        uint96 burnFee;             // wei, burned outright on subject creation
-        uint96 deposit;             // wei, refundable only if the participation quorum is met
-        uint32 minDuration;         // seconds
-        uint32 maxDuration;         // seconds
-        // --- slot 2 ---
-        uint96 minVoteBasis;        // wei, minimum combined basis to cast a vote
-        uint96 quorumBasis;         // wei, capital component of the refund quorum
-        uint32 createCooldown;      // seconds between subject creations by one address
-        uint32 minMembershipAge;    // seconds a pool membership must predate a subject
-        // --- slot 3 ---
-        uint96 minPoolJoinStake;    // wei, a peer's OWN locked tokens required for the multiplier
-        uint32 memberMultiplierBps; // 10_000 = 1x
-        uint32 quorumVoters;        // distinct-voter component of the refund quorum
-        uint16 stakeWeightBps;      // 10_000 = staked tokens count at full weight
-        uint16 maxOpenPerCreator;   // concurrent open subjects per creator
-    }
-
     /// @notice One poll.
     /// @dev `status` is 0 while unfinalized and 1 once {CommunityVoting.finalize} has run.
     ///      A subject exists iff `createdAt != 0`.

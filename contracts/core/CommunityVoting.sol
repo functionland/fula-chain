@@ -96,7 +96,14 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
     address public stakingEngine;   // zero => staked balances contribute no voting power
     address public storagePool;     // zero => the membership multiplier is unavailable
 
-    Params public params;
+    /// @notice Tunable parameters, indexed by the `P_*` identifiers. Index 0 is unused.
+    /// @dev Held as a flat array rather than a packed struct on purpose. A struct needs a
+    ///      13-branch chain with masked read-modify-write SSTOREs in both the setter and the
+    ///      getter, which cost ~3.4 KiB of bytecode in a contract that already inherits ~14 KiB
+    ///      of GovernanceModule. The array makes set and get O(1) with no branching. The trade
+    ///      is a few extra cold SLOADs per call, worth a fraction of a cent on Base.
+    ///      Read individual values with {paramValue} or the whole vector with {allParams}.
+    uint256[14] internal _params;
 
     uint256 public subjectCount;
 
@@ -139,21 +146,19 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         stakingEngine = _stakingEngine;
         storagePool = _storagePool;
 
-        params = Params({
-            burnFee: uint96(50_000 * TOKEN_UNIT),
-            deposit: uint96(100_000 * TOKEN_UNIT),
-            minDuration: uint32(3 days),
-            maxDuration: uint32(30 days),
-            minVoteBasis: uint96(10_000 * TOKEN_UNIT),
-            quorumBasis: uint96(5_000_000 * TOKEN_UNIT),
-            createCooldown: uint32(1 days),
-            minMembershipAge: uint32(14 days),
-            minPoolJoinStake: uint96(TOKEN_UNIT),
-            memberMultiplierBps: 20_000,
-            quorumVoters: 15,
-            stakeWeightBps: 10_000,
-            maxOpenPerCreator: 3
-        });
+        _params[P_BURN_FEE] = 50_000 * TOKEN_UNIT;
+        _params[P_DEPOSIT] = 100_000 * TOKEN_UNIT;
+        _params[P_MIN_VOTE_BASIS] = 10_000 * TOKEN_UNIT;
+        _params[P_MIN_DURATION] = 3 days;
+        _params[P_MAX_DURATION] = 30 days;
+        _params[P_MEMBER_MULTIPLIER_BPS] = 20_000; // 2x
+        _params[P_STAKE_WEIGHT_BPS] = 10_000; // 100%
+        _params[P_QUORUM_BASIS] = 5_000_000 * TOKEN_UNIT;
+        _params[P_QUORUM_VOTERS] = 15;
+        _params[P_MAX_OPEN_PER_CREATOR] = 3;
+        _params[P_CREATE_COOLDOWN] = 1 days;
+        _params[P_MIN_POOL_JOIN_STAKE] = TOKEN_UNIT;
+        _params[P_MIN_MEMBERSHIP_AGE] = 14 days;
     }
 
     // ---------------------------------------------------------------------
@@ -257,22 +262,120 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         return proposalId;
     }
 
-    /// @dev Filled in by Step 2 of the implementation plan.
+    /// @notice Stages a parameter or integration change for the two-admin flow.
+    /// @dev Encoding is deliberately canonical — unused fields must be zero — so one intended
+    ///      change has exactly one on-chain representation. Without that, several differently
+    ///      encoded proposals could describe the same action, which complicates review and
+    ///      de-duplication.
+    ///
+    ///      `target` is always `address(this)` (the base rejects a zero target). That serialises
+    ///      parameter governance: only one parameter proposal can be pending at a time, and an
+    ///      expired one keeps blocking until `cleanupExpiredProposals` is called, because the
+    ///      base's `pendingProposals` check does not test for expiry. Documented in the runbook
+    ///      and covered by tests.
     function _createCustomProposal(
         uint8 proposalType,
-        uint40,
-        address,
-        bytes32,
-        uint96,
-        address
+        uint40 id,
+        address target,
+        bytes32 role,
+        uint96 amount,
+        address tokenAddress
     ) internal virtual override returns (bytes32) {
-        revert InvalidProposalType(proposalType);
+        // Reject the type first, so an unrecognised proposal reports InvalidProposalType rather
+        // than a confusing complaint about field encoding.
+        if (proposalType != PROPOSAL_SET_PARAM && proposalType != PROPOSAL_SET_INTEGRATION) {
+            revert InvalidProposalType(proposalType);
+        }
+        if (target != address(this)) revert NonCanonicalProposalField();
+        if (role != bytes32(0)) revert NonCanonicalProposalField();
+
+        bytes32 proposalId;
+
+        if (proposalType == PROPOSAL_SET_PARAM) {
+            if (tokenAddress != address(0)) revert NonCanonicalProposalField();
+            // Validated as a uint40 so a value like 2**32 + 1 cannot truncate to a valid id.
+            if (id == 0 || id > P_LAST) revert InvalidParam(uint8(id));
+            _validateParamValue(uint8(id), amount);
+
+            proposalId = _createProposalId(
+                proposalType,
+                keccak256(abi.encodePacked(id, amount))
+            );
+            ProposalTypes.UnifiedProposal storage p = proposals[proposalId];
+            _initializeProposal(p, target);
+            p.proposalType = proposalType;
+            // Persist BOTH payload fields explicitly. StorageToken's ChangeTreasuryFee once
+            // omitted `amount` here and silently executed as zero; see StorageToken.sol:431-434.
+            p.id = id;
+            p.amount = amount;
+        } else if (proposalType == PROPOSAL_SET_INTEGRATION) {
+            if (amount != 0) revert NonCanonicalProposalField();
+            if (id != I_STAKING_ENGINE && id != I_STORAGE_POOL) revert InvalidParam(uint8(id));
+
+            // The new address travels in `tokenAddress`, not `target`, precisely so it may be
+            // zero — that is how an integration is switched off.
+            proposalId = _createProposalId(
+                proposalType,
+                keccak256(abi.encodePacked(id, tokenAddress))
+            );
+            ProposalTypes.UnifiedProposal storage p = proposals[proposalId];
+            _initializeProposal(p, target);
+            p.proposalType = proposalType;
+            p.id = id;
+            p.tokenAddress = tokenAddress;
+        }
+
+        return proposalId;
     }
 
-    /// @dev Filled in by Step 2 of the implementation plan.
+    /// @dev Executes a staged change. Bounds are re-checked here, not just at creation: a
+    ///      proposal sits for 24-48 hours and interacting parameters may have moved in between.
     function _executeCustomProposal(bytes32 proposalId) internal virtual override {
         ProposalTypes.UnifiedProposal storage proposal = proposals[proposalId];
-        revert InvalidProposalType(uint8(proposal.proposalType));
+        uint8 proposalType = proposal.proposalType;
+
+        if (proposalType == PROPOSAL_SET_PARAM) {
+            _applyParam(uint8(proposal.id), proposal.amount);
+        } else if (proposalType == PROPOSAL_SET_INTEGRATION) {
+            _applyIntegration(uint8(proposal.id), proposal.tokenAddress);
+        } else {
+            revert InvalidProposalType(proposalType);
+        }
+    }
+
+    /// @dev Reverts unless `value` is inside the compile-time bounds for `paramId`.
+    function _validateParamValue(uint8 paramId, uint256 value) internal pure {
+        (uint256 lo, uint256 hi) = paramBounds(paramId); // reverts InvalidParam if unknown
+        if (value < lo || value > hi) revert ParamOutOfBounds(paramId, value);
+    }
+
+    function _applyParam(uint8 paramId, uint256 value) internal {
+        _validateParamValue(paramId, value);
+
+        uint256 previous = _params[paramId];
+        _params[paramId] = value;
+
+        // Cross-field invariant: a window with min > max would make every duration invalid
+        // and freeze subject creation entirely.
+        if (_params[P_MIN_DURATION] > _params[P_MAX_DURATION]) {
+            revert ParamOutOfBounds(paramId, value);
+        }
+
+        emit ParamUpdated(paramId, previous, value);
+    }
+
+    function _applyIntegration(uint8 slot, address newAddress) internal {
+        address previous;
+        if (slot == I_STAKING_ENGINE) {
+            previous = stakingEngine;
+            stakingEngine = newAddress;
+        } else if (slot == I_STORAGE_POOL) {
+            previous = storagePool;
+            storagePool = newAddress;
+        } else {
+            revert InvalidParam(slot);
+        }
+        emit IntegrationUpdated(slot, previous, newAddress);
     }
 
     /// @dev Upgrades run through the full two-admin proposal flow: quorum, a 24h execution
@@ -305,6 +408,17 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         if (paramId == P_MIN_POOL_JOIN_STAKE) return (0, 10_000_000 * TOKEN_UNIT);
         if (paramId == P_MIN_MEMBERSHIP_AGE) return (0, 90 days);
         revert InvalidParam(paramId);
+    }
+
+    /// @notice Current value of a tunable parameter, by `P_*` id.
+    function paramValue(uint8 paramId) public view returns (uint256) {
+        if (paramId == 0 || paramId > P_LAST) revert InvalidParam(paramId);
+        return _params[paramId];
+    }
+
+    /// @notice The whole parameter vector, indexed by `P_*` id. Index 0 is unused.
+    function allParams() external view returns (uint256[14] memory) {
+        return _params;
     }
 
     function getSubject(uint256 subjectId) external view returns (Subject memory) {

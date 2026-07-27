@@ -64,6 +64,25 @@ const config: HardhatUserConfig = {
           evmVersion: "shanghai",
         },
       },
+      // CommunityVoting inherits the full GovernanceModule multisig (~14 KiB before any of its
+      // own logic), so it needs the same size-over-speed trade the rewards contracts make.
+      // `outputSelection` must stay: CommunityVotingLayout.test.ts reads solc's storageLayout.
+      "contracts/core/CommunityVoting.sol": {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 1,
+          },
+          viaIR: true,
+          evmVersion: "shanghai",
+          outputSelection: {
+            "*": {
+              "*": ["storageLayout"],
+            },
+          },
+        },
+      },
       "contracts/core/FulaFileNFT.sol": {
         version: "0.8.24",
         settings: {

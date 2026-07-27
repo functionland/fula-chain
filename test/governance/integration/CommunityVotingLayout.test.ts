@@ -36,18 +36,18 @@ const EXPECTED_LAYOUT: Array<[slot: string, label: string]> = [
   ["11", "token"],
   ["12", "stakingEngine"],
   ["13", "storagePool"],
-  ["14", "params"], // Params packs into 3 slots => 14, 15, 16
-  ["17", "subjectCount"],
-  ["18", "_subjects"],
-  ["19", "_options"],
-  ["20", "_optionSeen"],
-  ["21", "tally"],
-  ["22", "_receipts"],
-  ["23", "_creatorOpen"],
-  ["24", "lastCreateAt"],
-  ["25", "totalLockedLiability"],
-  ["26", "totalDepositLiability"],
-  ["27", "__gap"], // uint256[50] => slots 27..76
+  ["14", "_params"], // uint256[14] => slots 14..27
+  ["28", "subjectCount"],
+  ["29", "_subjects"],
+  ["30", "_options"],
+  ["31", "_optionSeen"],
+  ["32", "tally"],
+  ["33", "_receipts"],
+  ["34", "_creatorOpen"],
+  ["35", "lastCreateAt"],
+  ["36", "totalLockedLiability"],
+  ["37", "totalDepositLiability"],
+  ["38", "__gap"], // uint256[50] => slots 38..87
 ];
 
 type LayoutEntry = { label: string; slot: string; offset: number; type: string };
@@ -84,11 +84,11 @@ describe("CommunityVoting — storage layout", () => {
     expect(layout.types[last.type].label).to.equal("uint256[50]");
   });
 
-  it("packs Params into exactly three slots", async () => {
+  it("reserves exactly 14 slots for the parameter vector", async () => {
     const layout = await getStorageLayout();
-    const params = layout.storage.find((e) => e.label === "params")!;
+    const params = layout.storage.find((e) => e.label === "_params")!;
     const next = layout.storage.find((e) => e.label === "subjectCount")!;
-    expect(Number(next.slot) - Number(params.slot)).to.equal(3);
+    expect(Number(next.slot) - Number(params.slot)).to.equal(14);
   });
 
   it("is upgrade-safe as a UUPS implementation", async () => {

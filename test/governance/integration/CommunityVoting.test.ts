@@ -99,42 +99,33 @@ describe("CommunityVoting — core", function () {
     });
 
     it("seeds the documented default parameters", async function () {
-      const p = await voting.params();
-      expect(p.burnFee).to.equal(ethers.parseEther("50000"));
-      expect(p.deposit).to.equal(ethers.parseEther("100000"));
-      expect(p.minVoteBasis).to.equal(ethers.parseEther("10000"));
-      expect(p.minDuration).to.equal(3 * DAY);
-      expect(p.maxDuration).to.equal(30 * DAY);
-      expect(p.memberMultiplierBps).to.equal(20000);
-      expect(p.stakeWeightBps).to.equal(10000);
-      expect(p.quorumBasis).to.equal(ethers.parseEther("5000000"));
-      expect(p.quorumVoters).to.equal(15);
-      expect(p.maxOpenPerCreator).to.equal(3);
-      expect(p.createCooldown).to.equal(DAY);
-      expect(p.minPoolJoinStake).to.equal(ethers.parseEther("1"));
-      expect(p.minMembershipAge).to.equal(14 * DAY);
+      expect(await voting.paramValue(P.BURN_FEE)).to.equal(ethers.parseEther("50000"));
+      expect(await voting.paramValue(P.DEPOSIT)).to.equal(ethers.parseEther("100000"));
+      expect(await voting.paramValue(P.MIN_VOTE_BASIS)).to.equal(ethers.parseEther("10000"));
+      expect(await voting.paramValue(P.MIN_DURATION)).to.equal(3 * DAY);
+      expect(await voting.paramValue(P.MAX_DURATION)).to.equal(30 * DAY);
+      expect(await voting.paramValue(P.MEMBER_MULTIPLIER_BPS)).to.equal(20000);
+      expect(await voting.paramValue(P.STAKE_WEIGHT_BPS)).to.equal(10000);
+      expect(await voting.paramValue(P.QUORUM_BASIS)).to.equal(ethers.parseEther("5000000"));
+      expect(await voting.paramValue(P.QUORUM_VOTERS)).to.equal(15);
+      expect(await voting.paramValue(P.MAX_OPEN_PER_CREATOR)).to.equal(3);
+      expect(await voting.paramValue(P.CREATE_COOLDOWN)).to.equal(DAY);
+      expect(await voting.paramValue(P.MIN_POOL_JOIN_STAKE)).to.equal(ethers.parseEther("1"));
+      expect(await voting.paramValue(P.MIN_MEMBERSHIP_AGE)).to.equal(14 * DAY);
     });
 
     it("every default sits inside its own hard bounds", async function () {
-      const p = await voting.params();
-      const values: Record<number, bigint> = {
-        [P.BURN_FEE]: p.burnFee,
-        [P.DEPOSIT]: p.deposit,
-        [P.MIN_VOTE_BASIS]: p.minVoteBasis,
-        [P.MIN_DURATION]: BigInt(p.minDuration),
-        [P.MAX_DURATION]: BigInt(p.maxDuration),
-        [P.MEMBER_MULTIPLIER_BPS]: BigInt(p.memberMultiplierBps),
-        [P.STAKE_WEIGHT_BPS]: BigInt(p.stakeWeightBps),
-        [P.QUORUM_BASIS]: p.quorumBasis,
-        [P.QUORUM_VOTERS]: BigInt(p.quorumVoters),
-        [P.MAX_OPEN_PER_CREATOR]: BigInt(p.maxOpenPerCreator),
-        [P.CREATE_COOLDOWN]: BigInt(p.createCooldown),
-        [P.MIN_POOL_JOIN_STAKE]: p.minPoolJoinStake,
-        [P.MIN_MEMBERSHIP_AGE]: BigInt(p.minMembershipAge),
-      };
-      for (const [id, value] of Object.entries(values)) {
-        const [lo, hi] = await voting.paramBounds(Number(id));
+      for (let id = 1; id <= 13; id++) {
+        const value = await voting.paramValue(id);
+        const [lo, hi] = await voting.paramBounds(id);
         expect(value, `param ${id} default out of bounds`).to.be.gte(lo).and.to.be.lte(hi);
+      }
+    });
+
+    it("allParams agrees with paramValue for every id", async function () {
+      const all = await voting.allParams();
+      for (let id = 1; id <= 13; id++) {
+        expect(all[id], `param ${id}`).to.equal(await voting.paramValue(id));
       }
     });
 
@@ -302,14 +293,169 @@ describe("CommunityVoting — core", function () {
     });
   });
 
-  describe("custom proposal types (not yet implemented at this step)", function () {
-    it("reverts for the parameter and integration types", async function () {
+  describe("parameter governance (proposal type 14)", function () {
+    it("applies a change through the full two-admin flow", async function () {
+      const newFee = ethers.parseEther("75000");
+      await expect(runParamProposal(P.BURN_FEE, newFee))
+        .to.emit(voting, "ParamUpdated")
+        .withArgs(P.BURN_FEE, ethers.parseEther("50000"), newFee);
+      expect(await voting.paramValue(P.BURN_FEE)).to.equal(newFee);
+    });
+
+    it("can set every parameter to both its exact minimum and maximum", async function () {
+      // MIN_DURATION is skipped in the max pass and MAX_DURATION in the min pass, because
+      // the cross-field invariant (min <= max) legitimately forbids those two combinations.
+      for (let id = 1; id <= 13; id++) {
+        const [lo, hi] = await voting.paramBounds(id);
+        if (id !== P.MAX_DURATION) {
+          await runParamProposal(id, lo);
+          expect(await voting.paramValue(id), `param ${id} at min`).to.equal(lo);
+        }
+        if (id !== P.MIN_DURATION) {
+          await runParamProposal(id, hi);
+          expect(await voting.paramValue(id), `param ${id} at max`).to.equal(hi);
+        }
+      }
+    });
+
+    it("rejects a value one below the minimum, at creation", async function () {
+      for (let id = 1; id <= 13; id++) {
+        const [lo] = await voting.paramBounds(id);
+        if (lo === 0n) continue; // no representable value below zero
+        await expect(
+          createParamProposal(id, lo - 1n),
+          `param ${id} accepted min-1`
+        ).to.be.revertedWithCustomError(voting, "ParamOutOfBounds");
+      }
+    });
+
+    it("rejects a value one above the maximum, at creation", async function () {
+      for (let id = 1; id <= 13; id++) {
+        const [, hi] = await voting.paramBounds(id);
+        await expect(
+          createParamProposal(id, hi + 1n),
+          `param ${id} accepted max+1`
+        ).to.be.revertedWithCustomError(voting, "ParamOutOfBounds");
+      }
+    });
+
+    it("re-checks the cross-field duration invariant at execution time", async function () {
+      // Both values are individually in-bounds, so this can only be caught by the check that
+      // runs when the proposal executes — 24h after it was created and validated.
+      await runParamProposal(P.MIN_DURATION, 20 * DAY);
+      expect(await voting.paramValue(P.MIN_DURATION)).to.equal(20 * DAY);
+
+      const [lo] = await voting.paramBounds(P.MAX_DURATION);
+      expect(lo).to.be.lte(10 * DAY); // 10 days is a legal MAX_DURATION on its own
+
+      const proposalId = await createParamProposal(P.MAX_DURATION, BigInt(10 * DAY));
+      await time.increase(DAY + 1);
       await expect(
-        voting.connect(owner).createProposal(PT_SET_PARAM, P.BURN_FEE, await voting.getAddress(), ZeroHash, 1, ZeroAddress)
-      ).to.be.revertedWithCustomError(voting, "InvalidProposalType");
+        voting.connect(admin).approveProposal(proposalId)
+      ).to.be.revertedWithCustomError(voting, "ParamOutOfBounds");
+      // The old, coherent window is intact.
+      expect(await voting.paramValue(P.MAX_DURATION)).to.equal(30 * DAY);
+    });
+
+    it("rejects unknown parameter ids", async function () {
+      await expect(createParamProposal(0, 1n)).to.be.revertedWithCustomError(voting, "InvalidParam");
+      await expect(createParamProposal(14, 1n)).to.be.revertedWithCustomError(voting, "InvalidParam");
+    });
+
+    it("cannot be tricked by an id that truncates into a valid one", async function () {
+      // uint8(2**32 + 1) == 1 == P_BURN_FEE. The id is range-checked as a uint40 precisely so
+      // this cannot silently become a burn-fee change.
+      const truncating = 2n ** 32n + 1n; // still inside uint40
       await expect(
-        voting.connect(owner).createProposal(PT_SET_INTEGRATION, 1, await voting.getAddress(), ZeroHash, 0, ZeroAddress)
-      ).to.be.revertedWithCustomError(voting, "InvalidProposalType");
+        voting
+          .connect(owner)
+          .createProposal(PT_SET_PARAM, truncating, await voting.getAddress(), ZeroHash, ethers.parseEther("60000"), ZeroAddress)
+      ).to.be.revertedWithCustomError(voting, "InvalidParam");
+    });
+
+    it("requires canonical zero values in the unused proposal fields", async function () {
+      const self = await voting.getAddress();
+      const value = ethers.parseEther("60000");
+      // non-zero role
+      await expect(
+        voting.connect(owner).createProposal(PT_SET_PARAM, P.BURN_FEE, self, ADMIN_ROLE, value, ZeroAddress)
+      ).to.be.revertedWithCustomError(voting, "NonCanonicalProposalField");
+      // non-zero tokenAddress
+      await expect(
+        voting.connect(owner).createProposal(PT_SET_PARAM, P.BURN_FEE, self, ZeroHash, value, await token.getAddress())
+      ).to.be.revertedWithCustomError(voting, "NonCanonicalProposalField");
+      // target must be the contract itself
+      await expect(
+        voting.connect(owner).createProposal(PT_SET_PARAM, P.BURN_FEE, user1.address, ZeroHash, value, ZeroAddress)
+      ).to.be.revertedWithCustomError(voting, "NonCanonicalProposalField");
+    });
+
+    it("persists the payload so execution cannot silently apply zero", async function () {
+      // Guards against the class of bug StorageToken hit with ChangeTreasuryFee, where the
+      // proposal's `amount` was never stored and execution set the value to 0.
+      const newDeposit = ethers.parseEther("250000");
+      await runParamProposal(P.DEPOSIT, newDeposit);
+      expect(await voting.paramValue(P.DEPOSIT)).to.equal(newDeposit);
+      expect(await voting.paramValue(P.DEPOSIT)).to.not.equal(0n);
+    });
+
+    it("cannot execute after the 48h expiry window", async function () {
+      const proposalId = await createParamProposal(P.BURN_FEE, ethers.parseEther("60000"));
+      await time.increase(3 * DAY); // past the 48h PROPOSAL_TIMEOUT
+      await expect(voting.connect(admin).approveProposal(proposalId)).to.be.reverted;
+      expect(await voting.paramValue(P.BURN_FEE)).to.equal(ethers.parseEther("50000"));
+    });
+
+    it("serialises parameter proposals, and an expired one blocks until cleaned up", async function () {
+      // All parameter proposals share `target == address(this)`, and GovernanceModule's
+      // pendingProposals check does not test for expiry. This is a real operational footgun:
+      // one abandoned proposal freezes all parameter governance until cleanup is run.
+      await createParamProposal(P.BURN_FEE, ethers.parseEther("60000"));
+
+      await expect(
+        createParamProposal(P.DEPOSIT, ethers.parseEther("200000"))
+      ).to.be.revertedWithCustomError(voting, "ExistingActiveProposal");
+
+      // Let it expire — it still blocks.
+      await time.increase(3 * DAY);
+      await expect(
+        createParamProposal(P.DEPOSIT, ethers.parseEther("200000"))
+      ).to.be.revertedWithCustomError(voting, "ExistingActiveProposal");
+
+      // Cleanup clears the slot and governance resumes.
+      await voting.connect(owner).cleanupExpiredProposals(10);
+      await runParamProposal(P.DEPOSIT, ethers.parseEther("200000"));
+      expect(await voting.paramValue(P.DEPOSIT)).to.equal(ethers.parseEther("200000"));
+    });
+  });
+
+  describe("integration governance (proposal type 15)", function () {
+    it("sets and clears the staking engine and storage pool", async function () {
+      await expect(runIntegrationProposal(1, user1.address))
+        .to.emit(voting, "IntegrationUpdated")
+        .withArgs(1, ZeroAddress, user1.address);
+      expect(await voting.stakingEngine()).to.equal(user1.address);
+
+      await runIntegrationProposal(2, user2.address);
+      expect(await voting.storagePool()).to.equal(user2.address);
+
+      // Zero is a legal value: it is how an integration is switched off. This is why the new
+      // address travels in `tokenAddress` and not `target`, which the base forbids being zero.
+      await runIntegrationProposal(1, ZeroAddress);
+      expect(await voting.stakingEngine()).to.equal(ZeroAddress);
+    });
+
+    it("rejects unknown integration slots and non-canonical fields", async function () {
+      const self = await voting.getAddress();
+      await expect(
+        voting.connect(owner).createProposal(PT_SET_INTEGRATION, 3, self, ZeroHash, 0, user1.address)
+      ).to.be.revertedWithCustomError(voting, "InvalidParam");
+      await expect(
+        voting.connect(owner).createProposal(PT_SET_INTEGRATION, 1, self, ZeroHash, 1, user1.address)
+      ).to.be.revertedWithCustomError(voting, "NonCanonicalProposalField");
+      await expect(
+        voting.connect(owner).createProposal(PT_SET_INTEGRATION, 1, user1.address, ZeroHash, 0, user1.address)
+      ).to.be.revertedWithCustomError(voting, "NonCanonicalProposalField");
     });
   });
 
@@ -334,6 +480,36 @@ describe("CommunityVoting — core", function () {
       ).to.be.reverted;
     });
   });
+
+  /** Stage a parameter proposal; returns its id. Does not approve or execute. */
+  async function createParamProposal(paramId: number, value: bigint): Promise<string> {
+    const tx = await voting
+      .connect(owner)
+      .createProposal(PT_SET_PARAM, paramId, await voting.getAddress(), ZeroHash, value, ZeroAddress);
+    const receipt = await tx.wait();
+    return receipt!.logs[0].topics[1];
+  }
+
+  /**
+   * Run a parameter change end-to-end: propose (auto-approves for the proposer), wait out the
+   * 24h execution delay, then have the second admin approve — which auto-executes once quorum
+   * and the delay are both satisfied.
+   */
+  async function runParamProposal(paramId: number, value: bigint | number) {
+    const proposalId = await createParamProposal(paramId, BigInt(value));
+    await time.increase(DAY + 1);
+    return voting.connect(admin).approveProposal(proposalId);
+  }
+
+  async function runIntegrationProposal(slot: number, newAddress: string) {
+    const tx = await voting
+      .connect(owner)
+      .createProposal(PT_SET_INTEGRATION, slot, await voting.getAddress(), ZeroHash, 0, newAddress);
+    const receipt = await tx.wait();
+    const proposalId = receipt!.logs[0].topics[1];
+    await time.increase(DAY + 1);
+    return voting.connect(admin).approveProposal(proposalId);
+  }
 
   // Helper: run a StorageToken proposal (e.g. AddWhitelist) through the full 2-admin flow.
   async function createAndExecuteTokenProposal(proposalType: number, target: string) {
