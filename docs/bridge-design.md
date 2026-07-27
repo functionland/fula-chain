@@ -40,14 +40,25 @@
 >    "rate limit / 24h" column as a **net-drain** ceiling, not a gross-volume one, and size the
 >    limits accordingly. If this is ever revisited, a gross ceiling is a one-line change (delete
 >    `_inflow` from `FulaOFTAdapter._credit`) plus inverting the pinning test.
-> 6. **`voluntarilyBurned` can permanently consume a chain's inbound headroom.** `mint` gates on
->    `totalSupply() + voluntarilyBurned + amount <= TOTAL_SUPPLY`, but both terms are per-chain
->    while `TOTAL_SUPPLY` is the global cap. Enough voluntary burning on one chain would park
->    legitimate inbound transfers there permanently (recoverable only by upgrade). Fails safe,
->    far from the staged-rollout caps, now pinned by a test. Added to the risk register as R-17.
-> 7. **`PROPOSAL_TIMEOUT` is 3 days, not 48h.** `ProposalTypes.PROPOSAL_TIMEOUT = 3 days`, so the
->    upgrade execution window described under Rollout is `[T0+24h, T0+72h)`, not `[T0+24h, T0+48h)`.
->    `scripts/bridge/live.ts` had the wrong constant and has been corrected.
+> 6. **`voluntarilyBurned` is headroom-NEUTRAL — and an earlier revision of this list said the
+>    opposite, wrongly.** `mint` gates on `totalSupply() + voluntarilyBurned + amount <= TOTAL_SUPPLY`.
+>    A voluntary burn of `X` moves BOTH terms in opposite directions by the same amount
+>    (`voluntarilyBurned += X`, `totalSupply -= X`), so headroom is **unchanged**. Burning therefore
+>    cannot manufacture mint capacity — which is the bug this term was added to fix — and cannot
+>    destroy it either. Only a **bridge** burn returns headroom, correctly, since those tokens are
+>    re-minted on another chain. Both directions are now pinned by dedicated tests. The claim that
+>    voluntary burns permanently consume headroom (previously risk R-17) was an error and is
+>    **retracted**; see `docs/bridge-audit.md` F-1 for the arithmetic and for how the mistake arose.
+> 7. **⚠️ TWO constants named `PROPOSAL_TIMEOUT` exist, with different values.** The live one is
+>    `GovernanceModule.sol:78` — `private constant PROPOSAL_TIMEOUT = 48 hours` — which
+>    `_initializeProposal` (line 205) actually uses. `ProposalTypes.sol:33` also defines
+>    `PROPOSAL_TIMEOUT = 3 days`, but it is **dead**: nothing in the codebase references
+>    `ProposalTypes.PROPOSAL_TIMEOUT`. **The execution window is therefore `[T0+24h, T0+48h)` as
+>    originally written.** An intermediate revision of this document and of
+>    `scripts/bridge/live.ts` "corrected" the window to 72h based on the dead constant — that was a
+>    regression (it would have had operators compute a deadline 24h after the proposal had already
+>    expired) and has been reverted. Recommend deleting the unused `ProposalTypes` constant so the
+>    trap cannot catch anyone else.
 > 8. **The Verification section's check A now exists.** `contracts/legacy/StorageTokenPrev.sol`
 >    (an exact copy of `StorageToken.sol` at `0384d94`, renamed only) is the manifest-free
 >    reference factory, and `test/governance/integration/StorageTokenLayout.test.ts` runs
@@ -345,7 +356,7 @@ Then, in order: **local mock tests** (logic, governance, caps, dust, conservatio
 
 **Preconditions per chain (verify, don't assume):** `roleConfigs(ADMIN_ROLE).quorum >= 2`; both admins past `roleChangeTimeLock`; contract **unpaused** (`_authorizeUpgrade` is `whenNotPaused`); `adminCount >= 2`; keys funded.
 
-**Upgrade (per chain):** deploy impl → validate → Admin1 `createProposal(3, 0, IMPL, ZeroHash, 0, ZeroAddress)` (record `T0`) → Admin2 `approveProposal` (safe any time; the `Upgrade` branch at `GovernanceModule.sol:528` deliberately does nothing and leaves the proposal valid for `_checkUpgrade`) → wait → `proxy.upgradeToAndCall(IMPL, "0x")` **inside `[T0+24h, T0+72h)`** → re-verify state. If the window is missed, deploy a *new* impl address and restart. (`MIN_PROPOSAL_EXECUTION_DELAY` is 24h and `PROPOSAL_TIMEOUT` is **3 days** — earlier drafts said 48h.)
+**Upgrade (per chain):** deploy impl → validate → Admin1 `createProposal(3, 0, IMPL, ZeroHash, 0, ZeroAddress)` (record `T0`) → Admin2 `approveProposal` (safe any time; the `Upgrade` branch at `GovernanceModule.sol:528` deliberately does nothing and leaves the proposal valid for `_checkUpgrade`) → wait → `proxy.upgradeToAndCall(IMPL, "0x")` **inside `[T0+24h, T0+48h)`** → re-verify state. If the window is missed, deploy a *new* impl address and restart. (`MIN_PROPOSAL_EXECUTION_DELAY` is 24h and the effective `PROPOSAL_TIMEOUT` is **48h** — `GovernanceModule.sol:78`, which shadows the unused `ProposalTypes.PROPOSAL_TIMEOUT = 3 days`. An intermediate revision of this doc changed the window to 72h on the strength of the dead constant; that was wrong.)
 
 **Adapter:** deploy with `_owner = Timelock` → assert `token()`, `minterBurner()`, `owner()`, `endpoint.delegates()`, `sharedDecimals() == 6`, `decimalConversionRate() == 1e12`, `approvalRequired() == false` → `createProposal(12, 0, ADAPTER, ZeroHash, CAP, ZeroAddress)` → approve/execute → confirm `bridgeMinters(ADAPTER)`. **Complete on both chains before any wiring.**
 
@@ -383,10 +394,10 @@ Cap raises are governance proposals (24h delay built in); rate-limit raises are 
 | R-09 | `bridgeMinters.cap` too low ⇒ legitimate inbound parks | Medium | Retryable, so an outage not a loss. Alert at 80% of `netMinted`/`cap`; cap raises take 24h, so plan ahead of demand |
 | R-10 | Enforced `lzReceive` gas too low ⇒ inbound reverts OOG | Medium | Measure on testnet, set 1.5×. Retryable with more gas by any caller |
 | R-13 | `contractSizer.strict` fails build | Medium | Per-file `runs: 1` override, mirroring `hardhat.config.ts:87-102` |
-| R-14 | Upgrade proposal misses the `[T0+24h, T0+72h)` window | Low | Scripted window check in `executeUpgrade.ts`; recovery = deploy a new impl address and restart (the old target address stays blocked by `pendingProposals` until expiry) |
+| R-14 | Upgrade proposal misses the `[T0+24h, T0+48h)` window | Low | Scripted window check in `executeUpgrade.ts`; recovery = deploy a new impl address and restart (the old target address stays blocked by `pendingProposals` until expiry) |
 | R-15 | `burn` overload breaks a downstream TS integration | Low | Zero in-repo call sites; on-chain selectors unchanged. Release note: use `token["burn(uint256)"]` |
 | R-16 | Fixing `ChangeTreasuryFee` makes a previously-inert governance action live | Low | Deliberate and in scope; dedicated test; release note. Fee stays 0 unless governance acts |
-| R-17 | `voluntarilyBurned` permanently consumes a chain's inbound headroom; enough voluntary burning on one chain parks legitimate inbound transfers there forever | Medium | Fails safe (never over-mints; transfers park and stay retryable, nothing is lost). Threshold is `totalSupply + voluntarilyBurned == 2B` on a single chain — orders of magnitude above the staged-rollout caps. Monitor `voluntarilyBurned` alongside the daily supply reconciliation; alert at 80% of per-chain headroom. Recovery requires an upgrade. Pinned by test |
+| ~~R-17~~ | ~~`voluntarilyBurned` permanently consumes a chain's inbound headroom~~ | ~~Medium~~ **RETRACTED** | ⚠️ **THIS RISK DOES NOT EXIST — entry retracted 2026-07-26.** A voluntary burn of `X` moves BOTH terms of `mint`'s gate in opposite directions by the same amount (`voluntarilyBurned += X` and `totalSupply -= X`), so headroom `TOTAL_SUPPLY − totalSupply() − voluntarilyBurned` is **unchanged**. Voluntary burns are headroom-NEUTRAL: they cannot manufacture capacity (the bug this term was added to fix) and cannot destroy it. Only a **bridge** burn returns headroom, correctly, since those tokens are re-minted elsewhere. Pinned by two tests in `FulaOFTBridge.test.ts` ("a voluntary burn is headroom-NEUTRAL…", "a BRIDGE burn does restore headroom…"). An intermediate revision of this row asserted the opposite; it was wrong. See `docs/bridge-audit.md` F-1 for the full analysis |
 | R-18 | Rate limit is NET not gross (`_inflow` in `_credit`), so round-tripped capital can exceed the intended per-window ceiling | Medium | **ACCEPTED (owner decision, 2026-07-26): keep NET.** Documented and pinned by test. `limit = 0` kill switch is unaffected; `bridgeMinters.cap` bounds inbound independently. Operational consequence: size the per-window limits as a *net-drain* budget, and rely on `cap` + daily supply reconciliation — not the limiter — to bound gross churn |
 
 ---

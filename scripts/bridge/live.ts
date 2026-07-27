@@ -27,14 +27,22 @@ export const PROPOSAL = {
 export const ROLE_CHANGE_DELAY = 24 * 60 * 60;
 export const MIN_PROPOSAL_EXECUTION_DELAY = 24 * 60 * 60;
 /**
- * Proposal expiry. Mirrors `ProposalTypes.PROPOSAL_TIMEOUT`, which is **3 days**.
+ * Proposal expiry: **48 hours**.
  *
- * CORRECTED: this was previously 48h here, and `docs/bridge-design.md` still describes the
- * execution window as `[T0+24h, T0+48h)`. The on-chain constant is 3 days, so the real window is
- * `[T0+24h, T0+72h)`. Erring short is harmless for scheduling, but a script computing a deadline
- * from a wrong constant is not — keep this equal to the contract.
+ * ⚠️ THERE ARE TWO CONSTANTS NAMED `PROPOSAL_TIMEOUT` WITH DIFFERENT VALUES. Use this one.
+ *   - `GovernanceModule.sol:78`  — `private constant PROPOSAL_TIMEOUT = 48 hours`  ← THE LIVE ONE
+ *   - `ProposalTypes.sol:33`     — `constant PROPOSAL_TIMEOUT = 3 days`            ← DEAD, unused
+ *
+ * `_initializeProposal` (GovernanceModule.sol:205) sets
+ * `expiryTime = block.timestamp + PROPOSAL_TIMEOUT`, and the unqualified name resolves to
+ * GovernanceModule's own private constant, so the effective expiry is 48h. The `ProposalTypes`
+ * one is referenced nowhere in the codebase (`rg 'ProposalTypes\.PROPOSAL_TIMEOUT'` → no matches).
+ *
+ * A previous edit "corrected" this to 3 days on the strength of the ProposalTypes value. That was
+ * a regression — it would have made scripts compute an execution deadline 24h too late, past the
+ * point where the proposal has already expired.
  */
-export const PROPOSAL_TIMEOUT = 3 * 24 * 60 * 60;
+export const PROPOSAL_TIMEOUT = 48 * 60 * 60;
 
 /**
  * Live StorageToken proxies and the implementation each currently points at.

@@ -312,7 +312,9 @@ describe("FULA LayerZero OFT bridge", () => {
           .createProposal(PROPOSAL_SET_BRIDGE_MINTER, 0, addr, ethers.ZeroHash, 2n, ZeroAddress)
       ).to.be.revertedWithCustomError(token, "ExistingActiveProposal");
 
-      // ProposalTypes.PROPOSAL_TIMEOUT is 3 days (NOT the 48h quoted in the design doc).
+      // Expiry is 48h — `GovernanceModule.sol:78` declares its OWN private
+      // `PROPOSAL_TIMEOUT = 48 hours`, which shadows the DEAD `ProposalTypes.PROPOSAL_TIMEOUT
+      // = 3 days` (referenced nowhere). Advance well past it either way.
       await time.increase(3 * 24 * 60 * 60 + 1);
       await token.connect(owner).cleanupExpiredProposals(10);
 
@@ -448,34 +450,59 @@ describe("FULA LayerZero OFT bridge", () => {
       );
     });
 
-    it("PINNED: voluntarilyBurned permanently consumes this chain's inbound headroom", async () => {
-      // Documents a real, deliberate limitation rather than asserting it is desirable.
+    it("a voluntary burn is headroom-NEUTRAL: it neither creates nor destroys mint capacity", async () => {
+      // THE INVARIANT `voluntarilyBurned` EXISTS TO ENFORCE.
       //
-      // `mint` gates on `totalSupply() + voluntarilyBurned + amount <= TOTAL_SUPPLY`. Both terms
-      // are PER-CHAIN, but TOTAL_SUPPLY is the GLOBAL 2B cap, so the check is a conservative
-      // approximation. It can never over-mint globally, but voluntary burns on this chain
-      // permanently reduce how much this chain can ever receive — even though those burns
-      // destroyed value and reduced global supply.
+      // `mint` gates on `totalSupply() + voluntarilyBurned + amount <= TOTAL_SUPPLY`, so the
+      // available headroom is `TOTAL_SUPPLY - totalSupply() - voluntarilyBurned`.
       //
-      // Direction of failure is safe (inbound transfers park, retryable, no funds lost) and the
-      // staged rollout caps are orders of magnitude below the threshold. Recovery would require
-      // an upgrade. See the risk register in docs/bridge-design.md.
+      // A voluntary burn of X moves BOTH terms by X in opposite directions:
+      //     totalSupply -> S - X   and   voluntarilyBurned -> V + X
+      // so `totalSupply() + voluntarilyBurned` is INVARIANT and headroom is unchanged.
+      //
+      // Both directions matter:
+      //   - it must not CREATE headroom, or burning would manufacture free mint capacity
+      //     (that is the bug `voluntarilyBurned` was introduced to fix); and
+      //   - it must not DESTROY headroom, or any holder could permanently grief inbound bridging.
+      // This test pins both at once.
+      await fund(token, distributor.address, ethers.parseEther("1000"));
       const caller = await authorizeEoaMinter(TOTAL_SUPPLY);
 
-      const headroom = TOTAL_SUPPLY - (await token.totalSupply());
-      await caller.callMint(user.address, headroom); // this chain is now at the global cap
-      expect(await token.totalSupply()).to.equal(TOTAL_SUPPLY);
+      const headroomBefore =
+        TOTAL_SUPPLY - (await token.totalSupply()) - (await token.voluntarilyBurned());
 
-      // Destroy half of it voluntarily. Global supply falls, but headroom does NOT come back.
-      const burned = headroom / 2n;
-      await token.connect(user)["burn(uint256)"](burned);
-      expect(await token.totalSupply()).to.equal(TOTAL_SUPPLY - burned);
+      const burned = ethers.parseEther("400");
+      await token.connect(distributor)["burn(uint256)"](burned);
+
       expect(await token.voluntarilyBurned()).to.equal(burned);
+      const headroomAfter =
+        TOTAL_SUPPLY - (await token.totalSupply()) - (await token.voluntarilyBurned());
+      expect(headroomAfter, "a voluntary burn must not change mint headroom").to.equal(
+        headroomBefore
+      );
 
-      // Even one wei of legitimate inbound is now refused on this chain.
+      // And the headroom is genuinely usable: minting exactly it succeeds, one wei more fails.
+      await caller.callMint(user.address, headroomAfter);
       await expect(caller.callMint(user.address, 1n)).to.be.revertedWithCustomError(
         token,
         "ExceedsMaximumSupply"
+      );
+    });
+
+    it("a BRIDGE burn does restore headroom (the chain becomes a net exporter)", async () => {
+      // Contrast with the test above. A bridge burn decrements totalSupply WITHOUT touching
+      // `voluntarilyBurned`, so it genuinely returns capacity — which is correct, because the
+      // tokens were re-minted on another chain and global supply is conserved.
+      await fund(token, distributor.address, ethers.parseEther("1000"));
+      const caller = await authorizeEoaMinter(TOTAL_SUPPLY);
+
+      const before = TOTAL_SUPPLY - (await token.totalSupply()) - (await token.voluntarilyBurned());
+      const amount = ethers.parseEther("400");
+      await caller.callBurn(distributor.address, amount);
+      const after = TOTAL_SUPPLY - (await token.totalSupply()) - (await token.voluntarilyBurned());
+
+      expect(after - before, "a bridge burn must return exactly its amount of headroom").to.equal(
+        amount
       );
     });
 

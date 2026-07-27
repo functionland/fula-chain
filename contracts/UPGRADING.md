@@ -118,15 +118,17 @@ adapter. These carry invariants that MUST survive every future upgrade:
 3. **`voluntarilyBurned` must keep being incremented by `burn(uint256)` / `burnFrom`.** The supply
    cap is computed as `totalSupply() + voluntarilyBurned`; without this, any holder could burn
    tokens to manufacture fresh mint headroom for the bridge.
-   ⚠️ **Known limitation (deliberate).** Both terms are PER-CHAIN but `TOTAL_SUPPLY` is the GLOBAL
-   2B cap, so the check is a conservative approximation. Voluntary burns permanently consume this
-   chain's inbound headroom even though they reduced global supply. If
-   `totalSupply() + voluntarilyBurned` ever reached `TOTAL_SUPPLY` on one chain, legitimate inbound
-   transfers there would park indefinitely, recoverable only by upgrade. It fails in the safe
-   direction (never over-mints; nothing is lost, transfers are retryable) and the staged rollout
-   caps are orders of magnitude below the threshold. Pinned by
-   `"PINNED: voluntarilyBurned permanently consumes this chain's inbound headroom"` in
+   ✅ **This term is headroom-NEUTRAL, by construction.** A voluntary burn of `X` moves BOTH terms of
+   the gate in opposite directions by the same amount (`voluntarilyBurned += X`, `totalSupply -= X`),
+   so available headroom `TOTAL_SUPPLY − totalSupply() − voluntarilyBurned` is unchanged. That is
+   exactly the intent: burning must not *manufacture* mint capacity, and it does not *destroy* it
+   either. Only a **bridge** burn returns headroom — correctly, because those tokens are re-minted on
+   another chain. Both directions are pinned by
+   `"a voluntary burn is headroom-NEUTRAL: it neither creates nor destroys mint capacity"` and
+   `"a BRIDGE burn does restore headroom (the chain becomes a net exporter)"` in
    `test/governance/integration/FulaOFTBridge.test.ts`.
+   (An earlier revision of this note claimed voluntary burns permanently consumed headroom. That was
+   wrong — see `docs/bridge-audit.md` F-1.)
 4. **Bridge minter proposal types 12 and 13 are contract-local** (defined in `StorageToken.sol`,
    reserved by comment in `ProposalTypes.sol`). They are deliberately NOT in the
    `ProposalTypes.ProposalType` enum so the shared library and `GovernanceModule` — inherited by
