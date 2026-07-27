@@ -89,10 +89,34 @@ Results are advisory. Options are free text, which cannot map to calldata, and a
 
 **`finalize` performs no external calls.** It only records the winner, the tie flag, and the deposit liability. A separate permissionless `settleDeposit` performs the burn. The reason: burning a failed deposit is an external call into FULA, and if the token is paused or the voting proxy is ever blacklisted, that call reverts — which would mean a poll could *never* be finalized. Splitting the two guarantees that recording a result can never be held hostage by token-level state.
 
+`finalize` is also **not pausable**. `emergencyAction` is a single-admin call, so making it
+pausable would let one signature suppress the canonical record of a completed vote indefinitely.
+Nothing is protected by pausing it: the outcome is a deterministic function of tallies that are
+already public and can no longer change, and no funds move.
+
 Related determinism rules:
-- Winner is the **lowest index among maxima**, with a `tied` flag meaning *no mandate*.
-- An **all-zero tally is explicitly no mandate**, not "option 0 wins".
-- Options must be non-empty, ≤64 bytes, and `keccak256`-unique within a subject, so duplicate or lookalike labels cannot fragment a vote or make a winner ambiguous to humans.
+- When one option leads outright, its index is recorded. **Any tie for the lead records the
+  `NO_WINNER` sentinel and sets `tied`** — the contract never breaks a tie by picking an index.
+- An **all-zero tally is explicitly no mandate**, not "option 0 wins". It reaches that outcome
+  naturally: with at least two options, an all-zero tally is a tie at zero.
+- Options must be non-empty, ≤64 bytes, and `keccak256`-unique within a subject, so duplicate or
+  lookalike labels cannot fragment a vote or make a winner ambiguous to humans.
+
+### Where the ballot lives
+
+Option **hashes** are stored on-chain, in index order; the option **text**, the title and the
+description CID are published in the `SubjectCreated` and `SubjectOptions` events at creation.
+
+This was not the original intent — the plan called for option text in storage — and the reason for
+the change is honest: holding a dynamic string array per subject, plus the ABI encoder to read it
+back, cost more bytecode than the contract had to spare after inheriting ~14 KiB of
+`GovernanceModule` under a hard 24 KiB EIP-170 limit. Measured sizes are in §10.2.
+
+What is preserved: the ballot is **tamper-evident and immutable**. Anyone can check the text an
+interface shows them against the on-chain commitment with `keccak256(bytes(label))`, and a
+subject's options can never be restated after the fact. Votes are cast against indices, which are
+fixed at creation. What is lost: reading the ballot text from contract state alone — an indexer,
+an archive node, or any event log serves it instead.
 
 ## 7. Economics
 
@@ -124,6 +148,8 @@ Parameters are changed **only** through the existing 2-admin proposal flow (24h 
 - Take locked FULA via any rescue/sweep function (none exists).
 - Change any parameter outside its compile-time bounds.
 - Trap user funds with a pause — claims and deposit refunds are deliberately **not** `whenNotPaused`. `emergencyAction` is a *single*-admin action with a shared 30-minute cooldown (`GovernanceModule.sol:594-618`), so pausing is one signature away and must never freeze completed positions. This intentionally departs from the `StoragePool.claimTokens:462` precedent.
+- Suppress a result with a pause — `finalize` is not pausable either, for the same reason.
+- **Reweight a vote already in progress.** Every outcome-deciding rule — the refund quorum, the membership multiplier, the stake weight, the minimum vote basis, and both membership-eligibility gates — is snapshotted into the subject when it is created. Receipts are immutable, so without this an admin pair could change the exchange rate partway through a poll and hand late voters more influence than the ones who already voted.
 
 **Can:**
 - **Upgrade the implementation** (2 admins, quorum 2, 24h delay). This is the real trust root. An upgrade can rewrite claim accounting or drain custody regardless of every safeguard above. Because locks run up to 90 days, a 24-hour upgrade notice is **not** a user exit window — it is a courtesy. Stated plainly so depositors and voters can price it.

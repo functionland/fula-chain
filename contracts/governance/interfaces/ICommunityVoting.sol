@@ -30,15 +30,29 @@ interface ICommunityVoting {
         // --- slot 3 ---
         uint128 totalPowerCast;
         uint128 totalBasis;
-        // --- slot 4 ---
-        // Refund thresholds are snapshotted when the subject is created. Evaluating them live
-        // would let a later governance change retroactively decide whether a creator gets their
-        // deposit back; a creator should be judged against the rules they paid under.
+        // --- slots 4 and 5 ---
+        // Every rule that decides an outcome is snapshotted when the subject is created.
+        //
+        // Refund thresholds: evaluating them live would let a later governance change
+        // retroactively decide whether a creator gets their deposit back.
+        //
+        // Power rules: evaluating THOSE live would be worse. Receipts are immutable, so early
+        // voters are locked into the rules in force when they voted; changing the multiplier,
+        // the stake weight or the eligibility gates mid-poll would hand late voters a different
+        // exchange rate and silently reweight a vote already in progress.
         uint96 quorumBasisAt;
         uint32 quorumVotersAt;
-        // --- reference slots ---
-        string title;
-        string descriptionCID;
+        uint32 memberMultiplierBpsAt;
+        uint32 minMembershipAgeAt;
+        uint16 stakeWeightBpsAt;
+        uint96 minVoteBasisAt;
+        uint96 minPoolJoinStakeAt;
+        // NOTE: the title and description CID are NOT stored. They are metadata, not consensus
+        // data — nothing in the contract reads them — and holding two dynamic strings per subject
+        // cost over a kilobyte of bytecode in a contract that inherits ~14 KiB of GovernanceModule
+        // before its own logic. Both are published immutably in {SubjectCreated}, alongside the
+        // full ballot in {SubjectOptions}. The option labels themselves DO remain in storage,
+        // because votes are cast against their indices.
     }
 
     /// @notice One wallet's immutable vote on one subject.
@@ -128,7 +142,6 @@ interface ICommunityVoting {
     error SubjectClosed(uint256 subjectId);
     error SubjectStillOpen(uint256 subjectId);
     error AlreadyFinalized(uint256 subjectId);
-    error NotFinalized(uint256 subjectId);
 
     error AlreadyVoted(uint256 subjectId, address voter);
     error InvalidOption(uint16 option);
@@ -152,5 +165,4 @@ interface ICommunityVoting {
 
     /// @dev Guards the balance-delta accounting against an unchecked subtraction.
     error BalanceDecreased();
-    error ZeroAmount();
 }

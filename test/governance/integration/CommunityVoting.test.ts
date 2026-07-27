@@ -122,12 +122,6 @@ describe("CommunityVoting — core", function () {
       }
     });
 
-    it("allParams agrees with paramValue for every id", async function () {
-      const all = await voting.allParams();
-      for (let id = 1; id <= 13; id++) {
-        expect(all[id], `param ${id}`).to.equal(await voting.paramValue(id));
-      }
-    });
 
     it("rejects a zero token address", async function () {
       const CommunityVoting = await ethers.getContractFactory("CommunityVoting");

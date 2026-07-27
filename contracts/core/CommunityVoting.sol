@@ -112,7 +112,10 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
 
     /// @dev Bounds the per-vote stake scan. `StakingEngineLinear` allows at most 100 active
     ///      stakes per user; 50 keeps a vote comfortably cheap while covering realistic holders.
-    uint256 internal constant MAX_STAKE_INDICES = 50;
+    /// @dev Matches StakingEngineLinear's own cap of 100 active stakes per user. A lower bound
+    ///      here would silently under-count a fragmented staker unless they hand-picked their
+    ///      heaviest positions. The scan is the caller's own gas, and cheap on Base.
+    uint256 internal constant MAX_STAKE_INDICES = 100;
 
     uint8 internal constant STATUS_OPEN = 0;
     uint8 internal constant STATUS_FINALIZED = 1;
@@ -142,9 +145,16 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
     uint256 public subjectCount;
 
     mapping(uint256 => Subject) internal _subjects;
-    mapping(uint256 => string[]) internal _options;
-    /// @dev Guards against duplicate/lookalike option labels within one subject.
-    mapping(uint256 => mapping(bytes32 => bool)) internal _optionSeen;
+
+    /// @notice keccak256 of each ballot label, in index order.
+    /// @dev The labels themselves live in the {SubjectOptions} event, not in storage. Holding a
+    ///      dynamic string array per subject — and the ABI encoder to read it back — cost over a
+    ///      kilobyte of bytecode, which this contract does not have to spare after inheriting
+    ///      ~14 KiB of GovernanceModule. Hashes keep the ballot tamper-evident: anyone can verify
+    ///      the text an interface shows them against the on-chain commitment, and a subject's
+    ///      options can never be restated after the fact.
+    mapping(uint256 => bytes32[]) internal _optionHashes;
+
     mapping(uint256 => mapping(uint16 => uint128)) public tally;
     mapping(uint256 => mapping(address => Receipt)) internal _receipts;
 
@@ -468,21 +478,30 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         // Meaningful only once finalized, but seeded so a caller reading an open subject can
         // never mistake a default 0 for "option 0 is winning".
         s.winningOption = NO_WINNER;
+        // Freeze every outcome-deciding rule, not just the refund thresholds. See the note on
+        // {ICommunityVoting.Subject}: receipts are immutable, so changing these mid-poll would
+        // give late voters a different exchange rate from early ones.
         s.quorumBasisAt = SafeCast.toUint96(_params[P_QUORUM_BASIS]);
-        s.quorumVotersAt = uint32(_params[P_QUORUM_VOTERS]);
-        s.title = title;
-        s.descriptionCID = descriptionCID;
+        s.quorumVotersAt = SafeCast.toUint32(_params[P_QUORUM_VOTERS]);
+        s.memberMultiplierBpsAt = SafeCast.toUint32(_params[P_MEMBER_MULTIPLIER_BPS]);
+        s.minMembershipAgeAt = SafeCast.toUint32(_params[P_MIN_MEMBERSHIP_AGE]);
+        s.stakeWeightBpsAt = SafeCast.toUint16(_params[P_STAKE_WEIGHT_BPS]);
+        s.minVoteBasisAt = SafeCast.toUint96(_params[P_MIN_VOTE_BASIS]);
+        s.minPoolJoinStakeAt = SafeCast.toUint96(_params[P_MIN_POOL_JOIN_STAKE]);
 
-        string[] storage stored = _options[subjectId];
+        bytes32[] storage hashes = _optionHashes[subjectId];
         for (uint256 i = 0; i < optionCount; i++) {
             bytes memory label = bytes(options[i]);
             if (label.length == 0) revert OptionEmpty(i);
             if (label.length > MAX_OPTION_BYTES) revert OptionTooLong(i);
-            // Duplicate or look-alike labels would split the vote and make a "winner" ambiguous.
             bytes32 labelHash = keccak256(label);
-            if (_optionSeen[subjectId][labelHash]) revert DuplicateOption(i);
-            _optionSeen[subjectId][labelHash] = true;
-            stored.push(options[i]);
+            // Duplicate labels would split the vote and make a "winner" ambiguous to a human.
+            // Compared against the hashes already pushed for THIS subject; bounded by the
+            // 100-option cap, and every comparison is a warm slot.
+            for (uint256 j = 0; j < i; j++) {
+                if (hashes[j] == labelHash) revert DuplicateOption(i);
+            }
+            hashes.push(labelHash);
         }
 
         _creatorOpen[msg.sender].push(subjectId);
@@ -551,22 +570,22 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         // flag rather than inferring "has voted" from a non-zero amount.
         r.voted = true;
 
-        uint256 stakeBasis = _stakeBasis(msg.sender, s.closeTime, s.createdAt, stakeIndices);
+        uint256 stakeBasis = _stakeBasis(msg.sender, s, stakeIndices);
         uint256 received = _pullTokens(msg.sender, lockAmount);
         uint256 basis = received + stakeBasis;
 
-        uint256 minBasis = _params[P_MIN_VOTE_BASIS];
+        uint256 minBasis = s.minVoteBasisAt;
         if (basis < minBasis) revert BasisBelowMinimum(basis, minBasis);
 
         uint256 power = Math.sqrt(basis);
         bool multiplied;
         if (peerId != bytes32(0)) {
-            _requireEligibleMember(msg.sender, poolId, peerId, s.createdAt);
+            _requireEligibleMember(msg.sender, poolId, peerId, s);
             // Plain multiply-then-divide rather than Math.mulDiv: the product cannot approach
             // 2**256, so the 512-bit path buys nothing but bytecode. sqrt(2e27) is about 4.5e13
             // and the multiplier is capped at 50_000, so the intermediate peaks near 2.3e18.
             // Solidity 0.8 still reverts on overflow, and the rounding is identical.
-            power = (power * _params[P_MEMBER_MULTIPLIER_BPS]) / BPS_DENOMINATOR;
+            power = (power * s.memberMultiplierBpsAt) / BPS_DENOMINATOR;
             multiplied = true;
         }
 
@@ -602,10 +621,11 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
     ///      caller's own transaction.
     function _stakeBasis(
         address voter,
-        uint40 closeTime,
-        uint40 createdAt,
+        Subject storage s,
         uint256[] calldata indices
     ) internal view returns (uint256) {
+        uint40 closeTime = s.closeTime;
+        uint40 createdAt = s.createdAt;
         uint256 count = indices.length;
         if (count == 0) return 0;
         if (count > MAX_STAKE_INDICES) revert TooManyStakeIndices(count);
@@ -633,7 +653,7 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
 
         // Same reasoning as the multiplier above: `total` is bounded by the 2e27 wei supply and
         // the weight by 10_000, so the product peaks near 2e31 — nowhere near 2**256.
-        return (total * _params[P_STAKE_WEIGHT_BPS]) / BPS_DENOMINATOR;
+        return (total * s.stakeWeightBpsAt) / BPS_DENOMINATOR;
     }
 
     /// @dev Verifies the DePIN membership behind the voting-power multiplier.
@@ -651,7 +671,7 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         address voter,
         uint32 poolId,
         bytes32 peerId,
-        uint40 createdAt
+        Subject storage s
     ) internal view {
         address pool = storagePool;
         if (pool == address(0)) revert IntegrationDisabled(I_STORAGE_POOL);
@@ -659,13 +679,13 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         IStoragePoolView poolView = IStoragePoolView(pool);
         (address member, uint256 lockedTokens) = poolView.getPeerIdInfo(poolId, peerId);
         if (member != voter) revert MembershipNotEligible();
-        if (lockedTokens < _params[P_MIN_POOL_JOIN_STAKE]) revert MembershipNotEligible();
+        if (lockedTokens < s.minPoolJoinStakeAt) revert MembershipNotEligible();
 
         uint256 joinedAt = poolView.joinTimestamp(peerId);
         if (joinedAt == 0) revert MembershipNotEligible();
         // Membership must predate the subject by at least minMembershipAge. Written as an
         // addition so a young subject cannot underflow the comparison.
-        if (joinedAt + _params[P_MIN_MEMBERSHIP_AGE] > createdAt) revert MembershipNotEligible();
+        if (joinedAt + s.minMembershipAgeAt > s.createdAt) revert MembershipNotEligible();
 
         // Forfeited accounts are flagged bad actors; they may still vote, just without the boost.
         if (poolView.isForfeited(voter)) revert MembershipNotEligible();
@@ -708,7 +728,13 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
     ///      token, and if the token were paused or this contract were blacklisted that call would
     ///      revert — which would mean a poll could never be finalized at all. Settlement is split
     ///      into {settleDeposit} so recording a result can never be held hostage by token state.
-    function finalize(uint256 subjectId) external whenNotPaused nonReentrant {
+    ///
+    ///      Also deliberately NOT `whenNotPaused`. `emergencyAction` is a single-admin call with
+    ///      a 30-minute cooldown, so making this pausable would let one signature suppress the
+    ///      canonical record of a completed vote indefinitely. Nothing is protected by pausing
+    ///      it: the outcome is a deterministic function of tallies that are already public and
+    ///      can no longer change, and no funds move here.
+    function finalize(uint256 subjectId) external nonReentrant {
         Subject storage s = _subjects[subjectId];
         if (s.createdAt == 0) revert SubjectNotFound(subjectId);
         if (block.timestamp < s.closeTime) revert SubjectStillOpen(subjectId);
@@ -860,7 +886,11 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         if (paramId == P_QUORUM_VOTERS) return (3, 1_000);
         if (paramId == P_MAX_OPEN_PER_CREATOR) return (1, 20);
         if (paramId == P_CREATE_COOLDOWN) return (0, 7 days);
-        if (paramId == P_MIN_POOL_JOIN_STAKE) return (0, 10_000_000 * TOKEN_UNIT);
+        // Floored above zero deliberately: at zero the peer-stake check becomes a no-op and any
+        // admin-seeded pool member (StoragePool.addMember records zero locked tokens) would earn
+        // the multiplier for free. To neutralise the multiplier instead, set
+        // memberMultiplierBps to 10_000 (1x) — that is the intended off switch.
+        if (paramId == P_MIN_POOL_JOIN_STAKE) return (TOKEN_UNIT, 10_000_000 * TOKEN_UNIT);
         if (paramId == P_MIN_MEMBERSHIP_AGE) return (0, 90 days);
         revert InvalidParam(paramId);
     }
@@ -871,10 +901,6 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         return _params[paramId];
     }
 
-    /// @notice The whole parameter vector, indexed by `P_*` id. Index 0 is unused.
-    function allParams() external view returns (uint256[14] memory) {
-        return _params;
-    }
 
     function getSubject(uint256 subjectId) external view returns (Subject memory) {
         Subject storage s = _subjects[subjectId];
@@ -882,23 +908,19 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         return s;
     }
 
-    function getOptions(uint256 subjectId) external view returns (string[] memory) {
+    /// @notice The on-chain commitment to a subject's ballot, in index order.
+    /// @dev Verify a label an interface shows you with `keccak256(bytes(label))`.
+    function optionHashes(uint256 subjectId) external view returns (bytes32[] memory) {
         if (_subjects[subjectId].createdAt == 0) revert SubjectNotFound(subjectId);
-        return _options[subjectId];
+        return _optionHashes[subjectId];
     }
 
     function getReceipt(uint256 subjectId, address voter) external view returns (Receipt memory) {
         return _receipts[subjectId][voter];
     }
 
-    /// @notice Full tally vector, so a tie or a zero-turnout result is independently verifiable.
-    function getTally(uint256 subjectId) external view returns (uint128[] memory result) {
-        Subject storage s = _subjects[subjectId];
-        if (s.createdAt == 0) revert SubjectNotFound(subjectId);
-        uint16 n = s.optionCount;
-        result = new uint128[](n);
-        for (uint16 i = 0; i < n; i++) {
-            result[i] = tally[subjectId][i];
-        }
-    }
+    // The full tally vector is readable through the public `tally` mapping, one option at a time
+    // (`tally(subjectId, index)`), so a tie or a zero-turnout result stays independently
+    // verifiable. A convenience getter returning the whole array was dropped: the uint128[] ABI
+    // encoder is not worth its bytecode here, and any interface already batches these reads.
 }

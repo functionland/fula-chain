@@ -39,15 +39,14 @@ const EXPECTED_LAYOUT: Array<[slot: string, label: string]> = [
   ["14", "_params"], // uint256[14] => slots 14..27
   ["28", "subjectCount"],
   ["29", "_subjects"],
-  ["30", "_options"],
-  ["31", "_optionSeen"],
-  ["32", "tally"],
-  ["33", "_receipts"],
-  ["34", "_creatorOpen"],
-  ["35", "lastCreateAt"],
-  ["36", "totalLockedLiability"],
-  ["37", "totalDepositLiability"],
-  ["38", "__gap"], // uint256[50] => slots 38..87
+  ["30", "_optionHashes"],
+  ["31", "tally"],
+  ["32", "_receipts"],
+  ["33", "_creatorOpen"],
+  ["34", "lastCreateAt"],
+  ["35", "totalLockedLiability"],
+  ["36", "totalDepositLiability"],
+  ["37", "__gap"], // uint256[50] => slots 37..86
 ];
 
 type LayoutEntry = { label: string; slot: string; offset: number; type: string };

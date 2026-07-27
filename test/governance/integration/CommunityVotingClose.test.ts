@@ -194,7 +194,10 @@ describe("CommunityVoting — finalization and claims", function () {
       await time.increase(7 * DAY + 1);
 
       await voting.connect(owner).emergencyAction(1);
-      await expect(voting.connect(stranger).finalize(1)).to.be.reverted; // finalize IS pausable
+      // finalize is not pausable either: one admin signature must not be able to suppress the
+      // canonical record of a completed vote. It moves no funds and makes no external calls.
+      await voting.connect(stranger).finalize(1);
+      expect((await voting.getSubject(1)).status).to.equal(1);
 
       const before = await token.balanceOf(v1.address);
       await voting.connect(v1).claim(1); // claims are not
@@ -359,10 +362,11 @@ describe("CommunityVoting — finalization and claims", function () {
     await voting.connect(v3).vote(1, 1, amount, [], 0, ZeroHash);
   }
 
+  /** Conservation: see the note in CommunityVotingSubjects.test.ts for why this is equality. */
   async function expectSolvent() {
     const held = await token.balanceOf(await voting.getAddress());
     const owed = (await voting.totalLockedLiability()) + (await voting.totalDepositLiability());
-    expect(held, "contract is insolvent").to.be.gte(owed);
+    expect(held, "held balance does not equal recorded liabilities").to.equal(owed);
   }
 
   async function runTokenProposal(proposalType: number, target: string, amount: number | bigint = 0) {

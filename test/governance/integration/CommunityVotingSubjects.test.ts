@@ -84,14 +84,17 @@ describe("CommunityVoting — subject creation", function () {
       expect(s.createdAt).to.equal(block!.timestamp);
       expect(s.closeTime).to.equal(block!.timestamp + 7 * DAY);
       expect(s.optionCount).to.equal(3);
-      expect(s.title).to.equal("Roadmap?");
-      expect(s.descriptionCID).to.equal("QmCid");
       expect(s.deposit).to.equal(DEPOSIT);
       expect(s.status).to.equal(0);
       expect(s.depositSettled).to.equal(false);
       // Seeded so an open subject can never be misread as "option 0 is winning".
       expect(s.winningOption).to.equal(65535);
-      expect(await voting.getOptions(1)).to.deep.equal(OPTS);
+      // The ballot is committed on-chain as hashes; the text itself is published in the event.
+      const hashes = await voting.optionHashes(1);
+      expect(hashes.length).to.equal(OPTS.length);
+      for (let i = 0; i < OPTS.length; i++) {
+        expect(hashes[i]).to.equal(ethers.keccak256(ethers.toUtf8Bytes(OPTS[i])));
+      }
     });
 
     it("burns the fee outright and holds the deposit", async function () {
@@ -106,10 +109,24 @@ describe("CommunityVoting — subject creation", function () {
       expect(await voting.totalDepositLiability()).to.equal(DEPOSIT);
     });
 
-    it("emits the ballot so indexers need no archive node", async function () {
-      await expect(voting.connect(creator).createSubject("T", "C", OPTS, 7 * DAY))
-        .to.emit(voting, "SubjectCreated")
-        .and.to.emit(voting, "SubjectOptions");
+    it("publishes the title, CID and full ballot in events", async function () {
+      // These are metadata, not consensus data, and are deliberately not held in storage. The
+      // events are the canonical record, so this is the test that they are actually complete.
+      const tx = await voting.connect(creator).createSubject("Roadmap?", "QmCid", OPTS, 7 * DAY);
+      await expect(tx).to.emit(voting, "SubjectCreated");
+      await expect(tx).to.emit(voting, "SubjectOptions");
+
+      const receipt = await tx.wait();
+      const created = receipt!.logs
+        .map((l: any) => { try { return voting.interface.parseLog(l); } catch { return null; } })
+        .find((p: any) => p && p.name === "SubjectCreated");
+      expect(created!.args.title).to.equal("Roadmap?");
+      expect(created!.args.descriptionCID).to.equal("QmCid");
+
+      const optionsLog = receipt!.logs
+        .map((l: any) => { try { return voting.interface.parseLog(l); } catch { return null; } })
+        .find((p: any) => p && p.name === "SubjectOptions");
+      expect(optionsLog!.args.options).to.deep.equal(OPTS);
     });
 
     it("charges the creator exactly fee + deposit", async function () {
@@ -122,7 +139,7 @@ describe("CommunityVoting — subject creation", function () {
       const many = Array.from({ length: 100 }, (_, i) => `Option ${i}`);
       await voting.connect(creator).createSubject("Big", "C", many, 7 * DAY);
       expect((await voting.getSubject(1)).optionCount).to.equal(100);
-      expect((await voting.getTally(1)).length).to.equal(100);
+      expect((await voting.optionHashes(1)).length).to.equal(100);
     });
   });
 
@@ -285,16 +302,20 @@ describe("CommunityVoting — subject creation", function () {
   describe("views", function () {
     it("reverts for a subject that does not exist", async function () {
       await expect(voting.getSubject(1)).to.be.revertedWithCustomError(voting, "SubjectNotFound");
-      await expect(voting.getOptions(1)).to.be.revertedWithCustomError(voting, "SubjectNotFound");
-      await expect(voting.getTally(1)).to.be.revertedWithCustomError(voting, "SubjectNotFound");
+      await expect(voting.optionHashes(1)).to.be.revertedWithCustomError(voting, "SubjectNotFound");
     });
   });
 
-  /** The contract must always hold at least what it owes. */
+  /**
+   * Conservation, not merely solvency. Asserted as EQUALITY on purpose: a `>=` check passes just
+   * as happily when the contract over-holds, which is exactly the signature of a path that
+   * decrements a liability without transferring. Balance-delta accounting makes equality hold
+   * even with the platform fee enabled, because every credit records what actually arrived.
+   */
   async function expectSolvent() {
     const held = await token.balanceOf(await voting.getAddress());
     const owed = (await voting.totalLockedLiability()) + (await voting.totalDepositLiability());
-    expect(held, "contract is insolvent").to.be.gte(owed);
+    expect(held, "held balance does not equal recorded liabilities").to.equal(owed);
   }
 
   /** Drive a StorageToken proposal through the two-admin flow. */

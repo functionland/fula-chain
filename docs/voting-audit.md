@@ -18,6 +18,13 @@ implementation. Reviews came from three independent model families (Cursor/Compo
 Moonshot Kimi K3, OpenAI Codex/GPT-5.5), two of which read the actual repository rather than a
 pasted description.
 
+**Review status at the time of writing — stated precisely so this document does not overstate its
+own coverage:** the design-time round is complete and all three reviewers reported. Of the
+finished-code round, **Cursor has reported** (findings F-12 to F-14 below); the Codex and
+Kimi K3 finished-code reviews were still running when this revision was written. Any further
+findings must be triaged into the register below before this contract is deployed. If they return
+clean, record that explicitly rather than leaving the question open.
+
 Out of scope: `GovernanceModule`, `StorageToken`, `StakingEngineLinear` and `StoragePool`
 themselves, which were audited separately by Hashlock. Their *interaction surface* with this
 contract is in scope, and two findings below concern exactly that.
@@ -179,6 +186,60 @@ addresses into proposal events and storage.
 **Operational note: if parameter proposals begin reverting `ExistingActiveProposal`, run
 `cleanupExpiredProposals`.**
 
+### F-12 — MEDIUM — A vote in progress could be reweighted mid-poll — **FIXED**
+
+F-7 froze the *refund* thresholds but left every *power* rule live: `minVoteBasis`,
+`memberMultiplierBps`, `stakeWeightBps`, `minPoolJoinStake` and `minMembershipAge` were all read
+at vote time. Because receipts are immutable, early voters are permanently fixed at the rules they
+voted under — so two admins could have changed the exchange rate partway through a poll and handed
+every remaining voter a different weight. Raising the multiplier from 2x to 5x mid-vote is the
+sharpest form: it gives late member-voters 2.5x the influence of identical earlier ones.
+
+Swapping the `stakingEngine` or `storagePool` integration mid-poll is the same class of problem.
+
+*Found by:* Cursor (finished-code review).
+
+*Fix:* all five rules are snapshotted into the subject at creation, alongside the quorum
+thresholds. A poll is decided entirely by the rules in force when it was posted.
+
+*Residual:* an integration swap still affects open subjects. This is not separately mitigated —
+it requires the same two admins who can already upgrade the implementation outright, so it adds no
+capability. Recorded here so it is a known acceptance rather than an oversight.
+
+*Verification:* three tests change a parameter mid-poll, confirm the open subject is unaffected,
+and confirm the next subject picks the new value up.
+
+### F-13 — MEDIUM — `minPoolJoinStake` could be set to zero — **FIXED**
+
+The bound allowed `0`, at which the peer-stake check becomes a no-op and any admin-seeded pool
+member — `StoragePool.addMember` records zero locked tokens — would earn the multiplier for free.
+That would have quietly undone F-4.
+
+*Found by:* Cursor.
+
+*Fix:* the hard floor is raised to 1 FULA, so governance can never disable the check. The intended
+way to neutralise the multiplier is `memberMultiplierBps = 10_000` (1x).
+
+### F-14 — LOW — A single admin could suppress a result indefinitely — **FIXED**
+
+`finalize` was `whenNotPaused`. `emergencyAction` is a single-admin call with a 30-minute cooldown,
+so one signature could have suppressed the canonical record of a completed vote indefinitely while
+funds still moved.
+
+*Found by:* Cursor.
+
+*Fix:* `finalize` is no longer pausable. Nothing is protected by pausing it — the outcome is a
+deterministic function of tallies that are already public and can no longer change, and no funds
+move.
+
+### F-15 — INFORMATIONAL — Option text moved from storage to events
+
+Not a vulnerability; a deliberate trade recorded for reviewers. Holding a dynamic string array per
+subject cost more bytecode than remained under the 24 KiB EIP-170 limit. Option **hashes** are
+stored in index order; the text is published in `SubjectOptions`. The ballot stays tamper-evident
+and immutable, and votes are cast against indices fixed at creation. See `docs/voting-design.md`
+§6 for the full rationale and what is lost.
+
 ---
 
 ## 3. Invariants
@@ -248,7 +309,8 @@ understood as an anti-spam capital requirement, not a guarantee of organic turno
 
 ## 5. Test coverage
 
-118 tests across five suites, all passing.
+119 tests across five suites, all passing. Full-suite run: 729 passing, 43 failing — one *fewer*
+than the 44 pre-existing failures recorded for this repository, so this work introduces none.
 
 | Suite | Focus |
 |---|---|
@@ -261,6 +323,10 @@ understood as an anti-spam capital requirement, not a guarantee of organic turno
 Notable properties proven rather than argued:
 
 - The Recovery drain is blocked **while the contract holds 1,000,000 FULA**.
+- A parameter change mid-poll **does not alter the poll in progress**, and does apply to the next one.
+- Conservation is asserted as **equality** (`held == owed`) after every test in the affected
+  suites, not merely solvency: a `>=` check passes just as happily when the contract over-holds,
+  which is precisely the signature of a liability decremented without a transfer.
 - Finalization succeeds **while the token is paused**.
 - Claims succeed **while the voting contract is paused**.
 - A blacklisted voter's failure **does not block any other voter**.
@@ -268,8 +334,14 @@ Notable properties proven rather than argued:
 - A slot is freed **without anyone calling `finalize`**.
 - `Math.sqrt` matches an independent integer square root exactly across the realistic range.
 
-Solidity-coverage was deliberately deferred to this step rather than run mid-build, where most of
-the contract did not yet exist and the numbers would have been misleading.
+**Solidity-coverage has NOT been run.** It was started mid-build, abandoned because instrumenting
+the whole repository exceeded ten minutes while most of this contract did not yet exist, and not
+re-attempted before this revision. The bounds logic is exercised exhaustively by explicit tests
+(every parameter at min−1, min, max and max+1, at both creation and execution), which is stronger
+evidence than a coverage percentage for that specific code — but no line- or branch-coverage
+figure for the contract as a whole has been measured, and this document does not claim one.
+Running `npx hardhat coverage --testfiles "test/governance/integration/CommunityVoting*.test.ts"`
+remains outstanding.
 
 ---
 

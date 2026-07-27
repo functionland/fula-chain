@@ -154,9 +154,8 @@ describe("CommunityVoting — voting power", function () {
       const lock = ethers.parseEther("1000000");
       await voting.connect(voter).vote(1, 1, lock, [], 0, ZeroHash);
 
-      const tallies = await voting.getTally(1);
-      expect(tallies[1]).to.equal(isqrt(lock));
-      expect(tallies[0]).to.equal(0n);
+      expect(await voting.tally(1, 1)).to.equal(isqrt(lock));
+      expect(await voting.tally(1, 0)).to.equal(0n);
 
       const s = await voting.getSubject(1);
       expect(s.totalPowerCast).to.equal(isqrt(lock));
@@ -177,8 +176,9 @@ describe("CommunityVoting — voting power", function () {
       // point of the curve — and it is also why wallet-splitting is the residual risk.
       await voting.connect(voter).vote(1, 0, ethers.parseEther("1000000"), [], 0, ZeroHash);
       await voting.connect(voter2).vote(1, 1, ethers.parseEther("10000"), [], 0, ZeroHash);
-      const tallies = await voting.getTally(1);
-      expect(tallies[0] / tallies[1]).to.equal(10n);
+      const whale = await voting.tally(1, 0);
+      const minnow = await voting.tally(1, 1);
+      expect(whale / minnow).to.equal(10n);
     });
 
     it("rejects a basis below the minimum", async function () {
@@ -314,12 +314,22 @@ describe("CommunityVoting — voting power", function () {
       ).to.be.revertedWithCustomError(voting, "StakeIndicesNotAscending");
     });
 
-    it("rejects more than 50 indices", async function () {
-      for (let i = 0; i < 51; i++) await addQualifyingStake(voter.address, ethers.parseEther("1000"));
-      const indices = Array.from({ length: 51 }, (_, i) => i);
+    it("accepts up to 100 indices, matching the staking engine's own cap, and rejects 101", async function () {
+      for (let i = 0; i < 101; i++) await addQualifyingStake(voter.address, ethers.parseEther("1000"));
       await expect(
-        voting.connect(voter).vote(1, 0, 0, indices, 0, ZeroHash)
+        voting.connect(voter).vote(1, 0, 0, Array.from({ length: 101 }, (_, i) => i), 0, ZeroHash)
       ).to.be.revertedWithCustomError(voting, "TooManyStakeIndices");
+
+      await voting.connect(voter).vote(1, 0, 0, Array.from({ length: 100 }, (_, i) => i), 0, ZeroHash);
+      expect((await voting.getReceipt(1, voter.address)).basis).to.equal(ethers.parseEther("100000"));
+    });
+
+    it("reverts on an index the caller has no stake at", async function () {
+      // The staking contract's array access panics rather than returning a custom error. That is
+      // acceptable — it costs only the caller their own transaction and can never affect anyone
+      // else's vote, claim, or a finalization — but it is recorded here rather than assumed.
+      await addQualifyingStake(voter.address);
+      await expect(voting.connect(voter).vote(1, 0, 0, [99], 0, ZeroHash)).to.be.reverted;
     });
 
     it("counts another wallet's stakes for nobody", async function () {
@@ -328,16 +338,30 @@ describe("CommunityVoting — voting power", function () {
       await expect(voting.connect(voter).vote(1, 0, 0, [0], 0, ZeroHash)).to.be.reverted;
     });
 
-    it("honours stakeWeightBps, including switching stake power off entirely", async function () {
+    it("snapshots stakeWeightBps per subject, so a mid-poll change cannot reweight it", async function () {
+      // Receipts are immutable, so early voters are fixed at the rules they voted under. If the
+      // weight applied live, governance could hand late voters a different exchange rate in the
+      // middle of a vote already in progress.
       await addQualifyingStake(voter.address);
       await runParamProposal(P_STAKE_WEIGHT_BPS, 5000); // 50%
-      await voting.connect(voter).vote(1, 0, 0, [0], 0, ZeroHash);
-      expect((await voting.getReceipt(1, voter.address)).basis).to.equal(STAKE / 2n);
 
-      await runParamProposal(P_STAKE_WEIGHT_BPS, 0);
+      // Subject 1 was created under the old rule and keeps it.
+      await voting.connect(voter).vote(1, 0, 0, [0], 0, ZeroHash);
+      expect((await voting.getReceipt(1, voter.address)).basis).to.equal(STAKE);
+
+      // A subject created afterwards picks the new weight up.
+      await voting.connect(creator).createSubject("Q2", "CID", OPTS, 7 * DAY);
       await addQualifyingStake(voter2.address);
+      await voting.connect(voter2).vote(2, 0, 0, [0], 0, ZeroHash);
+      expect((await voting.getReceipt(2, voter2.address)).basis).to.equal(STAKE / 2n);
+    });
+
+    it("can switch stake-derived power off entirely for new subjects", async function () {
+      await runParamProposal(P_STAKE_WEIGHT_BPS, 0);
+      await voting.connect(creator).createSubject("Q2", "CID", OPTS, 7 * DAY);
+      await addQualifyingStake(voter.address);
       await expect(
-        voting.connect(voter2).vote(1, 0, 0, [0], 0, ZeroHash)
+        voting.connect(voter).vote(2, 0, 0, [0], 0, ZeroHash)
       ).to.be.revertedWithCustomError(voting, "BasisBelowMinimum");
     });
 
@@ -405,15 +429,22 @@ describe("CommunityVoting — voting power", function () {
       ).to.be.revertedWithCustomError(voting, "MembershipNotEligible");
     });
 
-    it("refuses membership younger than minMembershipAge", async function () {
+    it("refuses membership younger than minMembershipAge, snapshotted per subject", async function () {
       await storagePool.setMember(POOL_ID, PEER, voter.address, ethers.parseEther("100"), subjectCreatedAt - DAY);
       await expect(
         voting.connect(voter).vote(1, 0, LOCK, [], POOL_ID, PEER)
       ).to.be.revertedWithCustomError(voting, "MembershipNotEligible");
 
+      // Relaxing the requirement does not retroactively enfranchise anyone on the open subject.
       await runParamProposal(P_MIN_MEMBERSHIP_AGE, 0);
-      await voting.connect(voter).vote(1, 0, LOCK, [], POOL_ID, PEER);
-      expect((await voting.getReceipt(1, voter.address)).multiplied).to.equal(true);
+      await expect(
+        voting.connect(voter).vote(1, 0, LOCK, [], POOL_ID, PEER)
+      ).to.be.revertedWithCustomError(voting, "MembershipNotEligible");
+
+      // It applies from the next subject onwards.
+      await voting.connect(creator).createSubject("Q2", "CID", OPTS, 7 * DAY);
+      await voting.connect(voter).vote(2, 0, LOCK, [], POOL_ID, PEER);
+      expect((await voting.getReceipt(2, voter.address)).multiplied).to.equal(true);
     });
 
     it("refuses a stale join timestamp left behind by a removed peer", async function () {
@@ -446,11 +477,20 @@ describe("CommunityVoting — voting power", function () {
       expect((await voting.getReceipt(1, voter.address)).power).to.equal(isqrt(LOCK) * 2n);
     });
 
-    it("honours a governance change to the multiplier size", async function () {
+    it("snapshots the multiplier size per subject", async function () {
+      // The sharpest version of the mid-poll reweighting problem: without the snapshot, two
+      // admins could raise the multiplier partway through a vote and hand every remaining
+      // member-voter 2.5x the influence of the ones who already voted.
       await makeEligible(voter.address);
       await runParamProposal(P_MEMBER_MULTIPLIER_BPS, 50000); // 5x, the hard maximum
+
       await voting.connect(voter).vote(1, 0, LOCK, [], POOL_ID, PEER);
-      expect((await voting.getReceipt(1, voter.address)).power).to.equal(isqrt(LOCK) * 5n);
+      expect((await voting.getReceipt(1, voter.address)).power).to.equal(isqrt(LOCK) * 2n);
+
+      await voting.connect(creator).createSubject("Q2", "CID", OPTS, 7 * DAY);
+      await storagePool.setMember(POOL_ID, PEER, voter2.address, ethers.parseEther("100"), subjectCreatedAt - 30 * DAY);
+      await voting.connect(voter2).vote(2, 0, LOCK, [], POOL_ID, PEER);
+      expect((await voting.getReceipt(2, voter2.address)).power).to.equal(isqrt(LOCK) * 5n);
     });
 
     it("votes without the multiplier when no peer is supplied", async function () {
