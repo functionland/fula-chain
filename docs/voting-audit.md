@@ -387,8 +387,12 @@ understood as an anti-spam capital requirement, not a guarantee of organic turno
 
 ## 5. Test coverage
 
-119 tests across five suites, all passing. Full-suite run: 729 passing, 43 failing — one *fewer*
-than the 44 pre-existing failures recorded for this repository, so this work introduces none.
+119 tests across five suites, all passing.
+
+Full-suite regression: **729 passing, 13 pending, 44 failing** — exactly the 44 pre-existing
+failures recorded for this repository, so this work introduces none. (An earlier run of the same
+suite reported 43, so at least one of the pre-existing failures is timing-flaky; the count never
+rose above the baseline.)
 
 | Suite | Focus |
 |---|---|
