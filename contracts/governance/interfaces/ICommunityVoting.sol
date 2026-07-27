@@ -45,16 +45,22 @@ interface ICommunityVoting {
         uint96 quorumBasisAt;
         uint32 quorumVotersAt;
         uint32 memberMultiplierBpsAt;
+        uint32 stakerMultiplierBpsAt;
         uint16 stakeWeightBpsAt;
         uint96 minVoteBasisAt;
         uint96 minPoolJoinStakeAt;
-        // NOTE: no strings are stored. The title, the description CID and the ballot LABELS are
-        // metadata — nothing in the contract reads them — and holding dynamic strings per subject,
-        // plus the ABI encoders to read them back, cost more bytecode than remained under the
-        // 24 KiB EIP-170 limit after inheriting ~14 KiB of GovernanceModule. All of them are
-        // published immutably in {SubjectCreated} and {SubjectOptions}. What the contract keeps is
-        // the keccak256 of each label, in index order, so the ballot stays tamper-evident and
-        // votes are cast against indices fixed at creation. See docs/voting-design.md §6.
+        // --- reference slots ---
+        /// @notice Short human-readable question.
+        string title;
+        /// @notice IPFS CID of the full proposal text. Held in state, not only in the creation
+        ///         event, so the pointer to a subject's full text is readable from the contract
+        ///         itself and cannot be lost with an indexer.
+        string descriptionCID;
+        // NOTE: the ballot LABELS are deliberately NOT stored — only their keccak256 hashes, in
+        // index order (see `_optionHashes`). Holding a dynamic string ARRAY per subject, plus the
+        // encoder to read it back, was the expensive part; two single strings are cheap by
+        // comparison. The labels are published in {SubjectOptions}, the hashes keep the ballot
+        // tamper-evident, and votes are cast against indices fixed at creation.
     }
 
     /// @notice One wallet's immutable vote on one subject.
@@ -67,13 +73,19 @@ interface ICommunityVoting {
         uint16 option;
         bool voted;                 // explicit flag: a valid vote may carry zero fresh lock
         bool claimed;
-        bool multiplied;            // whether the DePIN membership multiplier was applied
+        /// @notice Total commitment multiplier applied to this vote, in bps (10_000 = 1x).
+        /// @dev Records the combined pool-membership and staker boosts, so the exact weighting a
+        ///      vote received stays auditable after the fact even if parameters later change.
+        uint32 multiplierBps;
     }
 
     // ---------------------------------------------------------------------
     // Events
     // ---------------------------------------------------------------------
 
+    /// @dev The title and description CID are NOT repeated here: both live in the subject's state
+    ///      and are readable with {CommunityVoting.getSubject}, so duplicating them in the log
+    ///      would only cost bytecode this contract does not have to spare.
     event SubjectCreated(
         uint256 indexed subjectId,
         address indexed creator,
@@ -81,9 +93,7 @@ interface ICommunityVoting {
         uint40 closeTime,
         uint16 optionCount,
         uint96 burnedFee,
-        uint96 deposit,
-        string title,
-        string descriptionCID
+        uint96 deposit
     );
 
     /// @dev Emitted alongside {SubjectCreated} so indexers get the ballot without an archive node.
@@ -95,7 +105,7 @@ interface ICommunityVoting {
         uint16 indexed option,
         uint128 basis,
         uint128 power,
-        bool multiplied
+        uint32 multiplierBps
     );
 
     /// @dev Records the outcome. Reserved as the hook a future execution module would consume.

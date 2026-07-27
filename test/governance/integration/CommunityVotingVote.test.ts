@@ -21,6 +21,13 @@ const PT_ADD_WHITELIST = 5;
 const PT_SET_PARAM = 14;
 const P_STAKE_WEIGHT_BPS = 7;
 const P_MEMBER_MULTIPLIER_BPS = 6;
+const P_STAKER_MULTIPLIER_BPS = 13;
+const P_MIN_VOTE_BASIS = 3;
+
+/** Apply a bps multiplier the way the contract does: sqrt first, then scale. */
+function powerOf(basis: bigint, multiplierBps: bigint = 10000n): bigint {
+  return (isqrt(basis) * multiplierBps) / 10000n;
+}
 
 const OPTS = ["Yes", "No", "Abstain"];
 const PEER = ethers.keccak256(ethers.toUtf8Bytes("peer-1"));
@@ -146,7 +153,7 @@ describe("CommunityVoting â€” voting power", function () {
       expect(r.basis).to.equal(lock);
       expect(r.power).to.equal(isqrt(lock));
       expect(r.option).to.equal(0);
-      expect(r.multiplied).to.equal(false);
+      expect(r.multiplierBps).to.equal(10000);
     });
 
     it("updates the tally, the subject totals and the liability", async function () {
@@ -167,7 +174,7 @@ describe("CommunityVoting â€” voting power", function () {
       const lock = ethers.parseEther("1000000");
       await expect(voting.connect(voter).vote(1, 2, lock, [], 0, ZeroHash))
         .to.emit(voting, "VoteCast")
-        .withArgs(1, voter.address, 2, lock, isqrt(lock), false);
+        .withArgs(1, voter.address, 2, lock, isqrt(lock), 10000);
     });
 
     it("dampens a whale relative to many small holders", async function () {
@@ -248,7 +255,9 @@ describe("CommunityVoting â€” voting power", function () {
       const r = await voting.getReceipt(1, voter.address);
       expect(r.lockedAmount).to.equal(0n);
       expect(r.basis).to.equal(STAKE);
-      expect(r.power).to.equal(isqrt(STAKE));
+      // A qualifying stake also earns the 1.5x staker commitment boost.
+      expect(r.multiplierBps).to.equal(15000);
+      expect(r.power).to.equal(powerOf(STAKE, 15000n));
       // Nothing was transferred in, so nothing is owed back.
       expect(await voting.totalLockedLiability()).to.equal(0n);
     });
@@ -259,7 +268,7 @@ describe("CommunityVoting â€” voting power", function () {
       await voting.connect(voter).vote(1, 0, lock, [0], 0, ZeroHash);
       const r = await voting.getReceipt(1, voter.address);
       expect(r.basis).to.equal(STAKE + lock);
-      expect(r.power).to.equal(isqrt(STAKE + lock));
+      expect(r.power).to.equal(powerOf(STAKE + lock, 15000n));
     });
 
     it("sums several stakes before applying the weight once", async function () {
@@ -321,6 +330,34 @@ describe("CommunityVoting â€” voting power", function () {
 
       await voting.connect(voter).vote(1, 0, 0, Array.from({ length: 100 }, (_, i) => i), 0, ZeroHash);
       expect((await voting.getReceipt(1, voter.address)).basis).to.equal(ethers.parseEther("100000"));
+    });
+
+    it("gives no staker boost to a stake below the participation floor", async function () {
+      // The boost is meant to reward capital genuinely locked into the network, so it requires
+      // the stake ALONE to clear the same floor a vote needs — a dust position earns nothing.
+      const dust = ethers.parseEther("9999"); // minVoteBasis is 10,000
+      await stakingEngine.addStake(voter.address, dust, 365 * DAY, subjectCreatedAt - DAY, true);
+      const lock = ethers.parseEther("1000000");
+      await voting.connect(voter).vote(1, 0, lock, [0], 0, ZeroHash);
+
+      const r = await voting.getReceipt(1, voter.address);
+      expect(r.basis).to.equal(lock + dust); // still counts toward basis
+      expect(r.multiplierBps).to.equal(10000); // but earns no boost
+    });
+
+    it("snapshots the staker boost per subject", async function () {
+      await addQualifyingStake(voter.address);
+      await runParamProposal(P_STAKER_MULTIPLIER_BPS, 10000); // switch the boost off
+
+      // The open subject keeps the boost it was created with.
+      await voting.connect(voter).vote(1, 0, 0, [0], 0, ZeroHash);
+      expect((await voting.getReceipt(1, voter.address)).multiplierBps).to.equal(15000);
+
+      // The next subject reflects the change.
+      await voting.connect(creator).createSubject("Q2", "CID", OPTS, 7 * DAY);
+      await addQualifyingStake(voter2.address);
+      await voting.connect(voter2).vote(2, 0, 0, [0], 0, ZeroHash);
+      expect((await voting.getReceipt(2, voter2.address)).multiplierBps).to.equal(10000);
     });
 
     it("reverts on an index the caller has no stake at", async function () {
@@ -400,7 +437,7 @@ describe("CommunityVoting â€” voting power", function () {
       await voting.connect(voter).vote(1, 0, LOCK, [], POOL_ID, PEER);
       const r = await voting.getReceipt(1, voter.address);
       expect(r.power).to.equal(isqrt(LOCK) * 2n);
-      expect(r.multiplied).to.equal(true);
+      expect(r.multiplierBps).to.not.equal(10000);
       // The basis is unchanged â€” only the derived power is boosted, so quorum stays honest.
       expect(r.basis).to.equal(LOCK);
     });
@@ -437,7 +474,7 @@ describe("CommunityVoting â€” voting power", function () {
       // multiplier still stands, because only live membership and the peer's own stake matter.
       await storagePool.setMember(POOL_ID, PEER, voter.address, ethers.parseEther("100"), 0);
       await voting.connect(voter).vote(1, 0, LOCK, [], POOL_ID, PEER);
-      expect((await voting.getReceipt(1, voter.address)).multiplied).to.equal(true);
+      expect((await voting.getReceipt(1, voter.address)).multiplierBps).to.not.equal(10000);
     });
 
     it("refuses a peer whose membership has been removed", async function () {
@@ -484,11 +521,32 @@ describe("CommunityVoting â€” voting power", function () {
       expect((await voting.getReceipt(2, voter2.address)).power).to.equal(isqrt(LOCK) * 5n);
     });
 
+    it("compounds with the staker boost, and caps the combination at 5x", async function () {
+      // A pool operator who is also a long-term staker is the most committed participant there
+      // is, so the two boosts stack: 2x * 1.5x = 3x.
+      await makeEligible(voter.address);
+      await stakingEngine.addStake(voter.address, ethers.parseEther("2000000"), 365 * DAY, subjectCreatedAt - DAY, true);
+      await voting.connect(voter).vote(1, 0, LOCK, [0], POOL_ID, PEER);
+
+      const r = await voting.getReceipt(1, voter.address);
+      expect(r.multiplierBps).to.equal(30000);
+      expect(r.power).to.equal(powerOf(r.basis, 30000n));
+
+      // Pushing the member boost to its 5x maximum would give 5 * 1.5 = 7.5x unchecked; the
+      // combined ceiling clamps it back to 5x so stacking can never exceed either boost alone.
+      await runParamProposal(P_MEMBER_MULTIPLIER_BPS, 50000);
+      await voting.connect(creator).createSubject("Q2", "CID", OPTS, 7 * DAY);
+      await storagePool.setMember(POOL_ID, PEER, voter2.address, ethers.parseEther("100"), 0);
+      await stakingEngine.addStake(voter2.address, ethers.parseEther("2000000"), 365 * DAY, subjectCreatedAt - DAY, true);
+      await voting.connect(voter2).vote(2, 0, LOCK, [0], POOL_ID, PEER);
+      expect((await voting.getReceipt(2, voter2.address)).multiplierBps).to.equal(50000);
+    });
+
     it("votes without the multiplier when no peer is supplied", async function () {
       await makeEligible(voter.address);
       await voting.connect(voter).vote(1, 0, LOCK, [], 0, ZeroHash);
       const r = await voting.getReceipt(1, voter.address);
-      expect(r.multiplied).to.equal(false);
+      expect(r.multiplierBps).to.equal(10000);
       expect(r.power).to.equal(isqrt(LOCK));
     });
   });

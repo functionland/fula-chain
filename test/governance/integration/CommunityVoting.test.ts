@@ -37,6 +37,7 @@ const P = {
   MAX_OPEN_PER_CREATOR: 10,
   CREATE_COOLDOWN: 11,
   MIN_POOL_JOIN_STAKE: 12,
+  STAKER_MULTIPLIER_BPS: 13,
 };
 
 const DAY = 24 * 60 * 60;
@@ -110,10 +111,11 @@ describe("CommunityVoting â€” core", function () {
       expect(await voting.paramValue(P.MAX_OPEN_PER_CREATOR)).to.equal(3);
       expect(await voting.paramValue(P.CREATE_COOLDOWN)).to.equal(DAY);
       expect(await voting.paramValue(P.MIN_POOL_JOIN_STAKE)).to.equal(ethers.parseEther("1"));
+      expect(await voting.paramValue(P.STAKER_MULTIPLIER_BPS)).to.equal(15000);
     });
 
     it("every default sits inside its own hard bounds", async function () {
-      for (let id = 1; id <= 12; id++) {
+      for (let id = 1; id <= 13; id++) {
         const value = await voting.paramValue(id);
         const [lo, hi] = await voting.paramBounds(id);
         expect(value, `param ${id} default out of bounds`).to.be.gte(lo).and.to.be.lte(hi);
@@ -143,7 +145,7 @@ describe("CommunityVoting â€” core", function () {
 
   describe("paramBounds", function () {
     it("min never exceeds max, for every known parameter", async function () {
-      for (let id = 1; id <= 12; id++) {
+      for (let id = 1; id <= 13; id++) {
         const [lo, hi] = await voting.paramBounds(id);
         expect(lo, `param ${id}`).to.be.lte(hi);
       }
@@ -151,7 +153,6 @@ describe("CommunityVoting â€” core", function () {
 
     it("rejects unknown parameter ids", async function () {
       await expect(voting.paramBounds(0)).to.be.revertedWithCustomError(voting, "InvalidParam");
-      await expect(voting.paramBounds(13)).to.be.revertedWithCustomError(voting, "InvalidParam");
       await expect(voting.paramBounds(14)).to.be.revertedWithCustomError(voting, "InvalidParam");
       await expect(voting.paramBounds(255)).to.be.revertedWithCustomError(voting, "InvalidParam");
     });
@@ -298,7 +299,7 @@ describe("CommunityVoting â€” core", function () {
     it("can set every parameter to both its exact minimum and maximum", async function () {
       // MIN_DURATION is skipped in the max pass and MAX_DURATION in the min pass, because
       // the cross-field invariant (min <= max) legitimately forbids those two combinations.
-      for (let id = 1; id <= 12; id++) {
+      for (let id = 1; id <= 13; id++) {
         const [lo, hi] = await voting.paramBounds(id);
         if (id !== P.MAX_DURATION) {
           await runParamProposal(id, lo);
@@ -312,7 +313,7 @@ describe("CommunityVoting â€” core", function () {
     });
 
     it("rejects a value one below the minimum, at creation", async function () {
-      for (let id = 1; id <= 12; id++) {
+      for (let id = 1; id <= 13; id++) {
         const [lo] = await voting.paramBounds(id);
         if (lo === 0n) continue; // no representable value below zero
         await expect(
@@ -323,7 +324,7 @@ describe("CommunityVoting â€” core", function () {
     });
 
     it("rejects a value one above the maximum, at creation", async function () {
-      for (let id = 1; id <= 12; id++) {
+      for (let id = 1; id <= 13; id++) {
         const [, hi] = await voting.paramBounds(id);
         await expect(
           createParamProposal(id, hi + 1n),

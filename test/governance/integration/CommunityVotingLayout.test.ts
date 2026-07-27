@@ -39,7 +39,7 @@ const EXPECTED_LAYOUT: Array<[slot: string, label: string]> = [
   ["14", "_params"], // uint256[14] => slots 14..27
   ["28", "subjectCount"],
   ["29", "_subjects"],
-  ["30", "_optionHashes"],
+  ["30", "optionHashes"],
   ["31", "tally"],
   ["32", "_receipts"],
   ["33", "_creatorOpen"],

@@ -243,6 +243,30 @@ funds still moved.
 deterministic function of tallies that are already public and can no longer change, and no funds
 move.
 
+### F-20 — INFORMATIONAL — Post-review changes at owner request
+
+Three changes were made after both review rounds closed. Recorded here so the register stays a
+complete history of what the reviewed artefact became.
+
+1. **`descriptionCID` and `title` restored to state** (they had been event-only). The CID is the
+   pointer to a proposal's full text, and the owner wanted it readable from the contract rather
+   than dependent on an indexer. Paid for by dropping both from the `SubjectCreated` event, since
+   duplicating state in a log is wasted bytecode, and by turning `optionHashes` into a public
+   mapping read per index instead of an array-returning getter. Option **labels** remain
+   event-only; only their hashes are stored.
+2. **A staker commitment multiplier** (`stakerMultiplierBps`, default 1.5×) now applies when a
+   voter's qualifying stake alone clears the participation floor. Previously stakers benefited
+   only through basis inclusion. It compounds with the pool-membership boost — an operator who is
+   also a long-term staker reaches 3× — under a hard **combined ceiling of 5×**, so stacking can
+   never exceed what either boost could reach alone. Like every other outcome-deciding rule it is
+   snapshotted per subject (F-12), and it scales **power only, never basis**, so the quorum
+   remains an honest measure of committed capital (invariant 5).
+3. The `multiplied` boolean on receipts and the `VoteCast` event became `multiplierBps`, so the
+   exact weighting a vote received stays auditable even if parameters later change.
+
+The parameter id freed by F-16 was reused for the staker multiplier; nothing had been deployed
+under the old meaning.
+
 ### F-15 — INFORMATIONAL — Option text moved from storage to events
 
 Not a vulnerability; a deliberate trade recorded for reviewers. Holding a dynamic string array per

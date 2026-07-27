@@ -84,16 +84,20 @@ describe("CommunityVoting — subject creation", function () {
       expect(s.createdAt).to.equal(block!.timestamp);
       expect(s.closeTime).to.equal(block!.timestamp + 7 * DAY);
       expect(s.optionCount).to.equal(3);
+      expect(s.title).to.equal("Roadmap?");
+      // The IPFS CID pointing at the full proposal text is held in state, not only in a log,
+      // so the pointer cannot be lost with an indexer.
+      expect(s.descriptionCID).to.equal("QmCid");
       expect(s.deposit).to.equal(DEPOSIT);
       expect(s.status).to.equal(0);
       expect(s.depositSettled).to.equal(false);
       // Seeded so an open subject can never be misread as "option 0 is winning".
       expect(s.winningOption).to.equal(65535);
       // The ballot is committed on-chain as hashes; the text itself is published in the event.
-      const hashes = await voting.optionHashes(1);
-      expect(hashes.length).to.equal(OPTS.length);
       for (let i = 0; i < OPTS.length; i++) {
-        expect(hashes[i]).to.equal(ethers.keccak256(ethers.toUtf8Bytes(OPTS[i])));
+        expect(await voting.optionHashes(1, i)).to.equal(
+          ethers.keccak256(ethers.toUtf8Bytes(OPTS[i]))
+        );
       }
     });
 
@@ -109,20 +113,15 @@ describe("CommunityVoting — subject creation", function () {
       expect(await voting.totalDepositLiability()).to.equal(DEPOSIT);
     });
 
-    it("publishes the title, CID and full ballot in events", async function () {
-      // These are metadata, not consensus data, and are deliberately not held in storage. The
-      // events are the canonical record, so this is the test that they are actually complete.
+    it("publishes the full ballot text in an event, since only hashes are stored", async function () {
+      // Title and CID live in state, so they are deliberately not repeated in the log. The option
+      // LABELS are not stored anywhere, so this event is their canonical record — hence the test
+      // that it actually carries them.
       const tx = await voting.connect(creator).createSubject("Roadmap?", "QmCid", OPTS, 7 * DAY);
       await expect(tx).to.emit(voting, "SubjectCreated");
       await expect(tx).to.emit(voting, "SubjectOptions");
 
       const receipt = await tx.wait();
-      const created = receipt!.logs
-        .map((l: any) => { try { return voting.interface.parseLog(l); } catch { return null; } })
-        .find((p: any) => p && p.name === "SubjectCreated");
-      expect(created!.args.title).to.equal("Roadmap?");
-      expect(created!.args.descriptionCID).to.equal("QmCid");
-
       const optionsLog = receipt!.logs
         .map((l: any) => { try { return voting.interface.parseLog(l); } catch { return null; } })
         .find((p: any) => p && p.name === "SubjectOptions");
@@ -139,7 +138,9 @@ describe("CommunityVoting — subject creation", function () {
       const many = Array.from({ length: 100 }, (_, i) => `Option ${i}`);
       await voting.connect(creator).createSubject("Big", "C", many, 7 * DAY);
       expect((await voting.getSubject(1)).optionCount).to.equal(100);
-      expect((await voting.optionHashes(1)).length).to.equal(100);
+      expect(await voting.optionHashes(1, 99)).to.equal(
+        ethers.keccak256(ethers.toUtf8Bytes("Option 99"))
+      );
     });
   });
 
@@ -302,7 +303,6 @@ describe("CommunityVoting — subject creation", function () {
   describe("views", function () {
     it("reverts for a subject that does not exist", async function () {
       await expect(voting.getSubject(1)).to.be.revertedWithCustomError(voting, "SubjectNotFound");
-      await expect(voting.optionHashes(1)).to.be.revertedWithCustomError(voting, "SubjectNotFound");
     });
   });
 

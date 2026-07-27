@@ -90,9 +90,16 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
     uint8 internal constant P_MAX_OPEN_PER_CREATOR = 10;
     uint8 internal constant P_CREATE_COOLDOWN = 11;
     uint8 internal constant P_MIN_POOL_JOIN_STAKE = 12;
-    // Id 13 previously held a membership-age requirement. It was removed rather than renumbered:
-    // the only available age source is grievable (see {_requireEligibleMember}).
-    uint8 internal constant P_LAST = 12;
+    // Id 13 briefly held a membership-age requirement, which was removed as grievable (the only
+    // available age source can be overwritten by an outsider — see {_requireEligibleMember}).
+    // The slot is reused here for the staker boost; nothing was ever deployed under the old
+    // meaning, so there is no id to preserve.
+    uint8 internal constant P_STAKER_MULTIPLIER_BPS = 13;
+    uint8 internal constant P_LAST = 13;
+
+    /// @dev Ceiling on the COMBINED commitment multiplier, so stacking the pool-membership and
+    ///      staker boosts can never exceed what either could reach alone.
+    uint256 internal constant MAX_TOTAL_MULTIPLIER_BPS = 50_000; // 5x
 
     // Integration slots for PROPOSAL_SET_INTEGRATION.
     uint8 internal constant I_STAKING_ENGINE = 1;
@@ -144,14 +151,16 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
 
     mapping(uint256 => Subject) internal _subjects;
 
-    /// @notice keccak256 of each ballot label, in index order.
+    /// @notice keccak256 of each ballot label, in index order. Read one at a time via the
+    ///         generated getter `optionHashes(subjectId, index)`; verify a label an interface
+    ///         shows you with `keccak256(bytes(label))`.
     /// @dev The labels themselves live in the {SubjectOptions} event, not in storage. Holding a
     ///      dynamic string array per subject — and the ABI encoder to read it back — cost over a
     ///      kilobyte of bytecode, which this contract does not have to spare after inheriting
     ///      ~14 KiB of GovernanceModule. Hashes keep the ballot tamper-evident: anyone can verify
     ///      the text an interface shows them against the on-chain commitment, and a subject's
     ///      options can never be restated after the fact.
-    mapping(uint256 => bytes32[]) internal _optionHashes;
+    mapping(uint256 => bytes32[]) public optionHashes;
 
     mapping(uint256 => mapping(uint16 => uint128)) public tally;
     mapping(uint256 => mapping(address => Receipt)) internal _receipts;
@@ -200,6 +209,7 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         _params[P_MAX_OPEN_PER_CREATOR] = 3;
         _params[P_CREATE_COOLDOWN] = 1 days;
         _params[P_MIN_POOL_JOIN_STAKE] = TOKEN_UNIT;
+        _params[P_STAKER_MULTIPLIER_BPS] = 15_000; // 1.5x for long-term stakers
     }
 
     // ---------------------------------------------------------------------
@@ -481,11 +491,14 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         s.quorumBasisAt = SafeCast.toUint96(_params[P_QUORUM_BASIS]);
         s.quorumVotersAt = SafeCast.toUint32(_params[P_QUORUM_VOTERS]);
         s.memberMultiplierBpsAt = SafeCast.toUint32(_params[P_MEMBER_MULTIPLIER_BPS]);
+        s.stakerMultiplierBpsAt = SafeCast.toUint32(_params[P_STAKER_MULTIPLIER_BPS]);
         s.stakeWeightBpsAt = SafeCast.toUint16(_params[P_STAKE_WEIGHT_BPS]);
         s.minVoteBasisAt = SafeCast.toUint96(_params[P_MIN_VOTE_BASIS]);
         s.minPoolJoinStakeAt = SafeCast.toUint96(_params[P_MIN_POOL_JOIN_STAKE]);
+        s.title = title;
+        s.descriptionCID = descriptionCID;
 
-        bytes32[] storage hashes = _optionHashes[subjectId];
+        bytes32[] storage hashes = optionHashes[subjectId];
         for (uint256 i = 0; i < optionCount; i++) {
             bytes memory label = bytes(options[i]);
             if (label.length == 0) revert OptionEmpty(i);
@@ -527,9 +540,7 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
             s.closeTime,
             uint16(optionCount),
             SafeCast.toUint96(fee),
-            s.deposit,
-            title,
-            descriptionCID
+            s.deposit
         );
         emit SubjectOptions(subjectId, options);
     }
@@ -577,15 +588,36 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         if (basis < minBasis) revert BasisBelowMinimum(basis, minBasis);
 
         uint256 power = Math.sqrt(basis);
-        bool multiplied;
+
+        // Commitment multipliers. Both reward capital that is demonstrably tied up in the network
+        // rather than merely present in a wallet, which is the part of "skin in the game" that a
+        // wallet-splitter cannot cheaply fake.
+        uint256 multiplierBps = BPS_DENOMINATOR; // 1x
+
+        // Staker boost: the voter's qualifying stake alone clears the participation floor, so
+        // this is long-term locked capital (365 days minimum), not a dust position.
+        if (stakeBasis >= s.minVoteBasisAt) {
+            multiplierBps = s.stakerMultiplierBpsAt;
+        }
+
+        // DePIN membership boost, compounding with the staker boost.
         if (peerId != bytes32(0)) {
             _requireEligibleMember(msg.sender, poolId, peerId, s);
+            multiplierBps = (multiplierBps * s.memberMultiplierBpsAt) / BPS_DENOMINATOR;
+        }
+
+        // Ceiling, so stacking can never exceed what either boost could reach alone.
+        if (multiplierBps > MAX_TOTAL_MULTIPLIER_BPS) multiplierBps = MAX_TOTAL_MULTIPLIER_BPS;
+
+        if (multiplierBps != BPS_DENOMINATOR) {
             // Plain multiply-then-divide rather than Math.mulDiv: the product cannot approach
             // 2**256, so the 512-bit path buys nothing but bytecode. sqrt(2e27) is about 4.5e13
             // and the multiplier is capped at 50_000, so the intermediate peaks near 2.3e18.
             // Solidity 0.8 still reverts on overflow, and the rounding is identical.
-            power = (power * s.memberMultiplierBpsAt) / BPS_DENOMINATOR;
-            multiplied = true;
+            //
+            // Applied AFTER the root on purpose: folding it inside would turn a "2x" parameter
+            // into ~1.41x.
+            power = (power * multiplierBps) / BPS_DENOMINATOR;
         }
 
         uint128 power128 = SafeCast.toUint128(power);
@@ -595,7 +627,7 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         r.basis = basis128;
         r.power = power128;
         r.option = option;
-        r.multiplied = multiplied;
+        r.multiplierBps = uint32(multiplierBps);
 
         tally[subjectId][option] += power128;
         s.totalPowerCast += power128;
@@ -603,7 +635,7 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         s.voterCount += 1;
         totalLockedLiability += received;
 
-        emit VoteCast(subjectId, msg.sender, option, basis128, power128, multiplied);
+        emit VoteCast(subjectId, msg.sender, option, basis128, power128, uint32(multiplierBps));
     }
 
     /// @dev Sums the caller's qualifying stakes, then applies `stakeWeightBps` ONCE. Weighting
@@ -897,6 +929,8 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         // the multiplier for free. To neutralise the multiplier instead, set
         // memberMultiplierBps to 10_000 (1x) — that is the intended off switch.
         if (paramId == P_MIN_POOL_JOIN_STAKE) return (TOKEN_UNIT, 10_000_000 * TOKEN_UNIT);
+        // Floored at 1x so the staker boost can be switched off but never inverted into a penalty.
+        if (paramId == P_STAKER_MULTIPLIER_BPS) return (BPS_DENOMINATOR, MAX_TOTAL_MULTIPLIER_BPS);
         revert InvalidParam(paramId);
     }
 
@@ -911,13 +945,6 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         Subject storage s = _subjects[subjectId];
         if (s.createdAt == 0) revert SubjectNotFound(subjectId);
         return s;
-    }
-
-    /// @notice The on-chain commitment to a subject's ballot, in index order.
-    /// @dev Verify a label an interface shows you with `keccak256(bytes(label))`.
-    function optionHashes(uint256 subjectId) external view returns (bytes32[] memory) {
-        if (_subjects[subjectId].createdAt == 0) revert SubjectNotFound(subjectId);
-        return _optionHashes[subjectId];
     }
 
     function getReceipt(uint256 subjectId, address voter) external view returns (Receipt memory) {

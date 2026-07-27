@@ -29,11 +29,33 @@ The contract we build still leans on **audited primitives**: OpenZeppelin 5.3.0 
 ## 3. Voting power
 
 ```
-weightedStake = mulDiv(sum(qualifying stake amounts), stakeWeightBps, 10_000)
+weightedStake = sum(qualifying stake amounts) * stakeWeightBps / 10_000
 basis         = freshLockReceived + weightedStake          // wei
 rawPower      = sqrt(basis)                                // 1 FULA -> 1e9 power units
-power         = mulDiv(rawPower, memberMultiplierBps, 10_000)
+
+multiplier    = 10_000                                     // 1x
+if weightedStake >= minVoteBasis:  multiplier  = stakerMultiplierBps          // default 1.5x
+if provenPoolMember:               multiplier  = multiplier * memberMultiplierBps / 10_000
+multiplier    = min(multiplier, 50_000)                    // combined ceiling, 5x
+
+power         = rawPower * multiplier / 10_000
 ```
+
+**Commitment multipliers.** Both boosts reward capital that is demonstrably tied up in the network
+rather than merely sitting in a wallet — the part of "skin in the game" a wallet-splitter cannot
+cheaply fake.
+
+- **Stakers** get `stakerMultiplierBps` (default 1.5×) when their qualifying stake *alone* clears
+  the participation floor. Qualifying already means a `StakingEngineLinear` position locked for at
+  least 365 days that cannot be withdrawn before the poll closes; the floor additionally rules out
+  a dust position bought purely for the boost.
+- **Pool operators** get `memberMultiplierBps` (default 2×) on proven StoragePool membership.
+- The two **compound** — an operator who is also a long-term staker reaches 3× — because that is
+  precisely the participant a DePIN network wants weighted most. A hard ceiling of 5× on the
+  *combined* figure means stacking can never exceed what either boost could reach alone.
+
+Note the multipliers scale **power only, never basis**, so the participation quorum stays an
+honest measure of committed capital and cannot be inflated by boosts.
 
 Three deliberate choices:
 
@@ -102,21 +124,26 @@ Related determinism rules:
 - Options must be non-empty, ≤64 bytes, and `keccak256`-unique within a subject, so duplicate or
   lookalike labels cannot fragment a vote or make a winner ambiguous to humans.
 
-### Where the ballot lives
+### Where a subject's text lives
 
-Option **hashes** are stored on-chain, in index order; the option **text**, the title and the
-description CID are published in the `SubjectCreated` and `SubjectOptions` events at creation.
+| Field | Where |
+|---|---|
+| `title` — short question | **State**, on the subject |
+| `descriptionCID` — IPFS CID of the full proposal text | **State**, on the subject |
+| Ballot option **labels** | `SubjectOptions` event |
+| Ballot option **hashes** (`keccak256` of each label, index order) | **State**, `optionHashes` |
 
-This was not the original intent — the plan called for option text in storage — and the reason for
-the change is honest: holding a dynamic string array per subject, plus the ABI encoder to read it
-back, cost more bytecode than the contract had to spare after inheriting ~14 KiB of
-`GovernanceModule` under a hard 24 KiB EIP-170 limit. Measured sizes are in §10.2.
+The title and the CID are held in state so the pointer to a proposal's full text is readable from
+the contract itself and cannot be lost with an indexer. They are deliberately *not* repeated in
+the creation event, since duplicating state costs bytecode this contract cannot spare.
 
-What is preserved: the ballot is **tamper-evident and immutable**. Anyone can check the text an
-interface shows them against the on-chain commitment with `keccak256(bytes(label))`, and a
-subject's options can never be restated after the fact. Votes are cast against indices, which are
-fixed at creation. What is lost: reading the ballot text from contract state alone — an indexer,
-an archive node, or any event log serves it instead.
+The option **labels** are the one thing kept out of state. Holding a dynamic string *array* per
+subject, plus the encoder to read it back, cost more than remained under the hard 24 KiB EIP-170
+limit after inheriting ~14 KiB of `GovernanceModule` (measured sizes in §10.2) — whereas two
+single strings are cheap by comparison. What is preserved is what matters: the ballot is
+**tamper-evident and immutable**, because anyone can check a label an interface shows them against
+the on-chain commitment with `keccak256(bytes(label))`, and votes are cast against indices fixed
+at creation, so options can never be restated after the fact.
 
 ## 7. Economics
 
@@ -127,6 +154,7 @@ an archive node, or any event log serves it instead.
 | `minVoteBasis` | 10,000 FULA | 100 | 1,000,000 |
 | `minDuration` / `maxDuration` | 3d / 30d | 1d | 90d (`min <= max`) |
 | `memberMultiplierBps` | 20,000 (2×) | 10,000 | 50,000 |
+| `stakerMultiplierBps` | 15,000 (1.5×) | 10,000 | 50,000 |
 | `stakeWeightBps` | 10,000 (100%) | 0 | 10,000 |
 | `quorumBasis` | 5,000,000 FULA | 100,000 | 100,000,000 |
 | `quorumVoters` | 15 | 3 | 1,000 |
