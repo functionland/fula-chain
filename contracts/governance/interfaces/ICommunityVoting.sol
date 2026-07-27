@@ -25,7 +25,9 @@ interface ICommunityVoting {
         uint16 winningOption;
         uint8 status;
         bool tied;                  // true => no mandate (includes the all-zero-tally case)
-        bool depositRefundable;     // set by finalize; consumed by claimDeposit
+        bool depositRefundable;     // informational: set by finalize, and by claimDeposit when it
+                                    // pays out without finalize having run. The authoritative
+                                    // gate is depositSettled plus the live quorum comparison.
         bool depositSettled;        // true once the deposit was refunded or burned
         // --- slot 3 ---
         uint128 totalPowerCast;
@@ -43,16 +45,16 @@ interface ICommunityVoting {
         uint96 quorumBasisAt;
         uint32 quorumVotersAt;
         uint32 memberMultiplierBpsAt;
-        uint32 minMembershipAgeAt;
         uint16 stakeWeightBpsAt;
         uint96 minVoteBasisAt;
         uint96 minPoolJoinStakeAt;
-        // NOTE: the title and description CID are NOT stored. They are metadata, not consensus
-        // data — nothing in the contract reads them — and holding two dynamic strings per subject
-        // cost over a kilobyte of bytecode in a contract that inherits ~14 KiB of GovernanceModule
-        // before its own logic. Both are published immutably in {SubjectCreated}, alongside the
-        // full ballot in {SubjectOptions}. The option labels themselves DO remain in storage,
-        // because votes are cast against their indices.
+        // NOTE: no strings are stored. The title, the description CID and the ballot LABELS are
+        // metadata — nothing in the contract reads them — and holding dynamic strings per subject,
+        // plus the ABI encoders to read them back, cost more bytecode than remained under the
+        // 24 KiB EIP-170 limit after inheriting ~14 KiB of GovernanceModule. All of them are
+        // published immutably in {SubjectCreated} and {SubjectOptions}. What the contract keeps is
+        // the keccak256 of each label, in index order, so the ballot stays tamper-evident and
+        // votes are cast against indices fixed at creation. See docs/voting-design.md §6.
     }
 
     /// @notice One wallet's immutable vote on one subject.

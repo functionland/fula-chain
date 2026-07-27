@@ -117,8 +117,9 @@ async function main() {
     "\nREQUIRED NEXT STEP — the contract is inert until this is done:\n" +
       `  setRoleQuorum(ADMIN_ROLE, 2)\n` +
       "  Quorum defaults to 0 and GovernanceModule rejects anything below 2, so no proposal can\n" +
-      "  be created until an admin sets it. Note both initial admins are timelocked for 24h\n" +
-      "  after initialization (ROLE_CHANGE_DELAY), so this cannot run immediately."
+      "  be created until an admin sets it. setRoleQuorum itself carries no timelock, so it can\n" +
+      "  be called immediately; creating PROPOSALS is what waits out the 24h ROLE_CHANGE_DELAY\n" +
+      "  applied to both initial admins at initialization."
   );
 
   if (process.env.ETHERSCAN_API_KEY) {

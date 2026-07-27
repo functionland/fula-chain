@@ -1,12 +1,12 @@
-// CommunityVoting — voting power (Steps 4, 5 and 6).
+﻿// CommunityVoting â€” voting power (Steps 4, 5 and 6).
 //
 //  Step 4: fresh locks and the sqrt power curve
 //  Step 5: staked-balance qualification
 //  Step 6: the DePIN membership multiplier
 //
-// The staking engine and storage pool are test doubles. The states that actually need coverage —
+// The staking engine and storage pool are test doubles. The states that actually need coverage â€”
 // "stake exists but is inactive", "lock ends one second before close", "membership row deleted
-// but joinTimestamp left behind" — cannot be staged against the real contracts, which have no
+// but joinTimestamp left behind" â€” cannot be staged against the real contracts, which have no
 // early-exit path. Behaviour against the deployed contracts is covered by the Base fork test.
 import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
@@ -21,7 +21,6 @@ const PT_ADD_WHITELIST = 5;
 const PT_SET_PARAM = 14;
 const P_STAKE_WEIGHT_BPS = 7;
 const P_MEMBER_MULTIPLIER_BPS = 6;
-const P_MIN_MEMBERSHIP_AGE = 13;
 
 const OPTS = ["Yes", "No", "Abstain"];
 const PEER = ethers.keccak256(ethers.toUtf8Bytes("peer-1"));
@@ -39,7 +38,7 @@ function isqrt(n: bigint): bigint {
   return x;
 }
 
-describe("CommunityVoting — voting power", function () {
+describe("CommunityVoting â€” voting power", function () {
   let voting: Contract;
   let token: Contract;
   let stakingEngine: Contract;
@@ -99,7 +98,7 @@ describe("CommunityVoting — voting power", function () {
   });
 
   // -------------------------------------------------------------------------
-  // Step 4 — fresh locks and the power curve
+  // Step 4 â€” fresh locks and the power curve
   // -------------------------------------------------------------------------
   describe("sqrt power curve", function () {
     it("matches an off-chain integer square root across the whole realistic range", async function () {
@@ -173,7 +172,7 @@ describe("CommunityVoting — voting power", function () {
 
     it("dampens a whale relative to many small holders", async function () {
       // One wallet with 100x the capital of another gets only 10x the power. This is the whole
-      // point of the curve — and it is also why wallet-splitting is the residual risk.
+      // point of the curve â€” and it is also why wallet-splitting is the residual risk.
       await voting.connect(voter).vote(1, 0, ethers.parseEther("1000000"), [], 0, ZeroHash);
       await voting.connect(voter2).vote(1, 1, ethers.parseEther("10000"), [], 0, ZeroHash);
       const whale = await voting.tally(1, 0);
@@ -232,7 +231,7 @@ describe("CommunityVoting — voting power", function () {
   });
 
   // -------------------------------------------------------------------------
-  // Step 5 — staked balances
+  // Step 5 â€” staked balances
   // -------------------------------------------------------------------------
   describe("staked balances", function () {
     const STAKE = ethers.parseEther("2000000");
@@ -326,8 +325,8 @@ describe("CommunityVoting — voting power", function () {
 
     it("reverts on an index the caller has no stake at", async function () {
       // The staking contract's array access panics rather than returning a custom error. That is
-      // acceptable — it costs only the caller their own transaction and can never affect anyone
-      // else's vote, claim, or a finalization — but it is recorded here rather than assumed.
+      // acceptable â€” it costs only the caller their own transaction and can never affect anyone
+      // else's vote, claim, or a finalization â€” but it is recorded here rather than assumed.
       await addQualifyingStake(voter.address);
       await expect(voting.connect(voter).vote(1, 0, 0, [99], 0, ZeroHash)).to.be.reverted;
     });
@@ -387,7 +386,7 @@ describe("CommunityVoting — voting power", function () {
   });
 
   // -------------------------------------------------------------------------
-  // Step 6 — the DePIN membership multiplier
+  // Step 6 â€” the DePIN membership multiplier
   // -------------------------------------------------------------------------
   describe("membership multiplier", function () {
     const LOCK = ethers.parseEther("1000000");
@@ -402,7 +401,7 @@ describe("CommunityVoting — voting power", function () {
       const r = await voting.getReceipt(1, voter.address);
       expect(r.power).to.equal(isqrt(LOCK) * 2n);
       expect(r.multiplied).to.equal(true);
-      // The basis is unchanged — only the derived power is boosted, so quorum stays honest.
+      // The basis is unchanged â€” only the derived power is boosted, so quorum stays honest.
       expect(r.basis).to.equal(LOCK);
     });
 
@@ -429,30 +428,22 @@ describe("CommunityVoting — voting power", function () {
       ).to.be.revertedWithCustomError(voting, "MembershipNotEligible");
     });
 
-    it("refuses membership younger than minMembershipAge, snapshotted per subject", async function () {
-      await storagePool.setMember(POOL_ID, PEER, voter.address, ethers.parseEther("100"), subjectCreatedAt - DAY);
-      await expect(
-        voting.connect(voter).vote(1, 0, LOCK, [], POOL_ID, PEER)
-      ).to.be.revertedWithCustomError(voting, "MembershipNotEligible");
-
-      // Relaxing the requirement does not retroactively enfranchise anyone on the open subject.
-      await runParamProposal(P_MIN_MEMBERSHIP_AGE, 0);
-      await expect(
-        voting.connect(voter).vote(1, 0, LOCK, [], POOL_ID, PEER)
-      ).to.be.revertedWithCustomError(voting, "MembershipNotEligible");
-
-      // It applies from the next subject onwards.
-      await voting.connect(creator).createSubject("Q2", "CID", OPTS, 7 * DAY);
-      await voting.connect(voter).vote(2, 0, LOCK, [], POOL_ID, PEER);
-      expect((await voting.getReceipt(2, voter.address)).multiplied).to.equal(true);
+    it("ignores joinTimestamp entirely, so a peer-id squatter cannot strip the multiplier", async function () {
+      // StoragePool.joinTimestamp is keyed by peer id GLOBALLY while membership is per-pool, and
+      // createPool overwrites it with no cross-pool uniqueness check. Any age rule built on it
+      // could therefore be griefed: take a victim's public peer id, spin up a pool around it, and
+      // reset their apparent join time â€” or delete the pool to zero it. Eligibility must not
+      // depend on that value. Here the timestamp is set to "just now" and even to zero, and the
+      // multiplier still stands, because only live membership and the peer's own stake matter.
+      await storagePool.setMember(POOL_ID, PEER, voter.address, ethers.parseEther("100"), 0);
+      await voting.connect(voter).vote(1, 0, LOCK, [], POOL_ID, PEER);
+      expect((await voting.getReceipt(1, voter.address)).multiplied).to.equal(true);
     });
 
-    it("refuses a stale join timestamp left behind by a removed peer", async function () {
-      // joinTimestamp is keyed by peer id globally and is not cleared unless it was the member's
-      // last peer, so it can outlive the membership. Live membership is re-checked every time.
+    it("refuses a peer whose membership has been removed", async function () {
+      // The pool-scoped membership row is the authority, and an outsider cannot touch it.
       await makeEligible(voter.address);
       await storagePool.clearMembership(POOL_ID, PEER);
-      expect(await storagePool.joinTimestamp(PEER)).to.not.equal(0);
       await expect(
         voting.connect(voter).vote(1, 0, LOCK, [], POOL_ID, PEER)
       ).to.be.revertedWithCustomError(voting, "MembershipNotEligible");

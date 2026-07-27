@@ -1,10 +1,10 @@
-// CommunityVoting — core contract tests.
+﻿// CommunityVoting â€” core contract tests.
 //
 // Step 1 of the implementation plan: initialization, parameter bounds, and the governance
 // overrides. The centrepiece is the `Recovery` guard: GovernanceModule ships a proposal type
 // that transfers an arbitrary ERC20 out of the inheriting contract's balance, and this contract
 // custodies voters' locked FULA. Without the override, two admins could drain every lock.
-// See docs/voting-design.md §5.
+// See docs/voting-design.md Â§5.
 import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
@@ -37,13 +37,12 @@ const P = {
   MAX_OPEN_PER_CREATOR: 10,
   CREATE_COOLDOWN: 11,
   MIN_POOL_JOIN_STAKE: 12,
-  MIN_MEMBERSHIP_AGE: 13,
 };
 
 const DAY = 24 * 60 * 60;
 const TOTAL_SUPPLY = ethers.parseEther("1000000000"); // 1B of the 2B cap
 
-describe("CommunityVoting — core", function () {
+describe("CommunityVoting â€” core", function () {
   let voting: Contract;
   let token: Contract;
   let owner: HardhatEthersSigner;
@@ -67,7 +66,7 @@ describe("CommunityVoting — core", function () {
     await token.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
     await time.increase(DAY + 1);
     // transferFromContract is additionally capped by the caller role's transaction limit,
-    // which defaults to 0 — without this, moving any token out of StorageToken reverts LowAllowance.
+    // which defaults to 0 â€” without this, moving any token out of StorageToken reverts LowAllowance.
     await token.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, TOTAL_SUPPLY);
 
     const CommunityVoting = await ethers.getContractFactory("CommunityVoting");
@@ -79,7 +78,7 @@ describe("CommunityVoting — core", function () {
     await voting.waitForDeployment();
 
     await time.increase(DAY + 1);
-    // Nothing in the proposal flow works until quorum is set — it defaults to 0 and
+    // Nothing in the proposal flow works until quorum is set â€” it defaults to 0 and
     // _validateQuorum rejects anything below 2. This is a mandatory deploy step.
     await voting.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
   });
@@ -111,11 +110,10 @@ describe("CommunityVoting — core", function () {
       expect(await voting.paramValue(P.MAX_OPEN_PER_CREATOR)).to.equal(3);
       expect(await voting.paramValue(P.CREATE_COOLDOWN)).to.equal(DAY);
       expect(await voting.paramValue(P.MIN_POOL_JOIN_STAKE)).to.equal(ethers.parseEther("1"));
-      expect(await voting.paramValue(P.MIN_MEMBERSHIP_AGE)).to.equal(14 * DAY);
     });
 
     it("every default sits inside its own hard bounds", async function () {
-      for (let id = 1; id <= 13; id++) {
+      for (let id = 1; id <= 12; id++) {
         const value = await voting.paramValue(id);
         const [lo, hi] = await voting.paramBounds(id);
         expect(value, `param ${id} default out of bounds`).to.be.gte(lo).and.to.be.lte(hi);
@@ -145,7 +143,7 @@ describe("CommunityVoting — core", function () {
 
   describe("paramBounds", function () {
     it("min never exceeds max, for every known parameter", async function () {
-      for (let id = 1; id <= 13; id++) {
+      for (let id = 1; id <= 12; id++) {
         const [lo, hi] = await voting.paramBounds(id);
         expect(lo, `param ${id}`).to.be.lte(hi);
       }
@@ -153,6 +151,7 @@ describe("CommunityVoting — core", function () {
 
     it("rejects unknown parameter ids", async function () {
       await expect(voting.paramBounds(0)).to.be.revertedWithCustomError(voting, "InvalidParam");
+      await expect(voting.paramBounds(13)).to.be.revertedWithCustomError(voting, "InvalidParam");
       await expect(voting.paramBounds(14)).to.be.revertedWithCustomError(voting, "InvalidParam");
       await expect(voting.paramBounds(255)).to.be.revertedWithCustomError(voting, "InvalidParam");
     });
@@ -218,7 +217,7 @@ describe("CommunityVoting — core", function () {
   // overridden external function), so every inherited branch needs its own coverage to catch
   // divergence from GovernanceModule.
   // -------------------------------------------------------------------------
-  describe("createProposal — inherited branches still behave", function () {
+  describe("createProposal â€” inherited branches still behave", function () {
     it("creates a role-change proposal", async function () {
       await expect(
         voting.connect(owner).createProposal(PT_ADD_ROLE, 0, user1.address, POOL_ADMIN_ROLE, 0, ZeroAddress)
@@ -299,7 +298,7 @@ describe("CommunityVoting — core", function () {
     it("can set every parameter to both its exact minimum and maximum", async function () {
       // MIN_DURATION is skipped in the max pass and MAX_DURATION in the min pass, because
       // the cross-field invariant (min <= max) legitimately forbids those two combinations.
-      for (let id = 1; id <= 13; id++) {
+      for (let id = 1; id <= 12; id++) {
         const [lo, hi] = await voting.paramBounds(id);
         if (id !== P.MAX_DURATION) {
           await runParamProposal(id, lo);
@@ -313,7 +312,7 @@ describe("CommunityVoting — core", function () {
     });
 
     it("rejects a value one below the minimum, at creation", async function () {
-      for (let id = 1; id <= 13; id++) {
+      for (let id = 1; id <= 12; id++) {
         const [lo] = await voting.paramBounds(id);
         if (lo === 0n) continue; // no representable value below zero
         await expect(
@@ -324,7 +323,7 @@ describe("CommunityVoting — core", function () {
     });
 
     it("rejects a value one above the maximum, at creation", async function () {
-      for (let id = 1; id <= 13; id++) {
+      for (let id = 1; id <= 12; id++) {
         const [, hi] = await voting.paramBounds(id);
         await expect(
           createParamProposal(id, hi + 1n),
@@ -335,7 +334,7 @@ describe("CommunityVoting — core", function () {
 
     it("re-checks the cross-field duration invariant at execution time", async function () {
       // Both values are individually in-bounds, so this can only be caught by the check that
-      // runs when the proposal executes — 24h after it was created and validated.
+      // runs when the proposal executes â€” 24h after it was created and validated.
       await runParamProposal(P.MIN_DURATION, 20 * DAY);
       expect(await voting.paramValue(P.MIN_DURATION)).to.equal(20 * DAY);
 
@@ -410,7 +409,7 @@ describe("CommunityVoting — core", function () {
         createParamProposal(P.DEPOSIT, ethers.parseEther("200000"))
       ).to.be.revertedWithCustomError(voting, "ExistingActiveProposal");
 
-      // Let it expire — it still blocks.
+      // Let it expire â€” it still blocks.
       await time.increase(3 * DAY);
       await expect(
         createParamProposal(P.DEPOSIT, ethers.parseEther("200000"))
@@ -486,7 +485,7 @@ describe("CommunityVoting — core", function () {
 
   /**
    * Run a parameter change end-to-end: propose (auto-approves for the proposer), wait out the
-   * 24h execution delay, then have the second admin approve — which auto-executes once quorum
+   * 24h execution delay, then have the second admin approve â€” which auto-executes once quorum
    * and the delay are both satisfied.
    */
   async function runParamProposal(paramId: number, value: bigint | number) {

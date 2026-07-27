@@ -18,12 +18,23 @@ implementation. Reviews came from three independent model families (Cursor/Compo
 Moonshot Kimi K3, OpenAI Codex/GPT-5.5), two of which read the actual repository rather than a
 pasted description.
 
-**Review status at the time of writing — stated precisely so this document does not overstate its
-own coverage:** the design-time round is complete and all three reviewers reported. Of the
-finished-code round, **Cursor has reported** (findings F-12 to F-14 below); the Codex and
-Kimi K3 finished-code reviews were still running when this revision was written. Any further
-findings must be triaged into the register below before this contract is deployed. If they return
-clean, record that explicitly rather than leaving the question open.
+**Review status — both rounds are now complete.** All three reviewers reported at design time, and
+all three reported again against the finished code: Cursor (F-12 to F-14), Codex (F-16 to F-18)
+and Kimi K3 (F-19).
+
+Two independent confirmations worth recording, because they were the largest residual risks:
+- **The hand-written `createProposal` mirror is faithful.** Both Codex and Kimi K3 diffed it
+  line-by-line against `GovernanceModule.createProposal` and found the `RecoveryBlocked` check to
+  be the only semantic difference. Two behaviourally-null deviations were noted by both: the child
+  omits the parent's *redundant second* `pendingProposals` check inside the Recovery branch (dead
+  code in the parent, since the same check already ran for every type), and writes `amount == 0`
+  rather than `amount <= 0` on a `uint96`. Downstream — `approveProposal` auto-execution,
+  `executeProposal`, expiry and cleanup — consumes identical state.
+- **Every integration signature was verified against the real sources**, including the six-value
+  shape of `StakingEngineLinear.stakes`, its append-only behaviour (unstaking only flips
+  `isActive`; there is no `pop()`), and its 100-stake cap.
+
+Neither reviewer found a custody, over-claim, double-vote or accounting exploit.
 
 Out of scope: `GovernanceModule`, `StorageToken`, `StakingEngineLinear` and `StoragePool`
 themselves, which were audited separately by Hashlock. Their *interaction surface* with this
@@ -239,6 +250,72 @@ subject cost more bytecode than remained under the 24 KiB EIP-170 limit. Option 
 stored in index order; the text is published in `SubjectOptions`. The ballot stays tamper-evident
 and immutable, and votes are cast against indices fixed at creation. See `docs/voting-design.md`
 §6 for the full rationale and what is lost.
+
+### F-16 — MEDIUM — Peer-ID squatting could strip a rival voter's multiplier — **FIXED**
+
+`StoragePool.joinTimestamp` is keyed by peer id **globally**, while membership is per-pool, and
+`createPool` (`StoragePool.sol:182`) writes it with no cross-pool uniqueness check. An attacker
+could therefore take any victim's public peer id, create a pool around it, and reset the victim's
+apparent join time — or delete that pool afterwards to zero the value outright. The victim's real
+membership survives, but their **age proof does not**, so the membership-age gate this contract
+previously enforced would refuse their multiplier.
+
+This is unprivileged, cheap (pool creation may cost nothing — see §6.3), targeted, and
+front-runnable against a specific voter just before they vote. It cannot grant power or move
+funds, but selectively de-boosting opponents can decide a close poll.
+
+*Found by:* Codex (finished-code review). *Confirmed by:* reading `StoragePool.sol:176-184`.
+
+*Fix:* the membership-age requirement is removed and `joinTimestamp` is no longer read at all.
+Any age rule built on that mapping is grievable by construction. Eligibility now rests on
+live pool-scoped membership and the peer's own locked stake, neither of which an outsider can
+affect. The `minMembershipAge` parameter was deleted rather than renumbered.
+
+*Cost of the fix:* reactive membership farming is no longer prevented by age — someone can join a
+pool and vote with the multiplier immediately. The barrier is now purely economic
+(`minPoolJoinStake` per identity), which both reviewers had already noted is what a prepared
+attacker faces anyway, since they simply pre-register.
+
+*Verification:* a test sets the join timestamp to zero and to "just now" and confirms the
+multiplier still stands; another confirms removed membership still refuses it.
+
+### F-17 — LOW — Integration addresses are live, not snapshotted — **ACCEPTED**
+
+F-12 froze the numeric power rules per subject, but `stakingEngine` and `storagePool` are read
+live. Two admins could swap the staking engine mid-poll for a contract that reports fabricated
+stakes to late voters. `initialize` also accepts integration addresses without verifying they are
+associated with FULA.
+
+*Found by:* Codex, echoed by Cursor.
+
+*Status:* accepted, not fixed. It requires the same two admins who can already replace the entire
+implementation via UUPS, so it grants no capability they lack — see §4.2. Recorded here so it is a
+known acceptance rather than an oversight. Mitigation available without code: set integrations at
+deployment and treat any later change as the governance event it is.
+
+### F-18 — INFORMATIONAL — Stake power uses nominal, not net, staked amounts
+
+`StakingEngineLinear` records the requested stake amount before transferring it, so with a
+non-zero platform fee only 95% actually reaches the stake pool while this contract counts 100%
+from the stake record. This is not free power — the voter paid the full gross amount, the
+difference going to treasury — but "locked FULA" is overstated by up to the fee. This contract's
+own fresh locks and deposits are unaffected, since they use balance deltas.
+
+*Found by:* Codex. No fix; recorded for accuracy.
+
+### F-19 — INFORMATIONAL — Documentation drift found and corrected
+
+Kimi K3's finished-code review found several places where comments and docs had drifted from the
+code during the size-reduction work: a NatSpec reference to a removed `allParams` function, a
+stale "50 indices" comment above a constant of 100, a claim that the deposit burn would revert
+under a token *pause* (it would not — `StorageToken` overrides only `transfer`, and `burn` carries
+no pause guard; the **blacklist** case is what justifies splitting `settleDeposit` out), a
+`depositRefundable` comment that did not describe the `claimDeposit` path, an overstated claim to
+protect against "look-alike" labels when the check is byte-exact `keccak256`, and a stale status
+header on the design record. All corrected. None affected behaviour.
+
+Kimi also flagged the layout pin test as stale; that was a race against the in-flight refactor —
+the pin was re-derived from solc's emitted layout and the suite is green.
 
 ---
 

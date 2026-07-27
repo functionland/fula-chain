@@ -1,6 +1,7 @@
 # CommunityVoting — Design Record
 
-**Status:** IN PROGRESS (Step 0 of 9)
+**Status:** IMPLEMENTED — not yet deployed to any network. See `docs/voting-audit.md` for the
+finding register and the outstanding pre-deployment items.
 **Chain:** Base only (v1)
 **Contract:** `contracts/core/CommunityVoting.sol` (new UUPS proxy, inherits `GovernanceModule`)
 **Date started:** 2026-07-27
@@ -57,14 +58,13 @@ The `startTime <= createdAt` rule closes a snipe: without it, someone could buy 
 
 The brake is a DePIN identity multiplier: proven `StoragePool` membership multiplies power once per wallet. Eligibility requires **all** of:
 
-1. `getPeerIdInfo(poolId, peerId)` returns `member == msg.sender` — live membership, checked every time.
+1. `getPeerIdInfo(poolId, peerId)` returns `member == msg.sender` — live, pool-scoped membership, re-checked on every vote.
 2. That peer's **own** `lockedTokens >= minPoolJoinStake`.
-3. `joinTimestamp[peerId] != 0` and `joinTimestamp[peerId] <= subject.createdAt - minMembershipAge`.
-4. `!isForfeited(voter)`.
+3. `!isForfeited(voter)`.
 
 Rule 2 is the load-bearing one. A privileged `createPool` sets `lockedTokens = 0` (`StoragePool.sol:183`) and `POOL_ADMIN` can `addMember` directly (`:307`), so a pool can advertise a high `requiredTokens` while a given member has posted nothing. Checking the **peer's own locked balance** rather than the pool's advertised requirement is what makes the multiplier mean something.
 
-Rule 1 is also load-bearing for a subtler reason: `joinTimestamp` is keyed by `peerId` globally, is overwritten on re-join, and is **not** cleared unless a member's *last* peerId is removed (`StoragePool.sol:118-128`). A stale non-zero timestamp can therefore outlive membership, so it must never be trusted on its own.
+**There is deliberately no membership-age requirement**, and `StoragePool.joinTimestamp` is not read at all. An earlier revision required membership to predate the subject by 14 days. That is unsafe: `joinTimestamp` is keyed by peer id **globally** while membership is per-pool, and `createPool` (`StoragePool.sol:182`) overwrites it with no cross-pool uniqueness check. Anyone could therefore take a victim's public peer id, spin up a pool around it, and reset the victim's apparent join time — front-running a prospective voter to strip their multiplier, or deleting the pool afterwards to zero the value outright. Since pool creation may cost nothing (see the deploy-script pre-flight), that is cheap, targeted griefing that could swing a close vote. Any age rule built on that mapping is grievable by construction, so the economic barrier is carried entirely by rule 2, which an outsider cannot touch.
 
 **Honest summary:** this is *whale friction and provider-weighting*, not whale resistance. Documentation and UI must say so. A determined whale with pre-established pool memberships can still out-vote the community; the design raises the cost and makes the attempt publicly visible on-chain, and the signaling-only scope caps the damage.
 
@@ -132,8 +132,11 @@ an archive node, or any event log serves it instead.
 | `quorumVoters` | 15 | 3 | 1,000 |
 | `maxOpenPerCreator` | 3 | 1 | 20 |
 | `createCooldown` | 1d | 0 | 7d |
-| `minPoolJoinStake` | 1 FULA | 0 | 10,000,000 |
-| `minMembershipAge` | 14d | 0 | 90d |
+| `minPoolJoinStake` | 1 FULA | 1 FULA | 10,000,000 |
+
+The floor on `minPoolJoinStake` is deliberately above zero: at zero the peer-stake check becomes a
+no-op and any admin-seeded pool member would earn the multiplier for free. To neutralise the
+multiplier, set `memberMultiplierBps` to 10,000 (1×) — that is its intended off switch.
 
 At an assumed $1–5M market cap (FULA ≈ $0.0005–0.0025), creating a subject costs roughly $75–375, of which $25–125 is permanently burned. Reclaiming the deposit requires roughly $2.5–12.5k of committed basis — far more than the deposit is worth, so self-funding a refund is not economical.
 

@@ -45,8 +45,6 @@ interface IStoragePoolView {
         view
         returns (address member, uint256 lockedTokens);
 
-    function joinTimestamp(bytes32 peerId) external view returns (uint32);
-
     function isForfeited(address account) external view returns (bool);
 }
 
@@ -92,8 +90,9 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
     uint8 internal constant P_MAX_OPEN_PER_CREATOR = 10;
     uint8 internal constant P_CREATE_COOLDOWN = 11;
     uint8 internal constant P_MIN_POOL_JOIN_STAKE = 12;
-    uint8 internal constant P_MIN_MEMBERSHIP_AGE = 13;
-    uint8 internal constant P_LAST = 13;
+    // Id 13 previously held a membership-age requirement. It was removed rather than renumbered:
+    // the only available age source is grievable (see {_requireEligibleMember}).
+    uint8 internal constant P_LAST = 12;
 
     // Integration slots for PROPOSAL_SET_INTEGRATION.
     uint8 internal constant I_STAKING_ENGINE = 1;
@@ -110,9 +109,8 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
     uint256 internal constant MAX_TITLE_BYTES = 256;
     uint256 internal constant MAX_CID_BYTES = 100;
 
-    /// @dev Bounds the per-vote stake scan. `StakingEngineLinear` allows at most 100 active
-    ///      stakes per user; 50 keeps a vote comfortably cheap while covering realistic holders.
-    /// @dev Matches StakingEngineLinear's own cap of 100 active stakes per user. A lower bound
+    /// @dev Bounds the per-vote stake scan, matching StakingEngineLinear's own cap of 100 active
+    ///      stakes per user, so the worst case is always coverable. A lower bound
     ///      here would silently under-count a fragmented staker unless they hand-picked their
     ///      heaviest positions. The scan is the caller's own gas, and cheap on Base.
     uint256 internal constant MAX_STAKE_INDICES = 100;
@@ -139,7 +137,7 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
     ///      getter, which cost ~3.4 KiB of bytecode in a contract that already inherits ~14 KiB
     ///      of GovernanceModule. The array makes set and get O(1) with no branching. The trade
     ///      is a few extra cold SLOADs per call, worth a fraction of a cent on Base.
-    ///      Read individual values with {paramValue} or the whole vector with {allParams}.
+    ///      Read individual values with {paramValue}.
     uint256[14] internal _params;
 
     uint256 public subjectCount;
@@ -202,7 +200,6 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         _params[P_MAX_OPEN_PER_CREATOR] = 3;
         _params[P_CREATE_COOLDOWN] = 1 days;
         _params[P_MIN_POOL_JOIN_STAKE] = TOKEN_UNIT;
-        _params[P_MIN_MEMBERSHIP_AGE] = 14 days;
     }
 
     // ---------------------------------------------------------------------
@@ -484,7 +481,6 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         s.quorumBasisAt = SafeCast.toUint96(_params[P_QUORUM_BASIS]);
         s.quorumVotersAt = SafeCast.toUint32(_params[P_QUORUM_VOTERS]);
         s.memberMultiplierBpsAt = SafeCast.toUint32(_params[P_MEMBER_MULTIPLIER_BPS]);
-        s.minMembershipAgeAt = SafeCast.toUint32(_params[P_MIN_MEMBERSHIP_AGE]);
         s.stakeWeightBpsAt = SafeCast.toUint16(_params[P_STAKE_WEIGHT_BPS]);
         s.minVoteBasisAt = SafeCast.toUint96(_params[P_MIN_VOTE_BASIS]);
         s.minPoolJoinStakeAt = SafeCast.toUint96(_params[P_MIN_POOL_JOIN_STAKE]);
@@ -495,7 +491,10 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
             if (label.length == 0) revert OptionEmpty(i);
             if (label.length > MAX_OPTION_BYTES) revert OptionTooLong(i);
             bytes32 labelHash = keccak256(label);
-            // Duplicate labels would split the vote and make a "winner" ambiguous to a human.
+            // Byte-exact duplicates would split the vote and make a "winner" ambiguous to a
+            // human. Note this is byte equality only: "Yes" and "yes", or a trailing space, are
+            // distinct here. Guarding against visually confusable labels is an interface
+            // responsibility, not something a hash comparison can do.
             // Compared against the hashes already pushed for THIS subject; bounded by the
             // 100-option cap, and every comparison is a warm slot.
             for (uint256 j = 0; j < i; j++) {
@@ -681,12 +680,15 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         if (member != voter) revert MembershipNotEligible();
         if (lockedTokens < s.minPoolJoinStakeAt) revert MembershipNotEligible();
 
-        uint256 joinedAt = poolView.joinTimestamp(peerId);
-        if (joinedAt == 0) revert MembershipNotEligible();
-        // Membership must predate the subject by at least minMembershipAge. Written as an
-        // addition so a young subject cannot underflow the comparison.
-        if (joinedAt + s.minMembershipAgeAt > s.createdAt) revert MembershipNotEligible();
-
+        // NOTE: membership AGE is deliberately not checked, and StoragePool.joinTimestamp is not
+        // read at all. That mapping is keyed by peer id GLOBALLY while membership is per-pool, and
+        // `StoragePool.createPool:182` overwrites it with no cross-pool uniqueness check. Anyone
+        // could therefore take a victim's public peer id, spin up a pool around it, and reset the
+        // victim's apparent join time — front-running a prospective voter to strip their
+        // multiplier, or deleting the pool afterwards to zero the timestamp outright. Any age rule
+        // built on that mapping is grievable by design, so the economic barrier is carried
+        // entirely by the peer's own locked stake above, which an outsider cannot touch.
+        //
         // Forfeited accounts are flagged bad actors; they may still vote, just without the boost.
         if (poolView.isForfeited(voter)) revert MembershipNotEligible();
     }
@@ -725,9 +727,13 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
 
     /// @notice Records a closed subject's outcome. Permissionless and idempotent.
     /// @dev Makes NO external calls, deliberately. Burning a failed deposit is a call into the
-    ///      token, and if the token were paused or this contract were blacklisted that call would
-    ///      revert — which would mean a poll could never be finalized at all. Settlement is split
-    ///      into {settleDeposit} so recording a result can never be held hostage by token state.
+    ///      token, and if this contract were ever blacklisted that call would revert — the
+    ///      blacklist in {StorageToken-_update} applies to burns too — which would mean a poll
+    ///      could never be finalized at all. Settlement is split into {settleDeposit} so
+    ///      recording a result can never be held hostage by token state.
+    ///      (A token *pause* does not in fact block the burn: StorageToken overrides only
+    ///      `transfer`, and `burn`/`burnFrom` carry no pause guard. The blacklist case is the
+    ///      one that motivates the split.)
     ///
     ///      Also deliberately NOT `whenNotPaused`. `emergencyAction` is a single-admin call with
     ///      a 30-minute cooldown, so making this pausable would let one signature suppress the
@@ -891,7 +897,6 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         // the multiplier for free. To neutralise the multiplier instead, set
         // memberMultiplierBps to 10_000 (1x) — that is the intended off switch.
         if (paramId == P_MIN_POOL_JOIN_STAKE) return (TOKEN_UNIT, 10_000_000 * TOKEN_UNIT);
-        if (paramId == P_MIN_MEMBERSHIP_AGE) return (0, 90 days);
         revert InvalidParam(paramId);
     }
 
