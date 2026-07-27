@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import "../governance/GovernanceModule.sol";
 import "../governance/libraries/ProposalTypes.sol";
 import "../governance/interfaces/ICommunityVoting.sol";
@@ -384,6 +385,128 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         address newImplementation
     ) internal nonReentrant whenNotPaused onlyRole(ProposalTypes.ADMIN_ROLE) override {
         if (!_checkUpgrade(newImplementation)) revert("UpgradeNotAuthorized");
+    }
+
+    // ---------------------------------------------------------------------
+    // Subjects
+    // ---------------------------------------------------------------------
+
+    /// @notice Posts a poll. Burns a non-refundable fee and locks a refundable deposit.
+    /// @param title           Short human-readable question. Bounded; the long form lives in the CID.
+    /// @param descriptionCID  IPFS CID for the full description.
+    /// @param options         2-100 short ballot labels, non-empty, unique, <=64 bytes each.
+    /// @param duration        Seconds until voting closes; must sit inside [minDuration, maxDuration].
+    /// @return subjectId      Identifier of the new subject (ids start at 1).
+    function createSubject(
+        string calldata title,
+        string calldata descriptionCID,
+        string[] calldata options,
+        uint256 duration
+    ) external whenNotPaused nonReentrant returns (uint256 subjectId) {
+        uint256 optionCount = options.length;
+        if (optionCount < MIN_OPTIONS || optionCount > MAX_OPTIONS) {
+            revert InvalidOptionCount(optionCount);
+        }
+        if (bytes(title).length > MAX_TITLE_BYTES) revert TitleTooLong();
+        if (bytes(descriptionCID).length > MAX_CID_BYTES) revert CidTooLong();
+        if (duration < _params[P_MIN_DURATION] || duration > _params[P_MAX_DURATION]) {
+            revert InvalidDuration(duration);
+        }
+
+        uint256 lastAt = lastCreateAt[msg.sender];
+        if (lastAt != 0) {
+            uint256 readyAt = lastAt + _params[P_CREATE_COOLDOWN];
+            if (block.timestamp < readyAt) revert CreateCooldownActive(uint40(readyAt));
+        }
+
+        // "Open" means closeTime is still in the future, NOT "not yet finalized" — otherwise an
+        // abandoned subject nobody bothers to finalize would occupy a creator's slot forever.
+        uint256 openCount = _pruneCreatorOpen(msg.sender);
+        if (openCount >= _params[P_MAX_OPEN_PER_CREATOR]) revert TooManyOpenSubjects(openCount);
+
+        subjectId = ++subjectCount;
+
+        // ---- effects ----
+        Subject storage s = _subjects[subjectId];
+        s.creator = msg.sender;
+        s.createdAt = uint40(block.timestamp);
+        s.closeTime = uint40(block.timestamp + duration);
+        s.optionCount = uint16(optionCount);
+        // Meaningful only once finalized, but seeded so a caller reading an open subject can
+        // never mistake a default 0 for "option 0 is winning".
+        s.winningOption = NO_WINNER;
+        s.title = title;
+        s.descriptionCID = descriptionCID;
+
+        string[] storage stored = _options[subjectId];
+        for (uint256 i = 0; i < optionCount; i++) {
+            bytes memory label = bytes(options[i]);
+            if (label.length == 0) revert OptionEmpty(i);
+            if (label.length > MAX_OPTION_BYTES) revert OptionTooLong(i);
+            // Duplicate or look-alike labels would split the vote and make a "winner" ambiguous.
+            bytes32 labelHash = keccak256(label);
+            if (_optionSeen[subjectId][labelHash]) revert DuplicateOption(i);
+            _optionSeen[subjectId][labelHash] = true;
+            stored.push(options[i]);
+        }
+
+        _creatorOpen[msg.sender].push(subjectId);
+        lastCreateAt[msg.sender] = uint40(block.timestamp);
+
+        uint256 fee = _params[P_BURN_FEE];
+        uint256 depositAmount = _params[P_DEPOSIT];
+
+        // ---- interactions ----
+        // Burn straight from the creator rather than pulling in and then burning. StorageToken
+        // skips the platform fee whenever `to == address(0)`, so this both avoids losing a slice
+        // of the fee on an intermediate transfer and needs no delta accounting: `burnFrom`
+        // destroys exactly `fee`.
+        IFulaBurnable(address(token)).burnFrom(msg.sender, fee);
+
+        uint256 received = _pullTokens(msg.sender, depositAmount);
+        s.deposit = SafeCast.toUint96(received);
+        totalDepositLiability += received;
+
+        emit SubjectCreated(
+            subjectId,
+            msg.sender,
+            s.createdAt,
+            s.closeTime,
+            uint16(optionCount),
+            SafeCast.toUint96(fee),
+            s.deposit,
+            title,
+            descriptionCID
+        );
+        emit SubjectOptions(subjectId, options);
+    }
+
+    /// @dev Drops subjects whose voting window has closed from a creator's occupied-slot list and
+    ///      returns how many remain open. Bounded by `maxOpenPerCreator` (hard max 20).
+    function _pruneCreatorOpen(address creator) internal returns (uint256) {
+        uint256[] storage ids = _creatorOpen[creator];
+        uint256 i = 0;
+        while (i < ids.length) {
+            if (_subjects[ids[i]].closeTime <= block.timestamp) {
+                ids[i] = ids[ids.length - 1];
+                ids.pop();
+            } else {
+                i++;
+            }
+        }
+        return ids.length;
+    }
+
+    /// @dev Moves tokens in and credits the amount that actually arrived. The token carries an
+    ///      optional platform fee, so the received amount can be smaller than the amount asked
+    ///      for; every liability must be based on what landed, never on what was requested.
+    function _pullTokens(address from, uint256 amount) internal returns (uint256 received) {
+        if (amount == 0) return 0;
+        uint256 balanceBefore = token.balanceOf(address(this));
+        token.safeTransferFrom(from, address(this), amount);
+        uint256 balanceAfter = token.balanceOf(address(this));
+        if (balanceAfter < balanceBefore) revert BalanceDecreased();
+        received = balanceAfter - balanceBefore;
     }
 
     // ---------------------------------------------------------------------

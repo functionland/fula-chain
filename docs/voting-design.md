@@ -150,7 +150,70 @@ Parameters are changed **only** through the existing 2-admin proposal flow (24h 
 9. **Claim isolation** — claiming one subject cannot alter another subject's liabilities or claimability.
 10. **No trapped funds** — after any randomized operation sequence, every participant can withdraw exactly what they are owed.
 
-## 10. Review provenance
+## 10. Implementation notes (decisions made while building, with their reasons)
+
+### 10.1 `createProposal` is a hand-written mirror, not a guard-and-delegate
+
+The intended shape of the §5 fix was:
+
+```solidity
+function createProposal(...) external override returns (bytes32) {
+    if (isRecoveryOfGovernedToken) revert RecoveryBlocked();
+    return super.createProposal(...);          // <-- does not compile
+}
+```
+
+Solidity does not permit `super.f()` when the parent declared `f` as `external`; the compiler
+reports *"Member createProposal not found or not visible after argument-dependent lookup in
+type(contract super CommunityVoting)"*. Verified empirically, not assumed.
+
+Alternatives considered and rejected:
+
+| Option | Why not |
+|---|---|
+| Block at execution instead | `_executeProposal` is `internal` but not `virtual`, and `approveProposal` auto-executes once quorum and the delay are both met, so guarding `executeProposal` alone leaves that path open. |
+| Hold funds in a separate vault so a Recovery finds no balance | Adds a contract, an external call on every lock and claim, and a second ownership question. |
+| Inherit `NftGovernanceModule` (no proposal system, so no Recovery) | Loses the two-admin quorum on parameter changes and upgrades, which is the main reason for using the shared governance base at all. |
+
+The chosen fix reimplements the parent's body with exactly one added branch. The duplication is
+a real maintenance risk, so it is mitigated by testing **every** inherited branch — role changes,
+upgrades, zero target, duplicate pending proposal, unknown role, unknown type, missing quorum,
+and non-admin callers — rather than only the new one. If `GovernanceModule` ever changes, those
+tests are what will catch the divergence.
+
+### 10.2 Parameters are a flat array, not a packed struct
+
+The packed-struct form required a 13-branch chain with masked read-modify-write SSTOREs in both
+the setter and the getter, measured at **3.4 KiB** of bytecode. Since the contract inherits about
+14 KiB of `GovernanceModule` before any of its own logic, that left too little room under the
+24 KiB EIP-170 limit for the remaining voting logic.
+
+Measured sizes along the way:
+
+| State | Deployed size |
+|---|---|
+| Skeleton (Step 1) | 14.662 KiB |
+| With packed-struct parameters | 18.089 KiB |
+| Same, with `runs: 1` override | 17.755 KiB (only −0.334 — viaIR was already optimising hard) |
+| With flat `uint256[14]` parameters | 16.005 KiB |
+
+The array makes both get and set O(1) with no branching. The cost is a few extra cold SLOADs per
+call — worth a fraction of a cent on Base — and it also removes a whole class of packing bug,
+since no field is ever masked into a shared slot. Values are read with `paramValue(id)` or
+`allParams()`.
+
+### 10.3 Parameter proposals are serialised
+
+Every parameter proposal uses `target == address(this)`, so `pendingProposals` allows only one at
+a time. Worse, `GovernanceModule.createProposal:239` checks that slot **without testing expiry**,
+so an abandoned proposal keeps blocking all parameter governance until an admin calls
+`cleanupExpiredProposals`. A pseudo-target per parameter id would allow parallel proposals, but
+it puts meaningless addresses into proposal events and storage. The serialisation was accepted
+instead, and both the block and its cleanup recovery are covered by tests so the behaviour is
+documented rather than discovered in production. **Operational note: if parameter proposals start
+reverting `ExistingActiveProposal`, run `cleanupExpiredProposals`.**
+
+## 11. Review provenance
 
 This design was reviewed adversarially before implementation by three independent model families:
 
