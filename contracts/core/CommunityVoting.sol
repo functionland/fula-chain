@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 import "../governance/GovernanceModule.sol";
 import "../governance/libraries/ProposalTypes.sol";
 import "../governance/interfaces/ICommunityVoting.sol";
@@ -15,6 +16,38 @@ import "../governance/interfaces/ICommunityVoting.sol";
 interface IFulaBurnable {
     function burn(uint256 value) external;
     function burnFrom(address account, uint256 value) external;
+}
+
+/// @notice The slice of StakingEngineLinear this contract reads.
+/// @dev `stakes` is the compiler-generated getter for `mapping(address => StakeInfo[]) public`.
+///      The array is append-only — unstaking only flips `isActive` and never compacts — so a
+///      voter-supplied index cannot shift underneath a vote.
+interface IStakingEngineLinearView {
+    function stakes(address user, uint256 index)
+        external
+        view
+        returns (
+            uint256 amount,
+            uint256 rewardDebt,
+            uint256 lockPeriod,
+            uint256 startTime,
+            address referrer,
+            bool isActive
+        );
+}
+
+/// @notice The slice of StoragePool this contract reads.
+/// @dev Peer ids are unique per pool, not globally, so membership is always resolved with an
+///      explicit `poolId`. `isMemberOfAnyPool` is deliberately not used: it loops over every pool.
+interface IStoragePoolView {
+    function getPeerIdInfo(uint32 poolId, bytes32 peerId)
+        external
+        view
+        returns (address member, uint256 lockedTokens);
+
+    function joinTimestamp(bytes32 peerId) external view returns (uint32);
+
+    function isForfeited(address account) external view returns (bool);
 }
 
 /// @title CommunityVoting
@@ -435,6 +468,8 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         // Meaningful only once finalized, but seeded so a caller reading an open subject can
         // never mistake a default 0 for "option 0 is winning".
         s.winningOption = NO_WINNER;
+        s.quorumBasisAt = SafeCast.toUint96(_params[P_QUORUM_BASIS]);
+        s.quorumVotersAt = uint32(_params[P_QUORUM_VOTERS]);
         s.title = title;
         s.descriptionCID = descriptionCID;
 
@@ -481,6 +516,161 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         emit SubjectOptions(subjectId, options);
     }
 
+    // ---------------------------------------------------------------------
+    // Voting
+    // ---------------------------------------------------------------------
+
+    /// @notice Casts a single, immutable vote.
+    /// @dev Power is `sqrt(basis)`, with the membership multiplier applied AFTER the root —
+    ///      folding it inside would turn a "2x" parameter into ~1.41x actual power.
+    /// @param subjectId    Poll to vote on.
+    /// @param option       Index into the subject's option list.
+    /// @param lockAmount   FULA to lock for this subject; released after close.
+    /// @param stakeIndices Indices into the caller's own StakingEngineLinear stake array, strictly
+    ///                     ascending (which is what makes duplicates impossible). May be empty.
+    /// @param poolId       StoragePool id backing the membership multiplier; ignored when
+    ///                     `peerId` is zero.
+    /// @param peerId       Peer id proving membership, or zero to vote without the multiplier.
+    function vote(
+        uint256 subjectId,
+        uint16 option,
+        uint256 lockAmount,
+        uint256[] calldata stakeIndices,
+        uint32 poolId,
+        bytes32 peerId
+    ) external whenNotPaused nonReentrant {
+        Subject storage s = _subjects[subjectId];
+        if (s.createdAt == 0) revert SubjectNotFound(subjectId);
+        if (block.timestamp >= s.closeTime) revert SubjectClosed(subjectId);
+        if (option >= s.optionCount) revert InvalidOption(option);
+
+        Receipt storage r = _receipts[subjectId][msg.sender];
+        if (r.voted) revert AlreadyVoted(subjectId, msg.sender);
+        // Written before the token pull so a reentrant call could not double-vote even if the
+        // guard were ever removed. A valid vote can carry zero fresh lock, so this needs its own
+        // flag rather than inferring "has voted" from a non-zero amount.
+        r.voted = true;
+
+        uint256 stakeBasis = _stakeBasis(msg.sender, s.closeTime, s.createdAt, stakeIndices);
+        uint256 received = _pullTokens(msg.sender, lockAmount);
+        uint256 basis = received + stakeBasis;
+
+        uint256 minBasis = _params[P_MIN_VOTE_BASIS];
+        if (basis < minBasis) revert BasisBelowMinimum(basis, minBasis);
+
+        uint256 power = Math.sqrt(basis);
+        bool multiplied;
+        if (peerId != bytes32(0)) {
+            _requireEligibleMember(msg.sender, poolId, peerId, s.createdAt);
+            // Plain multiply-then-divide rather than Math.mulDiv: the product cannot approach
+            // 2**256, so the 512-bit path buys nothing but bytecode. sqrt(2e27) is about 4.5e13
+            // and the multiplier is capped at 50_000, so the intermediate peaks near 2.3e18.
+            // Solidity 0.8 still reverts on overflow, and the rounding is identical.
+            power = (power * _params[P_MEMBER_MULTIPLIER_BPS]) / BPS_DENOMINATOR;
+            multiplied = true;
+        }
+
+        uint128 power128 = SafeCast.toUint128(power);
+        uint128 basis128 = SafeCast.toUint128(basis);
+
+        r.lockedAmount = SafeCast.toUint128(received);
+        r.basis = basis128;
+        r.power = power128;
+        r.option = option;
+        r.multiplied = multiplied;
+
+        tally[subjectId][option] += power128;
+        s.totalPowerCast += power128;
+        s.totalBasis += basis128;
+        s.voterCount += 1;
+        totalLockedLiability += received;
+
+        emit VoteCast(subjectId, msg.sender, option, basis128, power128, multiplied);
+    }
+
+    /// @dev Sums the caller's qualifying stakes, then applies `stakeWeightBps` ONCE. Weighting
+    ///      each stake separately would round per index and make splitting a stake marginally
+    ///      profitable.
+    ///
+    ///      A stake qualifies only if it is active, stays locked past the subject's close, and
+    ///      was opened no later than the subject itself. That last rule blocks buying FULA and
+    ///      opening a fresh long stake moments before close purely to vote: stake-derived power
+    ///      costs nothing per subject, so without it a sniper gets influence for free.
+    ///
+    ///      Ownership comes only from `stakes[voter][index]`; no caller-supplied owner is trusted.
+    ///      An out-of-range index reverts inside the staking contract, which affects only the
+    ///      caller's own transaction.
+    function _stakeBasis(
+        address voter,
+        uint40 closeTime,
+        uint40 createdAt,
+        uint256[] calldata indices
+    ) internal view returns (uint256) {
+        uint256 count = indices.length;
+        if (count == 0) return 0;
+        if (count > MAX_STAKE_INDICES) revert TooManyStakeIndices(count);
+
+        address engine = stakingEngine;
+        if (engine == address(0)) revert IntegrationDisabled(I_STAKING_ENGINE);
+
+        uint256 total;
+        uint256 previousIndex;
+        for (uint256 i = 0; i < count; i++) {
+            uint256 index = indices[i];
+            // Strictly ascending, which rules out duplicates without a second pass or a set.
+            if (i != 0 && index <= previousIndex) revert StakeIndicesNotAscending();
+            previousIndex = index;
+
+            (uint256 amount, , uint256 lockPeriod, uint256 startTime, , bool isActive) =
+                IStakingEngineLinearView(engine).stakes(voter, index);
+
+            if (!isActive) revert StakeNotQualifying(index);
+            if (startTime + lockPeriod < closeTime) revert StakeNotQualifying(index);
+            if (startTime > createdAt) revert StakeNotQualifying(index);
+
+            total += amount;
+        }
+
+        // Same reasoning as the multiplier above: `total` is bounded by the 2e27 wei supply and
+        // the weight by 10_000, so the product peaks near 2e31 — nowhere near 2**256.
+        return (total * _params[P_STAKE_WEIGHT_BPS]) / BPS_DENOMINATOR;
+    }
+
+    /// @dev Verifies the DePIN membership behind the voting-power multiplier.
+    ///
+    ///      The peer's OWN `lockedTokens` is what is checked, not the pool's advertised
+    ///      `requiredTokens`. A privileged `createPool` records zero locked tokens and a pool
+    ///      admin can add members directly, so a pool can advertise a high requirement while a
+    ///      given member has posted nothing. Checking the individual peer's stake is what makes
+    ///      the multiplier mean something.
+    ///
+    ///      Live membership is re-checked every time because `joinTimestamp` is keyed by peer id
+    ///      globally, is overwritten on re-join, and is not cleared unless a member's last peer id
+    ///      is removed — so a stale non-zero timestamp can outlive the membership it described.
+    function _requireEligibleMember(
+        address voter,
+        uint32 poolId,
+        bytes32 peerId,
+        uint40 createdAt
+    ) internal view {
+        address pool = storagePool;
+        if (pool == address(0)) revert IntegrationDisabled(I_STORAGE_POOL);
+
+        IStoragePoolView poolView = IStoragePoolView(pool);
+        (address member, uint256 lockedTokens) = poolView.getPeerIdInfo(poolId, peerId);
+        if (member != voter) revert MembershipNotEligible();
+        if (lockedTokens < _params[P_MIN_POOL_JOIN_STAKE]) revert MembershipNotEligible();
+
+        uint256 joinedAt = poolView.joinTimestamp(peerId);
+        if (joinedAt == 0) revert MembershipNotEligible();
+        // Membership must predate the subject by at least minMembershipAge. Written as an
+        // addition so a young subject cannot underflow the comparison.
+        if (joinedAt + _params[P_MIN_MEMBERSHIP_AGE] > createdAt) revert MembershipNotEligible();
+
+        // Forfeited accounts are flagged bad actors; they may still vote, just without the boost.
+        if (poolView.isForfeited(voter)) revert MembershipNotEligible();
+    }
+
     /// @dev Drops subjects whose voting window has closed from a creator's occupied-slot list and
     ///      returns how many remain open. Bounded by `maxOpenPerCreator` (hard max 20).
     function _pruneCreatorOpen(address creator) internal returns (uint256) {
@@ -507,6 +697,148 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         uint256 balanceAfter = token.balanceOf(address(this));
         if (balanceAfter < balanceBefore) revert BalanceDecreased();
         received = balanceAfter - balanceBefore;
+    }
+
+    // ---------------------------------------------------------------------
+    // Closing out
+    // ---------------------------------------------------------------------
+
+    /// @notice Records a closed subject's outcome. Permissionless and idempotent.
+    /// @dev Makes NO external calls, deliberately. Burning a failed deposit is a call into the
+    ///      token, and if the token were paused or this contract were blacklisted that call would
+    ///      revert — which would mean a poll could never be finalized at all. Settlement is split
+    ///      into {settleDeposit} so recording a result can never be held hostage by token state.
+    function finalize(uint256 subjectId) external whenNotPaused nonReentrant {
+        Subject storage s = _subjects[subjectId];
+        if (s.createdAt == 0) revert SubjectNotFound(subjectId);
+        if (block.timestamp < s.closeTime) revert SubjectStillOpen(subjectId);
+        if (s.status == STATUS_FINALIZED) revert AlreadyFinalized(subjectId);
+
+        s.status = STATUS_FINALIZED;
+
+        uint16 optionCount = s.optionCount;
+        uint128 best = tally[subjectId][0];
+        uint16 winner = 0;
+        uint256 bestCount = 1;
+        for (uint16 i = 1; i < optionCount; i++) {
+            uint128 votes = tally[subjectId][i];
+            if (votes > best) {
+                best = votes;
+                winner = i;
+                bestCount = 1;
+            } else if (votes == best) {
+                bestCount++;
+            }
+        }
+
+        // A tie means no mandate. Zero turnout lands here naturally: with at least two options,
+        // an all-zero tally ties at zero, so it is reported as "no mandate" rather than as
+        // option 0 winning.
+        bool tied = bestCount > 1;
+        if (tied) winner = NO_WINNER;
+
+        s.winningOption = winner;
+        s.tied = tied;
+
+        bool quorumMet = _quorumMet(s);
+        s.depositRefundable = quorumMet;
+
+        emit SubjectFinalized(
+            subjectId,
+            winner,
+            tied,
+            quorumMet,
+            s.totalPowerCast,
+            s.totalBasis,
+            s.voterCount
+        );
+    }
+
+    /// @notice Returns a voter's locked tokens after the subject closes.
+    /// @dev Intentionally NOT `whenNotPaused`. Pausing must stop new participation, never trap
+    ///      completed positions — and `emergencyAction` is a single-admin call with a shared
+    ///      30-minute cooldown, so a pause is one signature away. Also does not require
+    ///      finalization: a voter's refund must not depend on anyone else acting.
+    function claim(uint256 subjectId) external nonReentrant {
+        if (_claim(subjectId, msg.sender) == 0) revert NothingToClaim();
+    }
+
+    /// @notice Claims several subjects at once. Atomic for the caller: if one leg reverts the
+    ///         whole call does. It touches only the caller's own receipts, so it can never be
+    ///         blocked by another user's state.
+    function claimMany(uint256[] calldata subjectIds) external nonReentrant {
+        uint256 total;
+        for (uint256 i = 0; i < subjectIds.length; i++) {
+            total += _claim(subjectIds[i], msg.sender);
+        }
+        if (total == 0) revert NothingToClaim();
+    }
+
+    function _claim(uint256 subjectId, address voter) internal returns (uint256 amount) {
+        Subject storage s = _subjects[subjectId];
+        if (s.createdAt == 0) revert SubjectNotFound(subjectId);
+        if (block.timestamp < s.closeTime) revert SubjectStillOpen(subjectId);
+
+        Receipt storage r = _receipts[subjectId][voter];
+        if (!r.voted) revert NothingToClaim();
+        if (r.claimed) revert AlreadyClaimed();
+
+        amount = r.lockedAmount;
+        r.claimed = true;
+        if (amount != 0) {
+            totalLockedLiability -= amount;
+            token.safeTransfer(voter, amount);
+            emit TokensClaimed(subjectId, voter, uint128(amount));
+        }
+    }
+
+    /// @notice Returns the creator's deposit once the subject closed having met quorum.
+    /// @dev Pull-based and independent of {finalize}: `voterCount` and `totalBasis` are running
+    ///      totals, so the outcome is known the moment voting closes. Pushing instead would let a
+    ///      blacklisted creator's failing transfer brick the caller.
+    function claimDeposit(uint256 subjectId) external nonReentrant {
+        Subject storage s = _subjects[subjectId];
+        if (s.createdAt == 0) revert SubjectNotFound(subjectId);
+        if (msg.sender != s.creator) revert NotSubjectCreator();
+        if (block.timestamp < s.closeTime) revert SubjectStillOpen(subjectId);
+        if (s.depositSettled) revert DepositAlreadySettled();
+        if (!_quorumMet(s)) revert QuorumNotMet();
+
+        uint96 amount = s.deposit;
+        s.depositSettled = true;
+        s.depositRefundable = true;
+        if (amount == 0) revert NothingToClaim();
+
+        totalDepositLiability -= amount;
+        token.safeTransfer(s.creator, amount);
+        emit DepositClaimed(subjectId, s.creator, amount);
+    }
+
+    /// @notice Burns the deposit of a subject that closed without reaching quorum.
+    /// @dev Permissionless — anyone may push a failed subject to settlement. Separate from
+    ///      {finalize} so that a token pause or blacklist can delay the burn without ever
+    ///      preventing the result from being recorded.
+    function settleDeposit(uint256 subjectId) external nonReentrant {
+        Subject storage s = _subjects[subjectId];
+        if (s.createdAt == 0) revert SubjectNotFound(subjectId);
+        if (block.timestamp < s.closeTime) revert SubjectStillOpen(subjectId);
+        if (s.depositSettled) revert DepositAlreadySettled();
+        if (_quorumMet(s)) revert DepositIsRefundable();
+
+        uint96 amount = s.deposit;
+        s.depositSettled = true;
+        if (amount == 0) return;
+
+        totalDepositLiability -= amount;
+        IFulaBurnable(address(token)).burn(amount);
+        emit DepositBurned(subjectId, s.creator, amount);
+    }
+
+    /// @dev Evaluated against the thresholds snapshotted at creation, not the current ones.
+    ///      The capital term is the load-bearing one; the voter count is a weak secondary floor,
+    ///      since distinct addresses are cheap to manufacture.
+    function _quorumMet(Subject storage s) internal view returns (bool) {
+        return s.voterCount >= s.quorumVotersAt && s.totalBasis >= s.quorumBasisAt;
     }
 
     // ---------------------------------------------------------------------

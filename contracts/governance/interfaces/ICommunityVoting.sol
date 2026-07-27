@@ -30,6 +30,12 @@ interface ICommunityVoting {
         // --- slot 3 ---
         uint128 totalPowerCast;
         uint128 totalBasis;
+        // --- slot 4 ---
+        // Refund thresholds are snapshotted when the subject is created. Evaluating them live
+        // would let a later governance change retroactively decide whether a creator gets their
+        // deposit back; a creator should be judged against the rules they paid under.
+        uint96 quorumBasisAt;
+        uint32 quorumVotersAt;
         // --- reference slots ---
         string title;
         string descriptionCID;
@@ -43,6 +49,7 @@ interface ICommunityVoting {
         // --- slot 2 ---
         uint128 basis;              // lockedAmount + weighted stake, pre-sqrt
         uint16 option;
+        bool voted;                 // explicit flag: a valid vote may carry zero fresh lock
         bool claimed;
         bool multiplied;            // whether the DePIN membership multiplier was applied
     }
@@ -132,10 +139,14 @@ interface ICommunityVoting {
     error StakeNotQualifying(uint256 index);
 
     error MembershipNotEligible();
+    /// @notice An optional integration (staking engine / storage pool) is not configured.
+    error IntegrationDisabled(uint8 slot);
 
     error NothingToClaim();
     error AlreadyClaimed();
     error DepositAlreadySettled();
+    /// @notice The deposit met quorum and belongs to the creator, so it cannot be burned.
+    error DepositIsRefundable();
     error NotSubjectCreator();
     error QuorumNotMet();
 
