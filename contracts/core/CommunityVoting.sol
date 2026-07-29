@@ -10,9 +10,17 @@ import "../governance/libraries/ProposalTypes.sol";
 import "../governance/interfaces/ICommunityVoting.sol";
 
 /// @notice Minimal view of the burn surface StorageToken exposes.
-/// @dev `burn`/`burnFrom` bypass the platform fee because {StorageToken-_update} skips the
-///      fee whenever `to == address(0)`, and they increment `voluntarilyBurned` so burning
-///      here cannot create fresh headroom under the bridge supply cap.
+/// @dev Both come from `ERC20BurnableUpgradeable` on the token.
+///
+///      NOTE on the platform fee: the current {StorageToken-_update} applies its fee to EVERY
+///      transfer, with no exemption for mint/burn. So while `platformFeeBps` is zero — which it is
+///      on every live deployment — `burnFrom(creator, fee)` destroys exactly `fee`. If a fee were
+///      ever enabled, the burn would itself be taxed and only `fee * (1 - bps)` would actually be
+///      destroyed, the remainder going to the treasury.
+///
+///      This does not affect any invariant here: the creator is debited the full amount either
+///      way, this contract holds none of it, and the refundable deposit is credited by measured
+///      balance delta rather than by the amount requested.
 interface IFulaBurnable {
     function burn(uint256 value) external;
     function burnFrom(address account, uint256 value) external;

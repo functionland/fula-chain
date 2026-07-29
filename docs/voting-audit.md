@@ -341,6 +341,32 @@ header on the design record. All corrected. None affected behaviour.
 Kimi also flagged the layout pin test as stale; that was a race against the in-flight refactor —
 the pin was re-derived from solc's emitted layout and the suite is green.
 
+### F-21 — Findings about the TOKEN, surfaced by integrating against it
+
+Not defects in CommunityVoting, and not fixed here — this contract does not own `StorageToken`.
+Recorded because integrating against the working-tree token exposed them, and two are live-token
+issues that outlive this work. All three appear to come from removing the bridge branch, which had
+fixed them.
+
+1. **`ChangeTreasuryFee` can never set a non-zero fee.** `_createCustomProposal` validates
+   `amount <= MAX_BPS` (`StorageToken.sol:239`) but never writes `proposal.amount`, so execution
+   reads zero and `_setPlatformFee(0)` runs no matter what was proposed (`:299`). The platform fee
+   is therefore unsettable through governance. This is the same bug class this contract guards
+   against in its own proposal type 14 by persisting the payload explicitly — see F-9.
+2. **`_update` applies the fee to mints and burns.** `StorageToken.sol:100` gates only on
+   `platformFeeBps > 0`, with no `from != address(0) && to != address(0)` exemption. With a fee
+   active, a burn is itself taxed (only `fee * (1 - bps)` is destroyed, the rest going to treasury)
+   and a mint silently diverts a slice to the treasury. Latent today only because the fee is zero
+   everywhere — and, per (1), cannot be turned on.
+3. **`voluntarilyBurned` and the `burn`/`burnFrom` overrides are gone**, so nothing offsets burns
+   against the supply cap. Harmless while `bridgeOp`-style minting is absent; it matters again if
+   any supply-capped mint path returns.
+
+Impact on this contract: none to any invariant. The creator is debited the full creation fee
+either way, this contract never holds it, and the refundable deposit is credited by measured
+balance delta rather than by the amount requested. The affected NatSpec and two tests were
+corrected to describe the token as it actually is.
+
 ---
 
 ## 3. Invariants

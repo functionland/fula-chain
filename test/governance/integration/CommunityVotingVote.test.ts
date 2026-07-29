@@ -224,7 +224,13 @@ describe("CommunityVoting â€” voting power", function () {
     });
 
     it("counts only what arrived when a transfer fee is active", async function () {
-      await runTokenProposal(11 /* ChangeTreasuryFee */, voter2.address, 500);
+      // Written directly rather than via the token's ChangeTreasuryFee proposal: that path
+      // validates the amount but never persists it, so it always executes as zero.
+      await ethers.provider.send("hardhat_setStorageAt", [
+        await token.getAddress(),
+        ethers.toBeHex(14, 32), // platformFeeBps
+        ethers.toBeHex(500, 32),
+      ]);
       const lock = ethers.parseEther("1000000");
       await voting.connect(voter).vote(1, 0, lock, [], 0, ZeroHash);
 

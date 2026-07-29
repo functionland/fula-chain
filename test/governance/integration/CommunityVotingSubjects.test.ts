@@ -103,12 +103,13 @@ describe("CommunityVoting — subject creation", function () {
 
     it("burns the fee outright and holds the deposit", async function () {
       const supplyBefore = await token.totalSupply();
-      const burnedBefore = await token.voluntarilyBurned();
 
       await voting.connect(creator).createSubject("T", "C", OPTS, 7 * DAY);
 
+      // A fall in totalSupply is the definitive proof the fee was destroyed rather than moved.
+      // (An earlier revision also asserted on the token's `voluntarilyBurned` counter; that was
+      // bridge-specific accounting and no longer exists on the token.)
       expect(await token.totalSupply()).to.equal(supplyBefore - BURN_FEE);
-      expect(await token.voluntarilyBurned()).to.equal(burnedBefore + BURN_FEE);
       expect(await token.balanceOf(await voting.getAddress())).to.equal(DEPOSIT);
       expect(await voting.totalDepositLiability()).to.equal(DEPOSIT);
     });
@@ -268,14 +269,23 @@ describe("CommunityVoting — subject creation", function () {
     it("credits only what actually arrived when a transfer fee is active", async function () {
       // Turn on the token's 5% platform fee. The burned fee is unaffected (StorageToken skips
       // the fee when `to == address(0)`), but the deposit transfer loses 5% in flight.
-      await runTokenProposal(PT_CHANGE_TREASURY_FEE, other.address, 500);
+      //
+      // Set by writing the token's storage rather than through its ChangeTreasuryFee proposal:
+      // that proposal path validates the amount but never persists it, so execution reads
+      // `proposal.amount == 0` and always sets the fee to zero. Driving the fee directly also
+      // makes this a test of THIS contract's accounting rather than of the token's governance.
+      await setPlatformFee(500);
       expect(await token.balanceOf(await voting.getAddress())).to.equal(0n);
 
       const supplyBefore = await token.totalSupply();
       await voting.connect(creator).createSubject("T", "C", OPTS, 7 * DAY);
 
-      // Fee burned in full, no leakage on an intermediate hop.
-      expect(await token.totalSupply()).to.equal(supplyBefore - BURN_FEE);
+      // The creator is debited the full fee either way. How much of it is actually DESTROYED
+      // depends on the token: this version's _update taxes every transfer including burns, with
+      // no mint/burn exemption, so 5% is diverted to the treasury and 95% is burned. There is no
+      // intermediate hop to leak on — the fee is taken straight from the creator.
+      const expectedBurned = (BURN_FEE * 9500n) / 10000n;
+      expect(await token.totalSupply()).to.equal(supplyBefore - expectedBurned);
 
       const expectedDeposit = (DEPOSIT * 9500n) / 10000n;
       expect(await token.balanceOf(await voting.getAddress())).to.equal(expectedDeposit);
@@ -316,6 +326,27 @@ describe("CommunityVoting — subject creation", function () {
     const held = await token.balanceOf(await voting.getAddress());
     const owed = (await voting.totalLockedLiability()) + (await voting.totalDepositLiability());
     expect(held, "held balance does not equal recorded liabilities").to.equal(owed);
+  }
+
+  /**
+   * Force StorageToken's platform fee on. `platformFeeBps` is private and its governance path
+   * cannot actually set a non-zero value (see the note at the call site), so write the slot.
+   */
+  async function setPlatformFee(bps: number) {
+    const PLATFORM_FEE_SLOT = 14;
+    await ethers.provider.send("hardhat_setStorageAt", [
+      await token.getAddress(),
+      ethers.toBeHex(PLATFORM_FEE_SLOT, 32),
+      ethers.toBeHex(bps, 32),
+    ]);
+    // Prove the slot is the right one rather than assuming: a plain transfer must now lose the fee.
+    const probe = ethers.parseEther("1000");
+    const before = await token.balanceOf(other.address);
+    await token.connect(owner).transfer(other.address, probe);
+    const received = (await token.balanceOf(other.address)) - before;
+    expect(received, "platform fee slot did not take effect").to.equal(
+      (probe * BigInt(10000 - bps)) / 10000n
+    );
   }
 
   /** Drive a StorageToken proposal through the two-admin flow. */
