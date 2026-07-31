@@ -157,6 +157,36 @@ async function main() {
     );
     check(unknown.length === 0, `${label}: all DVNs are recognised operators`, unknown.join(", "));
 
+    // ⚠️ THE CHECK ABOVE IS CIRCULAR ON ITS OWN — it only asks whether an address appears in OUR
+    // table, so a wrong-but-recorded address passes. On 2026-07-31 it reported "all DVNs are
+    // recognised operators" for a configuration whose DVNs do not serve this lane at all, and the
+    // first real mainnet transfer hung in status BLOCKED because nothing ever attested.
+    //
+    // The authority is the CHAIN, not our table: compare against the live DEFAULT ULN config,
+    // which is the set LayerZero itself runs for this pathway. A required DVN outside that set is
+    // not automatically wrong — a deliberate non-default operator is legitimate — but it MUST be
+    // confirmed to actually serve the lane, so this fails loudly rather than passing silently.
+    try {
+      const defCfg = await uln.getUlnConfig(ethers.ZeroAddress, remote.eid);
+      const [, , , , defRequired, defOptional] = defCfg as [bigint, bigint, bigint, bigint, string[], string[]];
+      const defaultSet = new Set([...defRequired, ...defOptional].map((d) => d.toLowerCase()));
+      console.log(`     live DEFAULT required DVNs on this lane: ${defRequired.length}`);
+      for (const d of defRequired) console.log(`       ${d}  (${dvnName(local.network, d)})`);
+
+      const offDefault = requiredDvns.filter((d) => !defaultSet.has(d.toLowerCase()));
+      check(
+        offDefault.length === 0,
+        `${label}: every required DVN is in the live DEFAULT set for this lane`,
+        offDefault.length === 0
+          ? ""
+          : `NOT in the default set: ${offDefault.join(", ")} — these may never attest, which ` +
+            `hangs every message in status BLOCKED. Verify each one actually serves this pathway ` +
+            `before shipping, or switch to addresses from the default set above.`
+      );
+    } catch (e: any) {
+      check(false, `${label}: could not read the live default ULN config`, e.shortMessage ?? e.message);
+    }
+
     // LOCAL digest — includes raw DVN addresses. Valid ONLY for comparing send vs receive on
     // THIS chain. It is meaningless across chains: a DVN operator has a different address on
     // every chain, so two correctly-matched configs will always produce different local digests.

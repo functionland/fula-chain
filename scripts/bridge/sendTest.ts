@@ -178,8 +178,18 @@ async function main() {
     })
     .find((p) => p?.name === "OFTSent")?.args?.guid;
   if (guid) console.log(`GUID:               ${guid}`);
-  console.log(`\nTrack delivery: https://testnet.layerzeroscan.com/tx/${tx.hash}`);
-  console.log(`(use layerzeroscan.com for mainnet)`);
+  // Pick the right explorer instead of printing a testnet URL and a parenthetical telling the
+  // reader to mentally substitute the mainnet one — on a real mainnet transfer that link 404s,
+  // which reads exactly like a failed send at the moment you most want reassurance.
+  const MAINNET_EIDS = new Set([30101, 30184, 30110, 30111, 30106, 30109, 30112, 30102, 30183]);
+  const scan = MAINNET_EIDS.has(local.eid) ? "https://layerzeroscan.com" : "https://testnet.layerzeroscan.com";
+  console.log(`\nTrack delivery: ${scan}/tx/${tx.hash}`);
+  console.log(
+    `\nDELIVERY IS NOT INSTANT. The DVNs wait for the configured block confirmations before they\n` +
+      `will even attest, then every required DVN must sign, then the executor delivers. At 15\n` +
+      `confirmations on Ethereum that is ~3 minutes of waiting before verification starts, so 4-8\n` +
+      `minutes end to end is normal. An empty destination balance before then is EXPECTED.`
+  );
   console.log(
     `\nThe destination mint happens in a separate transaction executed by the LayerZero executor.\n` +
       `If it reverts (recipient blacklisted, token paused, escrow short of liquidity, or the inbound\n` +
