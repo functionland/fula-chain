@@ -102,8 +102,18 @@ export const LIVE: Record<
 };
 
 /**
- * Storage slots of the CURRENTLY DEPLOYED StorageToken ("Legacy" group; first child slot 11).
- * GovernanceModule occupies 0..10. See contracts/UPGRADING.md.
+ * Storage slots of the DEPLOYED StorageToken. GovernanceModule occupies 0..10 and the token's
+ * own variables start at 11.
+ *
+ * SCOPE OF THAT CLAIM: the layout was verified by reading live storage on **Ethereum and Base
+ * only**. SKALE and IoTeX host the same source but their layouts were never independently
+ * confirmed, so do not treat these indices as authoritative there without re-verifying.
+ *
+ * NOTE: the bridge does NOT upgrade the token — it is a lock/release escrow and
+ * `contracts/core/StorageToken.sol` is byte-identical to the live verified source. Earlier
+ * revisions of this file listed `bridgeMinters: 16` and `voluntarilyBurned: 17` as slots
+ * "appended by this upgrade"; **those slots do not exist**, that upgrade was abandoned, and the
+ * reserved gap begins at 16.
  */
 export const SLOTS = {
   adminCount: 0,
@@ -122,10 +132,7 @@ export const SLOTS = {
   treasury: 13,
   platformFeeBps: 14,
   tokenPackedVars: 15,
-  // Appended by this upgrade — MUST currently read as zero on every live proxy.
-  bridgeMinters: 16,
-  voluntarilyBurned: 17,
-  gapStart: 18,
+  gapStart: 16,
   gapEnd: 64,
 } as const;
 
@@ -166,8 +173,6 @@ export async function snapshotState(
     SLOTS.treasury,
     SLOTS.platformFeeBps,
     SLOTS.tokenPackedVars,
-    SLOTS.bridgeMinters,
-    SLOTS.voluntarilyBurned,
   ]) {
     rawSlots[s] = await ethers.provider.getStorage(proxy, s);
   }
@@ -223,10 +228,12 @@ export function diffSnapshots(before: StateSnapshot, after: StateSnapshot): stri
       diffs.push(`balance[${addr}]: ${bal} -> ${after.balances[addr]}`);
     }
   }
-  // Slots 16/17 are newly used by this upgrade, so they are allowed to change from zero.
+  // EVERY slot must be unchanged. There is no carve-out any more: the escrow bridge does not
+  // touch the token, so a raw-slot difference is unexplained by definition. Earlier revisions
+  // whitelisted slots 16/17 as "newly used by this upgrade" — that upgrade was abandoned, and
+  // leaving the exemption in place would have silently suppressed a real alarm.
   for (const [slot, val] of Object.entries(before.rawSlots)) {
     const n = Number(slot);
-    if (n === SLOTS.bridgeMinters || n === SLOTS.voluntarilyBurned) continue;
     if (after.rawSlots[n] !== val) {
       diffs.push(`slot ${n}: ${val} -> ${after.rawSlots[n]}`);
     }

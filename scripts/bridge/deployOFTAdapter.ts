@@ -1,19 +1,25 @@
 // Deploys the immutable FulaOFTAdapter for the current network.
 //
 // The adapter is DELIBERATELY NOT UPGRADEABLE — it is deployed with a plain
-// ContractFactory, never with the hardhat-upgrades plugin. It receives the power to
-// burn any holder's balance, so that power must not sit behind a mutable pointer.
+// ContractFactory, never with the hardhat-upgrades plugin. It CUSTODIES escrowed user
+// funds, so that custody must not sit behind a mutable implementation pointer.
 //
 // USAGE:
 //   OWNER=0xSafeOrTimelock npx hardhat run scripts/bridge/deployOFTAdapter.ts --network base
 //
 // AFTER DEPLOY you must, in order:
-//   1. Authorize the adapter as a bridge minter (governance proposal type 12)
-//   2. setPeer on BOTH chains
-//   3. setSendLibrary / setReceiveLibrary / setConfig (multi-DVN!)
-//   4. setEnforcedOptions
-//   5. setRateLimits  <-- MANDATORY: the rate limiter is fail-closed; without it every
+//   1. setPeer on BOTH chains  <-- and note that whoever can call this can DRAIN THE ESCROW
+//                                  by pointing the lane at an attacker-controlled address.
+//                                  The owner MUST be a timelock/multisig for this reason
+//                                  alone, independent of the delegate powers below.
+//   2. setSendLibrary / setReceiveLibrary / setConfig (multi-DVN!)
+//   3. setEnforcedOptions
+//   4. setRateLimits  <-- MANDATORY: the rate limiter is fail-closed; without it every
 //                        transfer reverts with RateLimitExceeded.
+//   5. SEED ESCROW LIQUIDITY — a chain can only release what it already holds.
+//
+// There is NO minter authorization step. This is a lock/release escrow: the token grants
+// the adapter no role whatsoever.
 import { ethers, network } from "hardhat";
 import { chainFor } from "./addresses";
 
@@ -40,26 +46,44 @@ async function main() {
   if (code === "0x") {
     console.log(
       `\n  WARNING: OWNER is an EOA, not a contract.\n` +
-        `  The owner is also the LayerZero delegate, which can permanently DESTROY in-flight\n` +
-        `  messages via endpoint.burn/nilify — i.e. destroy user funds already burned on the\n` +
-        `  source chain. Use a TimelockController or multisig for mainnet.\n`
+        `  The owner can DRAIN THE ENTIRE ESCROW by calling setPeer to point a lane at an\n` +
+        `  attacker-controlled address, which then sends a message releasing the balance.\n` +
+        `  It is also the LayerZero delegate, so it can permanently DESTROY in-flight messages\n` +
+        `  via endpoint.burn/nilify — stranding funds already locked on the source chain.\n` +
+        `  Use a TimelockController or multisig for mainnet.\n`
     );
   }
 
   const Adapter = await ethers.getContractFactory("FulaOFTAdapter");
-  const adapter = await Adapter.deploy(token, token, chain.endpoint, owner);
+  const adapter = await Adapter.deploy(token, chain.endpoint, owner);
   await adapter.waitForDeployment();
   const address = await adapter.getAddress();
   console.log(`\nFulaOFTAdapter deployed: ${address}`);
 
+  // Public RPCs routinely serve STALE state for a few seconds after a deployment — a contract that
+  // demonstrably exists reads back as `0x`, which made the post-deploy assertions below fail
+  // spuriously and look like a failed deploy. Poll until the node admits the code exists.
+  for (let i = 0; i < 30; i++) {
+    if ((await ethers.provider.getCode(address)) !== "0x") break;
+    if (i === 0) console.log(`  waiting for the RPC to observe the deployed code ...`);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  if ((await ethers.provider.getCode(address)) === "0x") {
+    throw new Error(
+      `RPC still reports no code at ${address} after 60s. The deployment transaction succeeded — ` +
+        `verify manually before redeploying, or you will deploy a second adapter.`
+    );
+  }
+
   // Post-deploy assertions — fail loudly rather than leaving a misconfigured bridge.
+  // NOTE `approvalRequired()` is TRUE: this is a lock/release escrow adapter, so holders must
+  // `approve` before sending. A mint/burn adapter would report false.
   const checks: Array<[string, unknown, unknown]> = [
     ["token()", await adapter.token(), token],
-    ["minterBurner()", await adapter.minterBurner(), token],
     ["owner()", await adapter.owner(), owner],
     ["sharedDecimals()", await adapter.sharedDecimals(), 6n],
     ["decimalConversionRate()", await adapter.decimalConversionRate(), 10n ** 12n],
-    ["approvalRequired()", await adapter.approvalRequired(), false],
+    ["approvalRequired()", await adapter.approvalRequired(), true],
   ];
   let ok = true;
   for (const [name, actual, expected] of checks) {
@@ -76,7 +100,10 @@ async function main() {
     try {
       await hre.run("verify:verify", {
         address,
-        constructorArguments: [token, token, chain.endpoint, owner],
+        // THREE args, matching `constructor(address _token, address _lzEndpoint, address _owner)`.
+        // This previously passed four (a leftover from the abandoned mint/burn adapter, which took
+        // a separate minter-burner address) and would have failed every explorer verification.
+        constructorArguments: [token, chain.endpoint, owner],
       });
     } catch (error: any) {
       if (String(error.message).includes("Already Verified")) {
@@ -88,10 +115,17 @@ async function main() {
   }
 
   console.log(`\nNext steps:`);
-  console.log(`  1. Governance: createProposal(12, 0, ${address}, 0x0, <cap>, 0x0) then approve`);
-  console.log(`  2. Deploy the peer adapter on the other chain`);
-  console.log(`  3. npx hardhat run scripts/bridge/wireOApp.ts --network ${network.name}`);
-  console.log(`  4. Set rate limits (MANDATORY — fail-closed)`);
+  console.log(`  1. Deploy the peer adapter on the other chain`);
+  console.log(`  2. npx hardhat run scripts/bridge/wireOApp.ts --network ${network.name}`);
+  console.log(`     (this also sets rate limits — MANDATORY, the limiter is fail-closed)`);
+  console.log(`  3. SEED ESCROW LIQUIDITY on this chain — see below`);
+  console.log(`\n  NO GOVERNANCE AUTHORIZATION IS REQUIRED.`);
+  console.log(`  This is a lock/release escrow adapter: it never mints or burns, so the token`);
+  console.log(`  grants it no role and no minter entry. It is an ordinary holder.`);
+  console.log(`\n  LIQUIDITY: this chain can only RELEASE tokens it already holds. Send FULA to`);
+  console.log(`  ${address} before anyone bridges INTO this chain, or inbound transfers will`);
+  console.log(`  revert InsufficientLiquidity and park until it is funded.`);
+  console.log(`  Check any time with:  adapter.availableLiquidity()`);
 }
 
 main()

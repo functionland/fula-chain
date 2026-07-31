@@ -1,5 +1,38 @@
 # Security Audit — FULA LayerZero OFT Bridge
 
+> # ⚠️ LARGELY SUPERSEDED — the audited design was replaced on 2026-07-28
+>
+> This audit examined a **mint/burn** bridge that modified `StorageToken`. That design was
+> abandoned in favour of **lock/release escrow**, which changes the token not at all. Re-audit
+> before mainnet; this header records only how each finding fared.
+>
+> **Findings that no longer exist**, because the code they described was deleted:
+> F-1 (withdrawn anyway), F-2 (`int96` downcast), F-5 (`_updateActivityTimestamp` on mint/burn),
+> F-6 (type-12 target validation), F-7 (`bridgeOp` as a second mint authority), F-8 (cap of zero),
+> F-13 (cap bounds inflation not theft), F-14 (layout verified ETH/Base only — **there is no
+> upgrade now, so no layout risk at all**).
+>
+> **Findings that were FIXED and carry into the escrow adapter:**
+> F-3 → `Ownable2Step`. F-11 → `renounceOwnership()` reverts. F-16 → NatSpec corrected
+> (`uint192`, leaky-bucket semantics). F-12's concern is now explicit: the escrow guards depend on
+> the token being non-reentrant and hook-free, which is documented in the adapter.
+>
+> **Findings that still apply unchanged:**
+> F-9 (the rate limit is a single bucket shared by all users, so one large transfer can crowd out
+> others) and F-10 (no invariant/fuzz test of the headline supply property).
+>
+> **The single biggest audit concern is now gone.** The escrow design has no
+> `burn(address,uint256)`, no mint authority, and no token upgrade — so the "an authorized minter
+> can burn any holder's balance" primitive, and the R-02 "malicious `setPeer` ⇒ unlimited mint"
+> risk, do not exist. New escrow-specific risks (liquidity exhaustion, the adapter as a custodial
+> honeypot) replace them and are covered in `docs/bridge-design.md`'s header.
+>
+> **New finding from the escrow test suite:** sub-dust sends silently succeeded as no-ops
+> (`_removeDust` → 0, and an ERC-20 transfer of zero succeeds), letting a user pay a LayerZero fee
+> for an empty message and bypass a zero rate limit. Fixed with `ZeroAmountAfterDust`.
+>
+> ---
+
 **Target:** branch `claude/storagetoken-eth-base-bridge-xjfqpk`, diff `0384d94..HEAD`
 **Date:** 2026-07-26
 **Commit under review:** bridge branch HEAD

@@ -1,5 +1,36 @@
 # FULA Ethereum → Base Bridge via LayerZero v2 OFT
 
+> # ⚠️ SUPERSEDED DESIGN — READ THIS FIRST
+>
+> **This document describes a MINT/BURN bridge that was abandoned on 2026-07-28.**
+> The implemented design is **LOCK/RELEASE ESCROW**, which requires **no change to the token
+> contract at all**. Everything below about `MintBurnOFTAdapter`, `bridgeMinters`, `mint`/`burn`
+> on the token, proposal types 12/13, `netMinted`, `cap`, and `voluntarilyBurned` **no longer
+> exists in the codebase.** It is kept for the decision history — why LayerZero over
+> CCIP/Wormhole/Hyperlane, the DVN policy, the ownership reasoning, and the risk register — all of
+> which still apply.
+>
+> **What is actually built:** a LayerZero `OFTAdapter` (`contracts/bridge/FulaOFTAdapter.sol`) that
+> locks tokens on the source chain and releases pre-funded tokens on the destination. Nothing is
+> minted or burned, so supply conservation is structural rather than maintained by accounting.
+> `contracts/core/StorageToken.sol` is byte-for-byte identical to the source verified on Etherscan
+> for the live Ethereum and Base deployments.
+>
+> **Why the change.** Mint/burn required upgrading a live ~1.47B-token proxy, granting mint
+> authority, and adding a `burn(address,uint256)` with **no allowance check** — a permanent power
+> for an authorized contract to burn any holder's balance. Escrow removes all three. A compromised
+> escrow adapter can reach only what is escrowed; it cannot create supply and cannot dilute holders
+> who never used the bridge.
+>
+> **What escrow costs.** Each side must be pre-funded, and a persistent one-way flow drains the
+> receiving side until it is replenished. That is an operational duty, not a risk to user funds —
+> an under-funded transfer parks and stays retryable.
+>
+> **Current status:** `docs/bridging.md` (user guide) · `scripts/bridge/testnet-deployments.md`
+> (live Stage-0 state) · `docs/bridge-audit.md` (audit, largely superseded — see its header).
+>
+> ---
+
 > **Status: IMPLEMENTED.** This is the design record written before implementation, kept for the
 > decision history — why LayerZero over CCIP/Wormhole/Hyperlane/the OP canonical bridge, why the
 > `_update` fee bug is a blocker, why proposal types 12/13 instead of a governance role, the

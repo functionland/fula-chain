@@ -99,40 +99,12 @@ const config: HardhatUserConfig = {
           },
         },
       },
-      // StorageToken: lower runs to keep deployed bytecode under the EIP-170 24KB cap after
-      // adding the LayerZero OFT mint/burn path and bridge-minter governance. Deliberately NOT
-      // runs:1 like the contracts below — `transfer` is a hot, user-facing path and low runs
-      // would raise gas for every holder.
-      //
-      // ⚠️ HEADROOM IS ~50 BYTES, NOT ~95. Measured by `hardhat-contract-sizer` on this branch
-      // (limit 24.000 KiB):
-      //   runs=100 -> 23.950 deployed  =>  ~51 bytes of headroom
-      // The figures previously recorded here (23.905 at runs=100, and the 200/150/50/1 rows) came
-      // from a different environment and read ~45 bytes low; only the runs=100 row has been
-      // re-measured here, so treat the others as indicative, not authoritative.
-      //
-      // PRACTICAL CONSEQUENCE: adding ANY code to StorageToken.sol is very likely to overflow.
-      // Re-run `npx hardhat compile` and read the sizer table after every edit to this contract —
-      // `contractSizer.strict` fails the build on overflow. If it overflows, step down to runs=50
-      // before considering runs=1.
-      //
-      // Optimizer runs do NOT affect storage layout, so this is upgrade-safe.
-      "contracts/core/StorageToken.sol": {
-        version: "0.8.24",
-        settings: {
-          optimizer: {
-            enabled: true,
-            runs: 100,
-          },
-          viaIR: true,
-          evmVersion: "shanghai",
-          outputSelection: {
-            "*": {
-              "*": ["storageLayout"],
-            },
-          },
-        },
-      },
+      // NOTE: there is deliberately NO override for contracts/core/StorageToken.sol.
+      // One existed briefly (runs: 100) while the bridge was implemented as mint/burn INSIDE the
+      // token, which pushed it to ~23.95 KiB against the 24 KiB EIP-170 cap. The bridge is now a
+      // lock/release escrow adapter that requires no token change at all, so StorageToken is back
+      // to its deployed form (~22 KiB) and compiles at the default `runs: 200` like everything
+      // else. Do not re-add an override without a size measurement that justifies it.
       // RewardEngine: lower runs to keep deployed bytecode under the EIP-170
       // 24KB cap after wiring per-peer storage rewards + per-month cap. Reward-
       // claim path is user-triggered (not high-frequency), so the runtime-gas

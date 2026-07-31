@@ -98,7 +98,35 @@ Update this table as you upgrade each contract. The status is determined empiric
 - **Never assume two children of `GovernanceModule` are in the same group.** Each was deployed independently; check each one.
 - **Don't add new state to `GovernanceModule` without a coordinated upgrade plan.** Any new parent-level state would shift every child's layout. Use child-level state instead, or add only behind a child-side absorber.
 
-## StorageToken bridge invariants (LayerZero OFT)
+## The FULA bridge requires NO change to StorageToken
+
+The Ethereum ↔ Base bridge is a **lock/release escrow** adapter
+(`contracts/bridge/FulaOFTAdapter.sol`), not a mint/burn one. It locks tokens on the source chain
+and releases pre-funded tokens on the destination. Nothing is minted or burned.
+
+**Therefore this document has nothing to say about it.** There is no token upgrade, no new state,
+no new proposal type, no mint authority, and no storage-layout consideration. The adapter is an
+ordinary token holder with no role and no privileges — `scripts/bridge/verifyOAppConfig.ts` asserts
+exactly that, failing if the adapter ever holds `ADMIN_ROLE` or `BRIDGE_OPERATOR_ROLE`.
+
+`contracts/core/StorageToken.sol` is byte-for-byte identical to the source verified on Etherscan for
+the live Ethereum and Base deployments.
+
+**The one constraint to preserve** if the token is ever upgraded for unrelated reasons: the escrow
+guards in the adapter read `balanceOf` before and after an external call, which is sound only
+because StorageToken makes no external calls during a transfer (no ERC-777-style hooks) and is
+`nonReentrant`. The adapter is IMMUTABLE and cannot be patched, so a future token upgrade
+introducing a transfer hook would silently weaken it. Treat "no transfer hooks" as standing.
+
+> ### ⚠️ The section below is OBSOLETE — kept only as decision history
+>
+> An earlier design implemented the bridge as **mint/burn inside the token**, adding
+> `mint`/`burn(address,uint256)`, `bridgeMinters`, `voluntarilyBurned` and proposal types 12/13.
+> **That design was abandoned on 2026-07-28 and none of that code exists.** It required upgrading a
+> live ~1.47B-token proxy and introducing a burn-any-holder primitive. See the header of
+> `docs/bridge-design.md`. Nothing in the seven invariants below applies to the current codebase.
+
+### (obsolete) StorageToken bridge invariants — mint/burn design
 
 `StorageToken` exposes `mint(address,uint256)` / `burn(address,uint256)` for the LayerZero OFT
 adapter. These carry invariants that MUST survive every future upgrade:

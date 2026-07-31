@@ -88,7 +88,11 @@ async function main() {
   console.log(`  owner          ${await token.owner()}`);
   console.log(`  adminCount     ${await token.adminCount()}`);
   console.log(`  paused         ${await token.paused()}`);
-  console.log(`  voluntarilyBurned ${await token.voluntarilyBurned()}`);
+  // NOTE: `voluntarilyBurned()` was printed here and no longer exists — it belonged to the
+  // abandoned mint/burn token upgrade. The escrow bridge does not modify StorageToken, so this
+  // call reverted after the revert landed and would have made the whole script fail at the
+  // final summary, after the proxy was already deployed.
+  console.log(`  maxSupply      ${ethers.formatEther(await token.maxSupply())}`);
 
   const block = await ethers.provider.getBlock("latest");
   const unlock = (block!.timestamp + 24 * 60 * 60) * 1000;

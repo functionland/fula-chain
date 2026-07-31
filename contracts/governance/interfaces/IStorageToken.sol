@@ -13,16 +13,6 @@ interface IStorageToken {
     event TreasuryDeployed(address indexed treasury);
     event PlatformFeeUpdated(uint256 newFee);
 
-    /// @notice Cross-chain bridge (LayerZero OFT) events
-    /// @dev Emitted when an authorized bridge minter mints tokens received from another chain
-    event BridgeMint(address indexed minter, address indexed to, uint256 amount);
-    /// @dev Emitted when an authorized bridge minter burns tokens being sent to another chain
-    event BridgeBurn(address indexed minter, address indexed from, uint256 amount);
-    /// @dev Emitted when governance authorizes a bridge minter or raises its cap
-    event BridgeMinterSet(address indexed minter, uint256 cap, address caller);
-    /// @dev Emitted when governance revokes a bridge minter
-    event BridgeMinterRemoved(address indexed minter, address caller);
-
     error NotWhitelisted(address to);
     error LocktimeActive(address to);
     error ExceedsSupply(uint256 requested, uint256 supply);
@@ -36,9 +26,4 @@ interface IStorageToken {
     error AccountBlacklisted(address target);
     error AccountNotBlacklisted(address target);
     error FeeExceedsMax(uint256 fee);
-    /// @notice Cross-chain bridge (LayerZero OFT) errors
-    error NotBridgeMinter(address caller);
-    error BridgeMintCapExceeded(int256 requestedNet, uint96 cap);
-    error BridgeMintCapTooHigh(uint96 cap);
-    error MinterMustBeContract(address target);
 }

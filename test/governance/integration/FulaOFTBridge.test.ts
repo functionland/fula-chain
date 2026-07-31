@@ -1,21 +1,18 @@
 import { expect } from "chai";
-import { ethers, upgrades } from "hardhat";
+import { ethers, upgrades, network } from "hardhat";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 import { ZeroAddress, BytesLike } from "ethers";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
 
 const ADMIN_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
-const BRIDGE_OPERATOR_ROLE: BytesLike = ethers.keccak256(ethers.toUtf8Bytes("BRIDGE_OPERATOR_ROLE"));
 
 const TOTAL_SUPPLY = ethers.parseEther("2000000000"); // 2 billion hard cap
 const INITIAL_SUPPLY = ethers.parseEther("1000000000"); // 1 billion minted at deploy
 const ONE_DAY = 24 * 60 * 60 + 1;
 
-// Contract-local proposal types (defined in StorageToken.sol, not in ProposalTypes enum)
 const PROPOSAL_ADD_WHITELIST = 5;
-const PROPOSAL_CHANGE_TREASURY_FEE = 11;
-const PROPOSAL_SET_BRIDGE_MINTER = 12;
-const PROPOSAL_REMOVE_BRIDGE_MINTER = 13;
+const PROPOSAL_ADD_BLACKLIST = 9;
+const PROPOSAL_REMOVE_BLACKLIST = 10;
 
 // LayerZero endpoint ids used for the two simulated chains
 const EID_A = 30101; // stands in for Ethereum
@@ -53,14 +50,11 @@ async function runProposal(
   return proposalId;
 }
 
-describe("FULA LayerZero OFT bridge", () => {
-  let token: any;
+describe("FULA LayerZero OFT bridge (lock/release escrow)", () => {
   let owner: SignerWithAddress;
   let admin: SignerWithAddress;
-  let distributor: SignerWithAddress;
   let user: SignerWithAddress;
   let other: SignerWithAddress;
-  let bridgeOperator: SignerWithAddress;
 
   /** Deploy a StorageToken proxy with governance bootstrapped. */
   async function deployToken(): Promise<any> {
@@ -71,583 +65,48 @@ describe("FULA LayerZero OFT bridge", () => {
       { kind: "uups", initializer: "initialize" }
     );
     await t.waitForDeployment();
-
-    // Bootstrap role timelock, then quorum + limits.
     await time.increase(ONE_DAY);
     await t.connect(owner).setRoleQuorum(ADMIN_ROLE, 2);
     await t.connect(owner).setRoleTransactionLimit(ADMIN_ROLE, TOTAL_SUPPLY);
     return t;
   }
 
-  /** Move `amount` out of the token contract to `to` (requires whitelisting). */
+  /**
+   * Move `amount` out of the token contract to `to`.
+   *
+   * Whitelisting is idempotent here: re-proposing for an address that already holds a
+   * `whitelistLockTime` reverts `AlreadyWhitelisted`, so top-ups skip straight to the transfer.
+   */
   async function fund(t: any, to: string, amount: bigint) {
-    await runProposal(t, owner, admin, PROPOSAL_ADD_WHITELIST, to);
-    await time.increase(ONE_DAY); // WHITELIST_LOCK_DURATION
+    const cfg = await t.timeConfigs(to);
+    if (cfg.whitelistLockTime === 0n) {
+      await runProposal(t, owner, admin, PROPOSAL_ADD_WHITELIST, to);
+      await time.increase(ONE_DAY); // WHITELIST_LOCK_DURATION
+    }
     await t.connect(owner).transferFromContract(to, amount);
   }
 
   beforeEach(async () => {
-    [owner, admin, distributor, user, other, bridgeOperator] = await ethers.getSigners();
-    token = await deployToken();
+    [owner, admin, user, other] = await ethers.getSigners();
   });
 
   // ===================================================================
-  // The regression test for this entire change.
+  // THE HEADLINE PROPERTY. With lock/release there is no mint and no burn
+  // anywhere, so supply conservation is structural rather than maintained.
   // ===================================================================
-  describe("_update: platform fee must never apply to mint or burn", () => {
-    beforeEach(async () => {
-      // Set a 5% platform fee (MAX_BPS). Requires the ChangeTreasuryFee amount fix.
-      await runProposal(token, owner, admin, PROPOSAL_CHANGE_TREASURY_FEE, other.address, BigInt(500));
-    });
-
-    it("actually applies the proposed fee (regression: proposal.amount was never stored)", async () => {
-      await fund(token, distributor.address, ethers.parseEther("1000"));
-      const treasury = await token.treasury();
-      const before = await token.balanceOf(treasury);
-
-      await token.connect(distributor).transfer(user.address, ethers.parseEther("100"));
-
-      // 5% of 100 = 5 to treasury, 95 to recipient.
-      expect(await token.balanceOf(treasury)).to.equal(before + ethers.parseEther("5"));
-      expect(await token.balanceOf(user.address)).to.equal(ethers.parseEther("95"));
-    });
-
-    it("bridge burn destroys the FULL amount, taking no fee", async () => {
-      await fund(token, distributor.address, ethers.parseEther("1000"));
-      const adapter = await authorizeEoaMinter(); // uses a contract minter
-      await token.connect(distributor).transfer(user.address, ethers.parseEther("100"));
-
-      const treasury = await token.treasury();
-      const treasuryBefore = await token.balanceOf(treasury);
-      const supplyBefore = await token.totalSupply();
-      const userBefore = await token.balanceOf(user.address);
-      const burnAmount = ethers.parseEther("50");
-
-      await adapter.callBurn(user.address, burnAmount);
-
-      // Supply must drop by exactly the burn amount — this is the supply-conservation invariant.
-      expect(await token.totalSupply()).to.equal(supplyBefore - burnAmount);
-      expect(await token.balanceOf(user.address)).to.equal(userBefore - burnAmount);
-      // Treasury must not receive anything.
-      expect(await token.balanceOf(treasury)).to.equal(treasuryBefore);
-    });
-
-    it("bridge mint credits the FULL amount, taking no fee", async () => {
-      const adapter = await authorizeEoaMinter();
-      const treasury = await token.treasury();
-      const treasuryBefore = await token.balanceOf(treasury);
-      const supplyBefore = await token.totalSupply();
-      const mintAmount = ethers.parseEther("100");
-
-      await adapter.callMint(user.address, mintAmount);
-
-      expect(await token.balanceOf(user.address)).to.equal(mintAmount);
-      expect(await token.totalSupply()).to.equal(supplyBefore + mintAmount);
-      expect(await token.balanceOf(treasury)).to.equal(treasuryBefore);
-    });
-  });
-
-  /** Deploy a minimal contract minter and authorize it (type 12 requires a contract target). */
-  async function authorizeEoaMinter(cap: bigint = ethers.parseEther("100000000")): Promise<any> {
-    const Caller = await ethers.getContractFactory("MockBridgeMinterCaller");
-    const caller = await Caller.deploy(await token.getAddress());
-    await caller.waitForDeployment();
-    await runProposal(
-      token,
-      owner,
-      admin,
-      PROPOSAL_SET_BRIDGE_MINTER,
-      await caller.getAddress(),
-      cap
-    );
-    return caller;
-  }
-
-  // ===================================================================
-  describe("bridge minter authorization", () => {
-    it("rejects mint/burn from an unauthorized caller", async () => {
-      await expect(token.connect(user).mint(user.address, 1n))
-        .to.be.revertedWithCustomError(token, "NotBridgeMinter");
-      await expect(token.connect(user)["burn(address,uint256)"](user.address, 1n))
-        .to.be.revertedWithCustomError(token, "NotBridgeMinter");
-    });
-
-    it("rejects mint even from ADMIN_ROLE and BRIDGE_OPERATOR_ROLE holders", async () => {
-      // The owner holds ADMIN_ROLE, yet must not be able to mint.
-      await expect(token.connect(owner).mint(owner.address, 1n))
-        .to.be.revertedWithCustomError(token, "NotBridgeMinter");
-
-      // Grant BRIDGE_OPERATOR_ROLE and confirm it confers no mint power. This is the
-      // regression guard for the rejected "reuse BRIDGE_OPERATOR_ROLE" design.
-      await runProposal(token, owner, admin, 1, bridgeOperator.address, BigInt(0), BRIDGE_OPERATOR_ROLE);
-      expect(await token.hasRole(BRIDGE_OPERATOR_ROLE, bridgeOperator.address)).to.be.true;
-      await expect(token.connect(bridgeOperator).mint(bridgeOperator.address, 1n))
-        .to.be.revertedWithCustomError(token, "NotBridgeMinter");
-    });
-
-    it("authorizes a contract minter through full governance and records the cap", async () => {
-      const cap = ethers.parseEther("1000");
-      const caller = await authorizeEoaMinter(cap);
-      const entry = await token.bridgeMinters(await caller.getAddress());
-      expect(entry.enabled).to.be.true;
-      expect(entry.cap).to.equal(cap);
-      expect(entry.netMinted).to.equal(0n);
-    });
-
-    it("does not execute before the 24h delay elapses", async () => {
-      const Caller = await ethers.getContractFactory("MockBridgeMinterCaller");
-      const caller = await Caller.deploy(await token.getAddress());
-      await caller.waitForDeployment();
-      const addr = await caller.getAddress();
-
-      const tx = await token
-        .connect(owner)
-        .createProposal(PROPOSAL_SET_BRIDGE_MINTER, 0, addr, ethers.ZeroHash, ethers.parseEther("1"), ZeroAddress);
-      const id = await getProposalId(await tx.wait(), token);
-
-      // Approve immediately — quorum is met but executionTime has not been reached.
-      await token.connect(admin).approveProposal(id);
-      expect((await token.bridgeMinters(addr)).enabled).to.be.false;
-
-      await time.increase(ONE_DAY);
-      await token.connect(owner).executeProposal(id);
-      expect((await token.bridgeMinters(addr)).enabled).to.be.true;
-    });
-
-    it("rejects authorizing an EOA (a minter can burn any holder's balance)", async () => {
-      await expect(
-        token
-          .connect(owner)
-          .createProposal(PROPOSAL_SET_BRIDGE_MINTER, 0, user.address, ethers.ZeroHash, ethers.parseEther("1"), ZeroAddress)
-      ).to.be.revertedWithCustomError(token, "MinterMustBeContract");
-    });
-
-    it("rejects a zero cap and a zero address", async () => {
-      const Caller = await ethers.getContractFactory("MockBridgeMinterCaller");
-      const caller = await Caller.deploy(await token.getAddress());
-      await caller.waitForDeployment();
-      await expect(
-        token
-          .connect(owner)
-          .createProposal(PROPOSAL_SET_BRIDGE_MINTER, 0, await caller.getAddress(), ethers.ZeroHash, 0, ZeroAddress)
-      ).to.be.revertedWithCustomError(token, "AmountMustBePositive");
-
-      await expect(
-        token
-          .connect(owner)
-          .createProposal(PROPOSAL_SET_BRIDGE_MINTER, 0, ZeroAddress, ethers.ZeroHash, 1n, ZeroAddress)
-      ).to.be.revertedWithCustomError(token, "InvalidAddress");
-    });
-
-    it("rejects a cap above int96 max (guards the netMinted downcast)", async () => {
-      const Caller = await ethers.getContractFactory("MockBridgeMinterCaller");
-      const caller = await Caller.deploy(await token.getAddress());
-      await caller.waitForDeployment();
-
-      const INT96_MAX = 2n ** 95n - 1n;
-      // cap is uint96, so a value above int96 max is expressible and would make the
-      // `int96(net)` downcast in mint() truncate silently.
-      await expect(
-        token
-          .connect(owner)
-          .createProposal(PROPOSAL_SET_BRIDGE_MINTER, 0, await caller.getAddress(), ethers.ZeroHash, INT96_MAX + 1n, ZeroAddress)
-      ).to.be.revertedWithCustomError(token, "BridgeMintCapTooHigh");
-
-      // Exactly int96 max is accepted.
-      await token
-        .connect(owner)
-        .createProposal(PROPOSAL_SET_BRIDGE_MINTER, 0, await caller.getAddress(), ethers.ZeroHash, INT96_MAX, ZeroAddress);
-    });
-
-    it("revokes a minter and preserves its netMinted accounting", async () => {
-      const caller = await authorizeEoaMinter(ethers.parseEther("1000"));
-      const addr = await caller.getAddress();
-      await caller.callMint(user.address, ethers.parseEther("100"));
-
-      await runProposal(token, owner, admin, PROPOSAL_REMOVE_BRIDGE_MINTER, addr);
-
-      const entry = await token.bridgeMinters(addr);
-      expect(entry.enabled).to.be.false;
-      expect(entry.netMinted).to.equal(ethers.parseEther("100")); // preserved audit trail
-      await expect(caller.callMint(user.address, 1n))
-        .to.be.revertedWithCustomError(token, "NotBridgeMinter");
-    });
-
-    it("a revoked minter can neither mint NOR burn", async () => {
-      // Revoking must close BOTH selectors. `burn` is the dangerous one — it takes tokens from an
-      // arbitrary holder with no allowance — so a revoke that only stopped `mint` would leave the
-      // worst capability live. Type 13 is the slowest kill switch but the only permanent one.
-      await fund(token, distributor.address, ethers.parseEther("100"));
-      const caller = await authorizeEoaMinter(ethers.parseEther("1000"));
-      const addr = await caller.getAddress();
-      await caller.callBurn(distributor.address, ethers.parseEther("1")); // works while enabled
-
-      await runProposal(token, owner, admin, PROPOSAL_REMOVE_BRIDGE_MINTER, addr);
-
-      await expect(caller.callMint(user.address, 1n)).to.be.revertedWithCustomError(
-        token,
-        "NotBridgeMinter"
-      );
-      await expect(
-        caller.callBurn(distributor.address, 1n)
-      ).to.be.revertedWithCustomError(token, "NotBridgeMinter");
-    });
-
-    it("an expired proposal releases the target so it can be proposed again", async () => {
-      // `_checkExpiredProposal` deletes `pendingProposals[target]` for every non-Upgrade type,
-      // which should include the new 12/13. If it did NOT, an expired SetBridgeMinter would block
-      // that adapter address from ever being authorized — an unrecoverable operational dead end
-      // for an immutable, already-deployed adapter.
-      const Caller = await ethers.getContractFactory("MockBridgeMinterCaller");
-      const caller = await Caller.deploy(await token.getAddress());
-      await caller.waitForDeployment();
-      const addr = await caller.getAddress();
-
-      await token
-        .connect(owner)
-        .createProposal(PROPOSAL_SET_BRIDGE_MINTER, 0, addr, ethers.ZeroHash, 1n, ZeroAddress);
-      await expect(
-        token
-          .connect(owner)
-          .createProposal(PROPOSAL_SET_BRIDGE_MINTER, 0, addr, ethers.ZeroHash, 2n, ZeroAddress)
-      ).to.be.revertedWithCustomError(token, "ExistingActiveProposal");
-
-      // Expiry is 48h — `GovernanceModule.sol:78` declares its OWN private
-      // `PROPOSAL_TIMEOUT = 48 hours`, which shadows the DEAD `ProposalTypes.PROPOSAL_TIMEOUT
-      // = 3 days` (referenced nowhere). Advance well past it either way.
-      await time.increase(3 * 24 * 60 * 60 + 1);
-      await token.connect(owner).cleanupExpiredProposals(10);
-
-      expect((await token.bridgeMinters(addr)).enabled, "expired proposal must not have executed")
-        .to.be.false;
-
-      // The address is free again, and a fresh proposal now succeeds end to end.
-      await runProposal(token, owner, admin, PROPOSAL_SET_BRIDGE_MINTER, addr, ethers.parseEther("7"));
-      expect((await token.bridgeMinters(addr)).cap).to.equal(ethers.parseEther("7"));
-    });
-
-    it("rejects revoking a minter that was never authorized", async () => {
-      const Caller = await ethers.getContractFactory("MockBridgeMinterCaller");
-      const caller = await Caller.deploy(await token.getAddress());
-      await caller.waitForDeployment();
-      await expect(
-        token
-          .connect(owner)
-          .createProposal(PROPOSAL_REMOVE_BRIDGE_MINTER, 0, await caller.getAddress(), ethers.ZeroHash, 0, ZeroAddress)
-      ).to.be.revertedWithCustomError(token, "NotBridgeMinter");
-    });
-
-    it("blocks a second concurrent proposal on the same minter", async () => {
-      const Caller = await ethers.getContractFactory("MockBridgeMinterCaller");
-      const caller = await Caller.deploy(await token.getAddress());
-      await caller.waitForDeployment();
-      const addr = await caller.getAddress();
-
-      await token
-        .connect(owner)
-        .createProposal(PROPOSAL_SET_BRIDGE_MINTER, 0, addr, ethers.ZeroHash, 1n, ZeroAddress);
-      await expect(
-        token
-          .connect(owner)
-          .createProposal(PROPOSAL_SET_BRIDGE_MINTER, 0, addr, ethers.ZeroHash, 2n, ZeroAddress)
-      ).to.be.revertedWithCustomError(token, "ExistingActiveProposal");
-    });
-
-    it("allows re-issuing on an enabled minter to raise the cap", async () => {
-      const caller = await authorizeEoaMinter(ethers.parseEther("100"));
-      const addr = await caller.getAddress();
-      await runProposal(token, owner, admin, PROPOSAL_SET_BRIDGE_MINTER, addr, ethers.parseEther("500"));
-      expect((await token.bridgeMinters(addr)).cap).to.equal(ethers.parseEther("500"));
-    });
-  });
-
-  // ===================================================================
-  describe("mint cap enforcement", () => {
-    it("enforces the per-minter net cap", async () => {
-      const cap = ethers.parseEther("100");
-      const caller = await authorizeEoaMinter(cap);
-      await caller.callMint(user.address, cap);
-      await expect(caller.callMint(user.address, 1n))
-        .to.be.revertedWithCustomError(token, "BridgeMintCapExceeded");
-    });
-
-    it("frees cap headroom when tokens are bridged back out (netMinted decrements)", async () => {
-      const cap = ethers.parseEther("100");
-      const caller = await authorizeEoaMinter(cap);
-      await caller.callMint(user.address, cap);
-      await expect(caller.callMint(user.address, 1n))
-        .to.be.revertedWithCustomError(token, "BridgeMintCapExceeded");
-
-      await caller.callBurn(user.address, ethers.parseEther("40"));
-      expect((await token.bridgeMinters(await caller.getAddress())).netMinted)
-        .to.equal(ethers.parseEther("60"));
-
-      // Headroom restored — this is why netMinted is signed rather than monotonic.
-      await caller.callMint(user.address, ethers.parseEther("40"));
-    });
-
-    it("allows netMinted to go negative when the chain is a net exporter", async () => {
-      await fund(token, distributor.address, ethers.parseEther("1000"));
-      const caller = await authorizeEoaMinter();
-      await caller.callBurn(distributor.address, ethers.parseEther("100"));
-      expect((await token.bridgeMinters(await caller.getAddress())).netMinted)
-        .to.equal(-ethers.parseEther("100"));
-    });
-
-    it("enforces the absolute TOTAL_SUPPLY backstop", async () => {
-      const caller = await authorizeEoaMinter(TOTAL_SUPPLY);
-      const remaining = TOTAL_SUPPLY - (await token.totalSupply());
-      await expect(caller.callMint(user.address, remaining + 1n))
-        .to.be.revertedWithCustomError(token, "ExceedsMaximumSupply");
-      await caller.callMint(user.address, remaining); // exactly at the cap is fine
-    });
-
-    it("voluntary burns do not manufacture fresh mint headroom", async () => {
-      await fund(token, distributor.address, ethers.parseEther("1000"));
-      const caller = await authorizeEoaMinter(TOTAL_SUPPLY);
-
-      const burnAmount = ethers.parseEther("500");
-      await token.connect(distributor)["burn(uint256)"](burnAmount);
-      expect(await token.voluntarilyBurned()).to.equal(burnAmount);
-
-      // Headroom must be measured against totalSupply + voluntarilyBurned, so the burn
-      // must NOT have increased what the bridge may mint.
-      const remaining = TOTAL_SUPPLY - (await token.totalSupply()) - (await token.voluntarilyBurned());
-      await expect(caller.callMint(user.address, remaining + 1n))
-        .to.be.revertedWithCustomError(token, "ExceedsMaximumSupply");
-    });
-
-    it("lowering the cap below netMinted freezes minting until burns catch up", async () => {
-      // Type 12 is deliberately re-issuable on an enabled minter — that is how governance RAISES
-      // a cap during staged rollout. It can equally LOWER one, and because `netMinted` is
-      // preserved, a cap below the current position freezes inbound transfers immediately.
-      // Operators need to know this is the behaviour before they use it as a soft brake.
-      const caller = await authorizeEoaMinter(ethers.parseEther("1000"));
-      const addr = await caller.getAddress();
-      await caller.callMint(user.address, ethers.parseEther("800"));
-
-      await runProposal(
-        token, owner, admin, PROPOSAL_SET_BRIDGE_MINTER, addr, ethers.parseEther("500")
-      );
-      const entry = await token.bridgeMinters(addr);
-      expect(entry.cap).to.equal(ethers.parseEther("500"));
-      expect(entry.netMinted, "netMinted must survive a cap change").to.equal(
-        ethers.parseEther("800")
-      );
-
-      await expect(caller.callMint(user.address, 1n)).to.be.revertedWithCustomError(
-        token,
-        "BridgeMintCapExceeded"
-      );
-
-      // Outbound traffic pulls netMinted back under the cap and inbound resumes — no upgrade
-      // needed, which is what makes this a usable brake rather than a trap.
-      await caller.callBurn(user.address, ethers.parseEther("400")); // netMinted -> 400
-      await caller.callMint(user.address, ethers.parseEther("100")); // 500 == cap, allowed
-      await expect(caller.callMint(user.address, 1n)).to.be.revertedWithCustomError(
-        token,
-        "BridgeMintCapExceeded"
-      );
-    });
-
-    it("a voluntary burn is headroom-NEUTRAL: it neither creates nor destroys mint capacity", async () => {
-      // THE INVARIANT `voluntarilyBurned` EXISTS TO ENFORCE.
-      //
-      // `mint` gates on `totalSupply() + voluntarilyBurned + amount <= TOTAL_SUPPLY`, so the
-      // available headroom is `TOTAL_SUPPLY - totalSupply() - voluntarilyBurned`.
-      //
-      // A voluntary burn of X moves BOTH terms by X in opposite directions:
-      //     totalSupply -> S - X   and   voluntarilyBurned -> V + X
-      // so `totalSupply() + voluntarilyBurned` is INVARIANT and headroom is unchanged.
-      //
-      // Both directions matter:
-      //   - it must not CREATE headroom, or burning would manufacture free mint capacity
-      //     (that is the bug `voluntarilyBurned` was introduced to fix); and
-      //   - it must not DESTROY headroom, or any holder could permanently grief inbound bridging.
-      // This test pins both at once.
-      await fund(token, distributor.address, ethers.parseEther("1000"));
-      const caller = await authorizeEoaMinter(TOTAL_SUPPLY);
-
-      const headroomBefore =
-        TOTAL_SUPPLY - (await token.totalSupply()) - (await token.voluntarilyBurned());
-
-      const burned = ethers.parseEther("400");
-      await token.connect(distributor)["burn(uint256)"](burned);
-
-      expect(await token.voluntarilyBurned()).to.equal(burned);
-      const headroomAfter =
-        TOTAL_SUPPLY - (await token.totalSupply()) - (await token.voluntarilyBurned());
-      expect(headroomAfter, "a voluntary burn must not change mint headroom").to.equal(
-        headroomBefore
-      );
-
-      // And the headroom is genuinely usable: minting exactly it succeeds, one wei more fails.
-      await caller.callMint(user.address, headroomAfter);
-      await expect(caller.callMint(user.address, 1n)).to.be.revertedWithCustomError(
-        token,
-        "ExceedsMaximumSupply"
-      );
-    });
-
-    it("a BRIDGE burn does restore headroom (the chain becomes a net exporter)", async () => {
-      // Contrast with the test above. A bridge burn decrements totalSupply WITHOUT touching
-      // `voluntarilyBurned`, so it genuinely returns capacity — which is correct, because the
-      // tokens were re-minted on another chain and global supply is conserved.
-      await fund(token, distributor.address, ethers.parseEther("1000"));
-      const caller = await authorizeEoaMinter(TOTAL_SUPPLY);
-
-      const before = TOTAL_SUPPLY - (await token.totalSupply()) - (await token.voluntarilyBurned());
-      const amount = ethers.parseEther("400");
-      await caller.callBurn(distributor.address, amount);
-      const after = TOTAL_SUPPLY - (await token.totalSupply()) - (await token.voluntarilyBurned());
-
-      expect(after - before, "a bridge burn must return exactly its amount of headroom").to.equal(
-        amount
-      );
-    });
-
-    it("tracks voluntarilyBurned for burn and burnFrom but not for bridge burns", async () => {
-      await fund(token, distributor.address, ethers.parseEther("1000"));
-      const caller = await authorizeEoaMinter();
-
-      await token.connect(distributor)["burn(uint256)"](ethers.parseEther("10"));
-      expect(await token.voluntarilyBurned()).to.equal(ethers.parseEther("10"));
-
-      await token.connect(distributor).approve(user.address, ethers.parseEther("5"));
-      await token.connect(user).burnFrom(distributor.address, ethers.parseEther("5"));
-      expect(await token.voluntarilyBurned()).to.equal(ethers.parseEther("15"));
-
-      // A bridge burn is NOT a voluntary burn — it is matched by a mint on another chain.
-      await caller.callBurn(distributor.address, ethers.parseEther("20"));
-      expect(await token.voluntarilyBurned()).to.equal(ethers.parseEther("15"));
-    });
-  });
-
-  // ===================================================================
-  // `bridgeOp` is the DEPRECATED legacy path, but this change modified its supply predicate
-  // (`totalSupply()` -> `totalSupply() + voluntarilyBurned`) and it had no coverage at all.
-  // A changed line in a live, deployed, role-gated mint function must not ship untested.
-  // ===================================================================
-  describe("bridgeOp (deprecated legacy path)", () => {
-    const CHAIN = 137;
-    const NONCE = 42;
-
-    beforeEach(async () => {
-      await runProposal(token, owner, admin, 1 /* AddRole */, bridgeOperator.address, BigInt(0), BRIDGE_OPERATOR_ROLE);
-      await token.connect(owner).setRoleTransactionLimit(BRIDGE_OPERATOR_ROLE, TOTAL_SUPPLY);
-      await token.connect(owner).setBridgeOpNonce(CHAIN, NONCE);
-    });
-
-    it("voluntary burns no longer manufacture bridgeOp mint headroom", async () => {
-      // THE REGRESSION THIS CHANGE FIXES. Before, the cap was `totalSupply() + amount <=
-      // TOTAL_SUPPLY`, so burning tokens lowered totalSupply and handed the same amount back as
-      // fresh mint capacity — repeatable without limit.
-      await fund(token, distributor.address, ethers.parseEther("1000"));
-      await token.connect(distributor)["burn(uint256)"](ethers.parseEther("1000"));
-      expect(await token.voluntarilyBurned()).to.equal(ethers.parseEther("1000"));
-
-      const headroom =
-        TOTAL_SUPPLY - (await token.totalSupply()) - (await token.voluntarilyBurned());
-
-      // One wei past the corrected boundary must fail (a revert does not consume the nonce).
-      await expect(
-        token.connect(bridgeOperator).bridgeOp(headroom + 1n, CHAIN, NONCE, 1)
-      ).to.be.revertedWithCustomError(token, "ExceedsMaximumSupply");
-
-      // Exactly at the boundary still works — the fix tightens the cap, it does not break the path.
-      await token.connect(bridgeOperator).bridgeOp(headroom, CHAIN, NONCE, 1);
-      expect(await token.totalSupply()).to.equal(TOTAL_SUPPLY - ethers.parseEther("1000"));
-    });
-
-    it("still mints to the token contract and consumes its nonce", async () => {
-      const amount = ethers.parseEther("1000");
-      const supplyBefore = await token.totalSupply();
-      const contractBefore = await token.balanceOf(await token.getAddress());
-
-      await token.connect(bridgeOperator).bridgeOp(amount, CHAIN, NONCE, 1);
-
-      expect(await token.totalSupply()).to.equal(supplyBefore + amount);
-      expect(await token.balanceOf(await token.getAddress())).to.equal(contractBefore + amount);
-      // Nonce is one-shot: reusing it reverts.
-      await expect(
-        token.connect(bridgeOperator).bridgeOp(amount, CHAIN, NONCE, 1)
-      ).to.be.revertedWithCustomError(token, "UsedNonce");
-    });
-
-    it("takes no treasury fee on a legacy mint or burn either", async () => {
-      // `bridgeOp` routes through the same `_update` hook, so the fee fix must protect it too.
-      await runProposal(token, owner, admin, PROPOSAL_CHANGE_TREASURY_FEE, other.address, BigInt(500));
-      const treasury = await token.treasury();
-      const treasuryBefore = await token.balanceOf(treasury);
-      const amount = ethers.parseEther("1000");
-
-      await token.connect(bridgeOperator).bridgeOp(amount, CHAIN, NONCE, 1);
-      await token.connect(owner).setBridgeOpNonce(CHAIN, NONCE + 1);
-      await token.connect(bridgeOperator).bridgeOp(amount, CHAIN, NONCE + 1, 2);
-
-      expect(await token.balanceOf(treasury)).to.equal(treasuryBefore);
-    });
-
-    it("confers no authority on the new bridge mint/burn surface", async () => {
-      // BRIDGE_OPERATOR_ROLE and `bridgeMinters` are deliberately separate authorities. This is
-      // the regression guard for the rejected "just reuse BRIDGE_OPERATOR_ROLE" design, which
-      // would have handed arbitrary mint power to every existing operator EOA.
-      await expect(
-        token.connect(bridgeOperator).mint(bridgeOperator.address, 1n)
-      ).to.be.revertedWithCustomError(token, "NotBridgeMinter");
-      await expect(
-        token.connect(bridgeOperator)["burn(address,uint256)"](distributor.address, 1n)
-      ).to.be.revertedWithCustomError(token, "NotBridgeMinter");
-    });
-  });
-
-  // ===================================================================
-  describe("pause and blacklist behaviour", () => {
-    it("blocks mint and burn while paused", async () => {
-      const caller = await authorizeEoaMinter();
-      await token.connect(owner).emergencyAction(1); // pause
-      await expect(caller.callMint(user.address, 1n))
-        .to.be.revertedWithCustomError(token, "EnforcedPause");
-      await expect(caller.callBurn(user.address, 1n))
-        .to.be.revertedWithCustomError(token, "EnforcedPause");
-    });
-
-    it("blocks minting to a blacklisted recipient", async () => {
-      const caller = await authorizeEoaMinter();
-      await runProposal(token, owner, admin, 9 /* AddToBlacklist */, user.address);
-      await expect(caller.callMint(user.address, ethers.parseEther("1")))
-        .to.be.revertedWithCustomError(token, "BlacklistedAddress");
-    });
-
-    it("blocks burning from a blacklisted holder", async () => {
-      await fund(token, distributor.address, ethers.parseEther("100"));
-      const caller = await authorizeEoaMinter();
-      await runProposal(token, owner, admin, 9 /* AddToBlacklist */, distributor.address);
-      await expect(caller.callBurn(distributor.address, ethers.parseEther("1")))
-        .to.be.revertedWithCustomError(token, "BlacklistedAddress");
-    });
-
-    it("rejects zero amount and zero address", async () => {
-      const caller = await authorizeEoaMinter();
-      await expect(caller.callMint(user.address, 0n))
-        .to.be.revertedWithCustomError(token, "AmountMustBePositive");
-      await expect(caller.callMint(ZeroAddress, 1n))
-        .to.be.revertedWithCustomError(token, "InvalidAddress");
-    });
-  });
-
-  // ===================================================================
-  // End-to-end: two chains simulated in one EVM.
-  // ===================================================================
-  describe("cross-chain round trip", () => {
+  describe("cross-chain transfers", () => {
     let tokenA: any, tokenB: any;
     let adapterA: any, adapterB: any;
     let endpointA: any, endpointB: any;
 
-    const CAP = ethers.parseEther("100000000");
+    const LIQUIDITY = ethers.parseEther("1000000");
+    const RATE_LIMIT = ethers.parseEther("200000000");
+    // Generous relative to LIQUIDITY so ordinary tests are unaffected; the bound itself is
+    // exercised deliberately in the inbound rate-limit tests below.
+    const INBOUND_LIMIT = ethers.parseEther("100000000");
 
     beforeEach(async () => {
-      tokenA = token; // already deployed in the outer beforeEach
+      tokenA = await deployToken();
       tokenB = await deployToken();
 
       const Endpoint = await ethers.getContractFactory("MockLZEndpointV2");
@@ -659,47 +118,38 @@ describe("FULA LayerZero OFT bridge", () => {
       await endpointB.setDestLzEndpoint(EID_A, await endpointA.getAddress());
 
       const Adapter = await ethers.getContractFactory("FulaOFTAdapter");
-      adapterA = await Adapter.deploy(
-        await tokenA.getAddress(),
-        await tokenA.getAddress(),
-        await endpointA.getAddress(),
-        owner.address
-      );
-      adapterB = await Adapter.deploy(
-        await tokenB.getAddress(),
-        await tokenB.getAddress(),
-        await endpointB.getAddress(),
-        owner.address
-      );
+      adapterA = await Adapter.deploy(await tokenA.getAddress(), await endpointA.getAddress(), owner.address);
+      adapterB = await Adapter.deploy(await tokenB.getAddress(), await endpointB.getAddress(), owner.address);
       await adapterA.waitForDeployment();
       await adapterB.waitForDeployment();
 
-      // Peer the adapters.
-      await adapterA
-        .connect(owner)
-        .setPeer(EID_B, ethers.zeroPadValue(await adapterB.getAddress(), 32));
-      await adapterB
-        .connect(owner)
-        .setPeer(EID_A, ethers.zeroPadValue(await adapterA.getAddress(), 32));
+      await adapterA.connect(owner).setPeer(EID_B, ethers.zeroPadValue(await adapterB.getAddress(), 32));
+      await adapterB.connect(owner).setPeer(EID_A, ethers.zeroPadValue(await adapterA.getAddress(), 32));
 
-      // Authorize each adapter as a bridge minter on its own chain.
-      await runProposal(tokenA, owner, admin, PROPOSAL_SET_BRIDGE_MINTER, await adapterA.getAddress(), CAP);
-      await runProposal(tokenB, owner, admin, PROPOSAL_SET_BRIDGE_MINTER, await adapterB.getAddress(), CAP);
+      // MANDATORY: both limiters are fail-closed. Outbound throttles flow; inbound bounds how
+      // much escrow a single compromise can remove. They are separate buckets on purpose.
+      await adapterA.connect(owner).setRateLimits([{ dstEid: EID_B, limit: RATE_LIMIT, window: 86400 }]);
+      await adapterB.connect(owner).setRateLimits([{ dstEid: EID_A, limit: RATE_LIMIT, window: 86400 }]);
+      await adapterA.connect(owner).setInboundRateLimits([{ dstEid: EID_B, limit: INBOUND_LIMIT, window: 86400 }]);
+      await adapterB.connect(owner).setInboundRateLimits([{ dstEid: EID_A, limit: INBOUND_LIMIT, window: 86400 }]);
 
-      // MANDATORY: the rate limiter is fail-closed. An unconfigured lane reverts every
-      // outbound transfer with RateLimitExceeded, so this must be part of go-live wiring.
-      const RATE_WINDOW = 86400;
-      await adapterA
-        .connect(owner)
-        .setRateLimits([{ dstEid: EID_B, limit: CAP, window: RATE_WINDOW }]);
-      await adapterB
-        .connect(owner)
-        .setRateLimits([{ dstEid: EID_A, limit: CAP, window: RATE_WINDOW }]);
+      // SEED ESCROW LIQUIDITY. Unlike mint/burn, a chain can only release what it already holds.
+      await fund(tokenA, await adapterA.getAddress(), LIQUIDITY);
+      await fund(tokenB, await adapterB.getAddress(), LIQUIDITY);
 
-      await fund(tokenA, user.address, ethers.parseEther("1000"));
+      await fund(tokenA, user.address, ethers.parseEther("10000"));
     });
 
-    async function send(adapter: any, from: SignerWithAddress, dstEid: number, to: string, amount: bigint) {
+    async function send(
+      adapter: any,
+      token: any,
+      from: SignerWithAddress,
+      dstEid: number,
+      to: string,
+      amount: bigint
+    ) {
+      // Escrow adapters require an allowance — `approvalRequired()` is true.
+      await token.connect(from).approve(await adapter.getAddress(), amount);
       const sendParam = {
         dstEid,
         to: ethers.zeroPadValue(to, 32),
@@ -717,103 +167,185 @@ describe("FULA LayerZero OFT bridge", () => {
         });
     }
 
-    it("conserves global supply across a one-way transfer", async () => {
+    it("NEVER changes totalSupply on either chain — supply is conserved structurally", async () => {
+      const supplyA = await tokenA.totalSupply();
+      const supplyB = await tokenB.totalSupply();
       const amount = ethers.parseEther("100");
-      const supplyABefore: bigint = await tokenA.totalSupply();
-      const supplyBBefore: bigint = await tokenB.totalSupply();
 
-      await send(adapterA, user, EID_B, user.address, amount);
-
-      // Source burned immediately; destination not yet credited. Global supply is
-      // temporarily REDUCED while the message is in flight — never inflated.
-      expect(await tokenA.totalSupply()).to.equal(supplyABefore - amount);
-      expect(await tokenB.totalSupply()).to.equal(supplyBBefore);
+      await send(adapterA, tokenA, user, EID_B, user.address, amount);
+      // Even mid-flight — tokens locked on A, not yet released on B — supply is untouched.
+      expect(await tokenA.totalSupply()).to.equal(supplyA);
+      expect(await tokenB.totalSupply()).to.equal(supplyB);
 
       await endpointB.deliverNext();
 
+      expect(await tokenA.totalSupply()).to.equal(supplyA);
+      expect(await tokenB.totalSupply()).to.equal(supplyB);
       expect(await tokenB.balanceOf(user.address)).to.equal(amount);
-      expect(await tokenB.totalSupply()).to.equal(supplyBBefore + amount);
-      expect((await tokenA.totalSupply()) + (await tokenB.totalSupply())).to.equal(
-        supplyABefore + supplyBBefore
-      );
     });
 
-    it("conserves global supply across a full round trip", async () => {
+    it("locks into escrow on the source and releases from escrow on the destination", async () => {
       const amount = ethers.parseEther("250");
-      const globalBefore = (await tokenA.totalSupply()) + (await tokenB.totalSupply());
+      const escrowABefore = await adapterA.availableLiquidity();
+      const escrowBBefore = await adapterB.availableLiquidity();
       const userABefore = await tokenA.balanceOf(user.address);
 
-      await send(adapterA, user, EID_B, user.address, amount);
+      await send(adapterA, tokenA, user, EID_B, user.address, amount);
+      expect(await adapterA.availableLiquidity(), "source escrow should grow by the amount").to.equal(
+        escrowABefore + amount
+      );
+      expect(await tokenA.balanceOf(user.address)).to.equal(userABefore - amount);
+
       await endpointB.deliverNext();
-      await send(adapterB, user, EID_A, user.address, amount);
+      expect(await adapterB.availableLiquidity(), "destination escrow should shrink by the amount").to.equal(
+        escrowBBefore - amount
+      );
+      expect(await tokenB.balanceOf(user.address)).to.equal(amount);
+    });
+
+    it("conserves everything across a full round trip", async () => {
+      const amount = ethers.parseEther("500");
+      const globalBefore = (await tokenA.totalSupply()) + (await tokenB.totalSupply());
+      const userABefore = await tokenA.balanceOf(user.address);
+      const escrowABefore = await adapterA.availableLiquidity();
+      const escrowBBefore = await adapterB.availableLiquidity();
+
+      await send(adapterA, tokenA, user, EID_B, user.address, amount);
+      await endpointB.deliverNext();
+      await send(adapterB, tokenB, user, EID_A, user.address, amount);
       await endpointA.deliverNext();
 
       expect(await tokenA.balanceOf(user.address)).to.equal(userABefore);
       expect(await tokenB.balanceOf(user.address)).to.equal(0n);
+      expect(await adapterA.availableLiquidity()).to.equal(escrowABefore);
+      expect(await adapterB.availableLiquidity()).to.equal(escrowBBefore);
       expect((await tokenA.totalSupply()) + (await tokenB.totalSupply())).to.equal(globalBefore);
+    });
+
+    it("requires an allowance — no approve, no transfer", async () => {
+      const sendParam = {
+        dstEid: EID_B,
+        to: ethers.zeroPadValue(user.address, 32),
+        amountLD: ethers.parseEther("1"),
+        minAmountLD: 0n,
+        extraOptions: "0x",
+        composeMsg: "0x",
+        oftCmd: "0x",
+      };
+      const fee = await adapterA.quoteSend(sendParam, false);
+      // `approvalRequired()` is true for an escrow adapter — this is the visible UX difference
+      // versus mint/burn, and the reason a holder needs two transactions.
+      expect(await adapterA.approvalRequired()).to.be.true;
+      await expect(
+        adapterA.connect(user).send(sendParam, { nativeFee: fee.nativeFee, lzTokenFee: 0n }, user.address, {
+          value: fee.nativeFee,
+        })
+      ).to.be.revertedWithCustomError(tokenA, "ERC20InsufficientAllowance");
+    });
+
+    it("takes only the sender's own tokens, never a third party's", async () => {
+      await fund(tokenA, other.address, ethers.parseEther("500"));
+      const victimBefore = await tokenA.balanceOf(other.address);
+      const senderBefore = await tokenA.balanceOf(user.address);
+      const amount = ethers.parseEther("100");
+
+      // `other` is named as the cross-chain RECIPIENT — the only third-party address a caller
+      // controls in SendParam. It must not cause `other`'s source balance to move.
+      await send(adapterA, tokenA, user, EID_B, other.address, amount);
+
+      expect(await tokenA.balanceOf(user.address)).to.equal(senderBefore - amount);
+      expect(await tokenA.balanceOf(other.address)).to.equal(victimBefore);
+      await endpointB.deliverNext();
+      expect(await tokenB.balanceOf(other.address)).to.equal(amount);
     });
 
     it("leaves dust with the sender and never destroys it", async () => {
-      // sharedDecimals is 6, so with 18 local decimals the dust granularity is 1e12.
+      // sharedDecimals is 6, so with 18 local decimals the granularity is 1e12.
       const amount = ethers.parseEther("1") + 999n;
       const userBefore = await tokenA.balanceOf(user.address);
-      const globalBefore = (await tokenA.totalSupply()) + (await tokenB.totalSupply());
+      const supplyBefore = await tokenA.totalSupply();
 
-      await send(adapterA, user, EID_B, user.address, amount);
+      await send(adapterA, tokenA, user, EID_B, user.address, amount);
       await endpointB.deliverNext();
 
-      // Exactly 1e18 crossed; the 999 wei of dust stayed behind.
       expect(await tokenB.balanceOf(user.address)).to.equal(ethers.parseEther("1"));
       expect(await tokenA.balanceOf(user.address)).to.equal(userBefore - ethers.parseEther("1"));
-      expect((await tokenA.totalSupply()) + (await tokenB.totalSupply())).to.equal(globalBefore);
+      expect(await tokenA.totalSupply()).to.equal(supplyBefore);
     });
 
-    it("parks and retries an inbound transfer blocked on the destination", async () => {
+    // ---------------------------------------------------------------
+    // LIQUIDITY — the property mint/burn does not have.
+    // ---------------------------------------------------------------
+    it("reverts inbound with InsufficientLiquidity when the escrow is drained, then delivers after a top-up", async () => {
+      const escrowB = await adapterB.availableLiquidity();
+      const amount = escrowB + ethers.parseEther("1"); // one token more than B can release
+      await fund(tokenA, user.address, amount);
+
+      await send(adapterA, tokenA, user, EID_B, user.address, amount);
+      await expect(endpointB.deliverNext()).to.be.revertedWithCustomError(
+        adapterB,
+        "InsufficientLiquidity"
+      );
+      expect(await tokenB.balanceOf(user.address)).to.equal(0n);
+
+      // Top the escrow up and the parked message delivers — a delay, not a loss.
+      await fund(tokenB, await adapterB.getAddress(), ethers.parseEther("10"));
+      await endpointB.deliverNext();
+      expect(await tokenB.balanceOf(user.address)).to.equal(amount);
+    });
+
+    it("exposes availableLiquidity for monitoring", async () => {
+      expect(await adapterA.availableLiquidity()).to.equal(
+        await tokenA.balanceOf(await adapterA.getAddress())
+      );
+    });
+
+    // ---------------------------------------------------------------
+    it("parks and retries an inbound transfer blocked by a blacklist", async () => {
       const amount = ethers.parseEther("10");
       await runProposal(tokenB, owner, admin, 9 /* AddToBlacklist */, user.address);
 
-      const supplyABefore = await tokenA.totalSupply();
-      await send(adapterA, user, EID_B, user.address, amount);
-      // Source supply is already reduced while the message is parked.
-      expect(await tokenA.totalSupply()).to.equal(supplyABefore - amount);
-
-      // Assert the SPECIFIC error. A bare `.to.be.reverted` would also pass if `deliverNext`
-      // reverted with "no pending message" — i.e. if the send had silently queued nothing.
+      await send(adapterA, tokenA, user, EID_B, user.address, amount);
       await expect(endpointB.deliverNext()).to.be.revertedWithCustomError(
         tokenB,
         "BlacklistedAddress"
       );
-      expect(await tokenB.balanceOf(user.address)).to.equal(0n);
 
-      // Clear the blocking condition, then anyone may retry — no funds lost.
       await runProposal(tokenB, owner, admin, 10 /* RemoveFromBlacklist */, user.address);
       await endpointB.deliver(0);
       expect(await tokenB.balanceOf(user.address)).to.equal(amount);
     });
 
+    it("parks and retries when the destination token is paused", async () => {
+      const amount = ethers.parseEther("10");
+      await send(adapterA, tokenA, user, EID_B, user.address, amount);
+
+      await tokenB.connect(owner).emergencyAction(1); // pause
+      await expect(endpointB.deliverNext()).to.be.revertedWithCustomError(tokenB, "EnforcedPause");
+
+      await time.increase(30 * 60 + 1); // EMERGENCY_COOLDOWN
+      await tokenB.connect(owner).emergencyAction(2); // unpause
+      await endpointB.deliverNext();
+      expect(await tokenB.balanceOf(user.address)).to.equal(amount);
+    });
+
+    // ---------------------------------------------------------------
     it("halts OUTBOUND when the peer is unset", async () => {
       await adapterA.connect(owner).setPeer(EID_B, ethers.ZeroHash);
-      // `OAppSender._lzSend` -> `_getPeerOrRevert` -> NoPeer(dstEid).
-      await expect(send(adapterA, user, EID_B, user.address, ethers.parseEther("1")))
+      await expect(send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("1")))
         .to.be.revertedWithCustomError(adapterA, "NoPeer")
         .withArgs(EID_B);
     });
 
     it("halts INBOUND when the peer is unset, and the message survives to be retried", async () => {
-      // The design doc calls setPeer(0) a kill switch for BOTH directions. Outbound is covered
-      // above; this is the inbound leg, which was previously asserted only by the test's title.
       const amount = ethers.parseEther("5");
-      await send(adapterA, user, EID_B, user.address, amount);
+      await send(adapterA, tokenA, user, EID_B, user.address, amount);
 
-      // Clear the peer on the RECEIVING side. `OAppReceiver.lzReceive` compares
-      // `_getPeerOrRevert(srcEid)` against `origin.sender`, so an unset peer reverts NoPeer.
       await adapterB.connect(owner).setPeer(EID_A, ethers.ZeroHash);
       await expect(endpointB.deliverNext())
         .to.be.revertedWithCustomError(adapterB, "NoPeer")
         .withArgs(EID_A);
-      expect(await tokenB.balanceOf(user.address)).to.equal(0n);
 
-      // Restoring the peer makes the parked message deliverable again — a halt, not a loss.
       await adapterB
         .connect(owner)
         .setPeer(EID_A, ethers.zeroPadValue(await adapterA.getAddress(), 32));
@@ -822,255 +354,760 @@ describe("FULA LayerZero OFT bridge", () => {
     });
 
     it("rejects an inbound message from an address that is not the configured peer", async () => {
-      // Guards R-02 from the other side: even with a live lane, only the registered peer may
-      // deliver. Repoint adapterB at an impostor and the queued message must be refused.
-      const amount = ethers.parseEther("5");
-      await send(adapterA, user, EID_B, user.address, amount);
-
+      await send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("5"));
       await adapterB.connect(owner).setPeer(EID_A, ethers.zeroPadValue(other.address, 32));
       await expect(endpointB.deliverNext()).to.be.revertedWithCustomError(adapterB, "OnlyPeer");
-      expect(await tokenB.balanceOf(user.address)).to.equal(0n);
     });
 
+    // ---------------------------------------------------------------
     it("is FAIL-CLOSED: an unconfigured lane rejects every transfer", async () => {
-      // Deploy a fresh adapter that is peered and authorized but has NO rate limit set.
-      // LayerZero's RateLimiter returns amountCanBeSent == 0 for an unconfigured dstEid, so the
-      // bridge is inert until governance sets an explicit ceiling. This is the intended posture,
-      // and this test exists so nobody "fixes" it into a fail-open default.
       const Adapter = await ethers.getContractFactory("FulaOFTAdapter");
       const fresh = await Adapter.deploy(
-        await tokenA.getAddress(),
         await tokenA.getAddress(),
         await endpointA.getAddress(),
         owner.address
       );
       await fresh.waitForDeployment();
       await fresh.connect(owner).setPeer(EID_B, ethers.zeroPadValue(await adapterB.getAddress(), 32));
-      await runProposal(tokenA, owner, admin, PROPOSAL_SET_BRIDGE_MINTER, await fresh.getAddress(), CAP);
 
-      await expect(send(fresh, user, EID_B, user.address, ethers.parseEther("1")))
+      await expect(send(fresh, tokenA, user, EID_B, user.address, ethers.parseEther("1")))
         .to.be.revertedWithCustomError(fresh, "RateLimitExceeded");
 
-      // And works as soon as a limit is configured.
-      await fresh
-        .connect(owner)
-        .setRateLimits([{ dstEid: EID_B, limit: ethers.parseEther("10"), window: 86400 }]);
-      await send(fresh, user, EID_B, user.address, ethers.parseEther("1"));
+      await fresh.connect(owner).setRateLimits([{ dstEid: EID_B, limit: ethers.parseEther("10"), window: 86400 }]);
+      await send(fresh, tokenA, user, EID_B, user.address, ethers.parseEther("1"));
     });
 
-    it("enforces the outbound rate limit and restores capacity after the window", async () => {
+    it("enforces the outbound rate limit and refills over the window", async () => {
       const limit = ethers.parseEther("100");
       const window = 3600;
       await adapterA.connect(owner).setRateLimits([{ dstEid: EID_B, limit, window }]);
 
-      await send(adapterA, user, EID_B, user.address, limit);
-      await expect(send(adapterA, user, EID_B, user.address, ethers.parseEther("1")))
+      await send(adapterA, tokenA, user, EID_B, user.address, limit);
+      await expect(send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("50")))
         .to.be.revertedWithCustomError(adapterA, "RateLimitExceeded");
 
       await time.increase(window + 1);
-      await send(adapterA, user, EID_B, user.address, ethers.parseEther("1"));
+      await send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("50"));
+    });
+
+    it("a rate-limit failure locks NOTHING — the user keeps their tokens", async () => {
+      // This is why the throttle belongs on the outbound side: the transfer fails at the START.
+      await adapterA.connect(owner).setRateLimits([{ dstEid: EID_B, limit: 1n, window: 86400 }]);
+      const balBefore = await tokenA.balanceOf(user.address);
+      const escrowBefore = await adapterA.availableLiquidity();
+
+      await expect(send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("10")))
+        .to.be.revertedWithCustomError(adapterA, "RateLimitExceeded");
+
+      expect(await tokenA.balanceOf(user.address)).to.equal(balBefore);
+      expect(await adapterA.availableLiquidity()).to.equal(escrowBefore);
     });
 
     it("rate limit of zero acts as an immediate kill switch", async () => {
       await adapterA.connect(owner).setRateLimits([{ dstEid: EID_B, limit: 0n, window: 1 }]);
-      await expect(send(adapterA, user, EID_B, user.address, 1n)).to.be.reverted;
+      // Use a real (above-dust) amount. A sub-dust amount would be rejected earlier by
+      // ZeroAmountAfterDust, which would pass this assertion for the wrong reason.
+      await expect(send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("1")))
+        .to.be.revertedWithCustomError(adapterA, "RateLimitExceeded");
     });
 
-    it("restricts owner-only configuration", async () => {
+    it("REJECTS a sub-dust amount instead of sending an empty message", async () => {
+      // `_removeDust` truncates below 1e12 to zero, and an ERC20 transfer of zero SUCCEEDS — so
+      // without an explicit guard the user would pay a LayerZero fee to deliver nothing, and
+      // `_outflow(eid, 0)` would slip past even a zero rate limit. The mint/burn design blocked
+      // this only incidentally via the token's AmountMustBePositive; escrow has no such backstop.
+      const escrowBefore = await adapterA.availableLiquidity();
+      await expect(send(adapterA, tokenA, user, EID_B, user.address, 999n))
+        .to.be.revertedWithCustomError(adapterA, "ZeroAmountAfterDust");
+      expect(await adapterA.availableLiquidity()).to.equal(escrowBefore);
+    });
+
+    it("a zero rate limit cannot be bypassed with a sub-dust send", async () => {
+      // Regression guard for the interaction of the two rules above.
+      await adapterA.connect(owner).setRateLimits([{ dstEid: EID_B, limit: 0n, window: 1 }]);
+      await expect(send(adapterA, tokenA, user, EID_B, user.address, 999n)).to.be.reverted;
+    });
+
+    it("resetRateLimits clears usage and is owner-only", async () => {
+      const limit = ethers.parseEther("100");
+      await adapterA.connect(owner).setRateLimits([{ dstEid: EID_B, limit, window: 3600 }]);
+      await send(adapterA, tokenA, user, EID_B, user.address, limit);
+      await expect(send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("50")))
+        .to.be.revertedWithCustomError(adapterA, "RateLimitExceeded");
+
+      await expect(adapterA.connect(user).resetRateLimits([EID_B]))
+        .to.be.revertedWithCustomError(adapterA, "OwnableUnauthorizedAccount");
+      await adapterA.connect(owner).resetRateLimits([EID_B]);
+      await send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("50"));
+    });
+
+    // ---------------------------------------------------------------
+    it("REJECTS a zero-address recipient", async () => {
+      const escrowBefore = await adapterA.availableLiquidity();
+      await expect(send(adapterA, tokenA, user, EID_B, ZeroAddress, ethers.parseEther("3")))
+        .to.be.revertedWithCustomError(adapterA, "ZeroRecipient");
+      expect(await adapterA.availableLiquidity()).to.equal(escrowBefore);
+    });
+
+    it("REJECTS a composed message", async () => {
+      const sendParam = {
+        dstEid: EID_B,
+        to: ethers.zeroPadValue(user.address, 32),
+        amountLD: ethers.parseEther("1"),
+        minAmountLD: 0n,
+        extraOptions: "0x",
+        composeMsg: "0x1234",
+        oftCmd: "0x",
+      };
       await expect(
-        adapterA.connect(user).setPeer(EID_B, ethers.ZeroHash)
-      ).to.be.revertedWithCustomError(adapterA, "OwnableUnauthorizedAccount");
+        adapterA.connect(user).send(sendParam, { nativeFee: 0n, lzTokenFee: 0n }, user.address, { value: 0n })
+      ).to.be.revertedWithCustomError(adapterA, "ComposeNotSupported");
+    });
+
+    // ===============================================================
+    // E-01. THE OWNER CAN DRAIN THE ESCROW. This is the single most important property to
+    // pin, because it disproves the intuition that "no withdraw function" means "no rug".
+    //
+    // Critically this needs NO DVN compromise and NO forged packet. `setPeer` decides who is
+    // trusted; `EndpointV2.send` is permissionless and stamps the packet with `msg.sender`.
+    // So the attacker emits a GENUINE source-chain packet from their own address — which
+    // honest DVNs will attest to, because it really happened — and the destination adapter
+    // honours it because the owner just made that address the peer. Nothing is locked on the
+    // source side. This is why the owner must be a timelock/multisig.
+    // ===============================================================
+    it("E-01: the OWNER can drain the whole escrow by rotating setPeer, locking nothing", async () => {
+      const escrow = await adapterB.availableLiquidity();
+      expect(escrow, "precondition: destination must hold liquidity").to.be.gt(0n);
+
+      // 1. The owner points chain B's inbound lane at an address it controls.
+      await adapterB.connect(owner).setPeer(EID_A, ethers.zeroPadValue(other.address, 32));
+
+      // 2. That address sends a packet straight through the source endpoint, bypassing the
+      //    adapter entirely — so no tokens are debited from anyone.
+      const amountSD = escrow / 10n ** 12n; // shared decimals are 6 against 18 local
+      const message = ethers.solidityPacked(
+        ["bytes32", "uint64"],
+        [ethers.zeroPadValue(other.address, 32), amountSD]
+      );
+      const lockedOnABefore = await adapterA.availableLiquidity();
+      await endpointA.connect(other).send(
+        {
+          dstEid: EID_B,
+          receiver: ethers.zeroPadValue(await adapterB.getAddress(), 32),
+          message,
+          options: "0x",
+          payInLzToken: false,
+        },
+        other.address,
+        { value: 0n }
+      );
+      expect(await adapterA.availableLiquidity(), "attacker locks NOTHING").to.equal(lockedOnABefore);
+
+      // 3. Delivery passes the peer check and releases the escrow.
+      const balBefore = await tokenB.balanceOf(other.address);
+      await endpointB.deliverNext();
+
+      expect((await tokenB.balanceOf(other.address)) - balBefore).to.equal(escrow);
+      expect(await adapterB.availableLiquidity(), "escrow fully drained").to.equal(0n);
+    });
+
+    // ===============================================================
+    // RECEIVE-SIDE VALIDATION. `send` blocks bad recipients on the way out, but that only
+    // constrains messages WE originate — a non-conforming or compromised peer can still
+    // deliver one. These drive `_credit` directly with a hand-built payload, which is the
+    // only way to reach those branches at all.
+    // ===============================================================
+    describe("malformed inbound messages", () => {
+      // Repoints chain B's lane at an EOA so it can post an arbitrary OFT payload through the
+      // permissionless endpoint. Same mechanism as the E-01 attack test.
+      async function deliverCrafted(toBytes32: string, amountLD: bigint) {
+        await adapterB.connect(owner).setPeer(EID_A, ethers.zeroPadValue(other.address, 32));
+        const message = ethers.solidityPacked(["bytes32", "uint64"], [toBytes32, amountLD / 10n ** 12n]);
+        await endpointA.connect(other).send(
+          {
+            dstEid: EID_B,
+            receiver: ethers.zeroPadValue(await adapterB.getAddress(), 32),
+            message,
+            options: "0x",
+            payInLzToken: false,
+          },
+          other.address,
+          { value: 0n }
+        );
+        return endpointB.deliverNext();
+      }
+
+      it("REJECTS an inbound message naming the zero address", async () => {
+        const escrowBefore = await adapterB.availableLiquidity();
+        await expect(deliverCrafted(ethers.ZeroHash, ethers.parseEther("5"))).to.be.revertedWithCustomError(
+          adapterB,
+          "ZeroRecipient"
+        );
+        expect(await adapterB.availableLiquidity(), "escrow untouched").to.equal(escrowBefore);
+      });
+
+      it("REJECTS an inbound message naming the adapter ITSELF", async () => {
+        const escrowBefore = await adapterB.availableLiquidity();
+        await expect(
+          deliverCrafted(ethers.zeroPadValue(await adapterB.getAddress(), 32), ethers.parseEther("5"))
+        ).to.be.revertedWithCustomError(adapterB, "RecipientIsBridgeAdapter");
+        // Without this check the self-transfer would move nothing, the delta would be zero and
+        // the message would revert EscrowInvariantViolated forever with a confusing error.
+        expect(await adapterB.availableLiquidity(), "escrow untouched").to.equal(escrowBefore);
+      });
+    });
+
+    // ===============================================================
+    // CONCURRENCY. The outbound bucket is a SINGLE slot shared by every user of a lane, and
+    // within one block `decay` is zero, so there is no refill to soften contention. These
+    // pin what actually happens when two holders transact together.
+    // ===============================================================
+    describe("multi-user contention", () => {
+      // Deliberately NOT using evm_setAutomine to force a literal shared block. That approach
+      // hung, and because the hang happened before the restore could run it left automine
+      // disabled and cascaded into unrelated tests. Consecutive blocks prove the same property:
+      // with a 24h window the bucket regenerates limit*12/86400 per block — about 0.014% — so
+      // one user's consumption still denies the next. The finding under test is "the bucket is
+      // shared, not per-sender", and that is what these assert.
+      it("lets two DIFFERENT holders bridge when the shared allowance covers both", async () => {
+        await fund(tokenA, other.address, ethers.parseEther("1000"));
+        const amount = ethers.parseEther("100");
+        const escrowBefore = await adapterA.availableLiquidity();
+
+        await send(adapterA, tokenA, user, EID_B, user.address, amount);
+        await send(adapterA, tokenA, other, EID_B, other.address, amount);
+
+        expect(await adapterA.availableLiquidity()).to.equal(escrowBefore + amount * 2n);
+      });
+
+      // The contention case, and the reason the throttle belongs on the outbound side:
+      // the loser pays gas and keeps every token.
+      it("one holder can exhaust the lane for everyone — and the loser locks NOTHING", async () => {
+        await fund(tokenA, other.address, ethers.parseEther("1000"));
+        const amount = ethers.parseEther("100");
+        await adapterA.connect(owner).setRateLimits([{ dstEid: EID_B, limit: amount, window: 86400 }]);
+
+        // First holder consumes the entire shared bucket.
+        await send(adapterA, tokenA, user, EID_B, user.address, amount);
+
+        const escrowAfterFirst = await adapterA.availableLiquidity();
+        const otherBefore = await tokenA.balanceOf(other.address);
+
+        // A DIFFERENT holder is now denied, despite never having used the bridge.
+        await expect(
+          send(adapterA, tokenA, other, EID_B, other.address, amount)
+        ).to.be.revertedWithCustomError(adapterA, "RateLimitExceeded");
+
+        expect(await tokenA.balanceOf(other.address), "the loser keeps every token").to.equal(otherBefore);
+        expect(await adapterA.availableLiquidity(), "nothing extra was locked").to.equal(escrowAfterFirst);
+      });
+    });
+
+    // ===============================================================
+    // TOKEN INTERACTION EDGE CASES. Properties that emerge from StorageToken's behaviour
+    // rather than the adapter's own logic, and which the audit called out but never pinned.
+    // ===============================================================
+    describe("token interaction edge cases", () => {
+      // Audit finding E-06, asserted rather than assumed. StorageToken overrides `transfer`
+      // with whenNotPaused but does NOT override `transferFrom`. `_credit` uses transfer,
+      // `_debit` uses transferFrom — so a pause stops releases but NOT departures. An
+      // incident responder who pauses expecting the bridge to halt would be wrong.
+      it("E-06: pausing the token does NOT stop outbound locking", async () => {
+        await tokenA.connect(owner).emergencyAction(1);
+        expect(await tokenA.paused()).to.be.true;
+
+        const escrowBefore = await adapterA.availableLiquidity();
+        await send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("5"));
+        expect(
+          await adapterA.availableLiquidity(),
+          "tokens still leave while paused — this is the documented asymmetry"
+        ).to.equal(escrowBefore + ethers.parseEther("5"));
+
+        await time.increase(30 * 60 + 1); // EMERGENCY_COOLDOWN before unpausing
+        await tokenA.connect(owner).emergencyAction(2);
+        expect(await tokenA.paused()).to.be.false;
+      });
+
+      // Audit finding E-04. The blacklist applies to `from` AND `to` in `_update`, and nothing
+      // stops governance blacklisting the adapter itself — which freezes the whole escrow.
+      it("E-04: blacklisting the ADAPTER freezes outbound, and unblacklisting restores it", async () => {
+        const adapterAddr = await adapterA.getAddress();
+        await runProposal(tokenA, owner, admin, PROPOSAL_ADD_BLACKLIST, adapterAddr);
+
+        // `_update` rejects the adapter as `to`, so nothing can be escrowed at all.
+        await expect(send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("1"))).to.be
+          .reverted;
+
+        // Reversible: the freeze lasts exactly as long as the blacklist entry.
+        await runProposal(tokenA, owner, admin, PROPOSAL_REMOVE_BLACKLIST, adapterAddr);
+        const escrowBefore = await adapterA.availableLiquidity();
+        await send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("1"));
+        expect(await adapterA.availableLiquidity()).to.equal(escrowBefore + ethers.parseEther("1"));
+      });
+
+      it("enforces minAmountLD — a transfer that would slip below it reverts, locking nothing", async () => {
+        const amount = ethers.parseEther("10");
+        const escrowBefore = await adapterA.availableLiquidity();
+        await tokenA.connect(user).approve(await adapterA.getAddress(), amount);
+        const sendParam = {
+          dstEid: EID_B,
+          to: ethers.zeroPadValue(user.address, 32),
+          amountLD: amount,
+          minAmountLD: amount + 1n, // unsatisfiable by construction
+          extraOptions: "0x",
+          composeMsg: "0x",
+          oftCmd: "0x",
+        };
+        await expect(
+          adapterA.connect(user).send(sendParam, { nativeFee: 0n, lzTokenFee: 0n }, user.address, { value: 0n })
+        ).to.be.reverted;
+        expect(await adapterA.availableLiquidity()).to.equal(escrowBefore);
+      });
+
+      // sharedDecimals is 6 against 18 local, so granularity is exactly 1e12.
+      it("handles the dust boundary exactly: 1e12 passes, 1e12-1 is rejected", async () => {
+        const escrowBefore = await adapterA.availableLiquidity();
+
+        await expect(
+          send(adapterA, tokenA, user, EID_B, user.address, 10n ** 12n - 1n)
+        ).to.be.revertedWithCustomError(adapterA, "ZeroAmountAfterDust");
+        expect(await adapterA.availableLiquidity()).to.equal(escrowBefore);
+
+        await send(adapterA, tokenA, user, EID_B, user.address, 10n ** 12n);
+        expect(await adapterA.availableLiquidity()).to.equal(escrowBefore + 10n ** 12n);
+      });
+    });
+
+    describe("rate limiter degenerate configurations", () => {
+      it("survives window = 0 (the division guard) and still enforces the limit", async () => {
+        await adapterA.connect(owner).setRateLimits([{ dstEid: EID_B, limit: ethers.parseEther("10"), window: 0 }]);
+        // decay divides by `window > 0 ? window : 1`, so a zero window means full decay each
+        // second — effectively unlimited, but it must not revert or corrupt state.
+        await send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("5"));
+        const [, avail] = await adapterA.getAmountCanBeSent(EID_B);
+        expect(avail).to.be.gte(0n);
+      });
+
+      // The inbound limiter is a security bound, not a throttle, so a config that silently
+      // disables it must be unreachable. With window = 0 the inherited maths divides by 1, so
+      // decay = limit * secondsElapsed and the bucket refills entirely every second.
+      it("REJECTS a zero window on the INBOUND limiter, which would silently disable the bound", async () => {
+        await expect(
+          adapterB.connect(owner).setInboundRateLimits([{ dstEid: EID_A, limit: ethers.parseEther("100"), window: 0 }])
+        ).to.be.revertedWithCustomError(adapterB, "ZeroWindow");
+
+        // The previously configured limit is untouched by the rejected call.
+        const [, avail] = await adapterB.getAmountCanBeReceived(EID_A);
+        expect(avail).to.equal(INBOUND_LIMIT);
+      });
+
+      it("accepts an intentionally unlimited lane at type(uint192).max", async () => {
+        const MAX192 = 2n ** 192n - 1n;
+        await adapterA.connect(owner).setRateLimits([{ dstEid: EID_B, limit: MAX192, window: 86400 }]);
+        await send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("1000"));
+        const [, avail] = await adapterA.getAmountCanBeSent(EID_B);
+        expect(avail).to.be.gt(ethers.parseEther("1000000"));
+      });
+
+      it("resetInboundRateLimits clears accumulated inbound usage and is owner-only", async () => {
+        const cap = ethers.parseEther("100");
+        await adapterB.connect(owner).setInboundRateLimits([{ dstEid: EID_A, limit: cap, window: 86400 }]);
+
+        await send(adapterA, tokenA, user, EID_B, user.address, cap);
+        await endpointB.deliverNext(); // consumes the whole inbound bucket
+        const [, afterUse] = await adapterB.getAmountCanBeReceived(EID_A);
+        expect(afterUse).to.equal(0n);
+
+        await expect(adapterB.connect(user).resetInboundRateLimits([EID_A])).to.be.revertedWithCustomError(
+          adapterB,
+          "OwnableUnauthorizedAccount"
+        );
+
+        await adapterB.connect(owner).resetInboundRateLimits([EID_A]);
+        const [, afterReset] = await adapterB.getAmountCanBeReceived(EID_A);
+        expect(afterReset, "usage cleared without weakening the configured limit").to.equal(cap);
+      });
+    });
+
+    // ===============================================================
+    // LIQUIDITY EXHAUSTION AND RECOVERY. The escrow analogue of cap exhaustion: prove that
+    // running a destination dry delays transfers rather than losing them, and that topping
+    // up releases the already-parked message without it being re-sent.
+    // ===============================================================
+    describe("liquidity exhaustion", () => {
+      it("parks on an empty destination, then delivers the SAME message once topped up", async () => {
+        const escrowB = await adapterB.availableLiquidity();
+        await fund(tokenA, user.address, escrowB + ethers.parseEther("1"));
+
+        // Drain B completely.
+        await send(adapterA, tokenA, user, EID_B, user.address, escrowB);
+        await endpointB.deliverNext();
+        expect(await adapterB.availableLiquidity(), "destination should now be dry").to.equal(0n);
+
+        // The next transfer locks on A but cannot be paid out on B.
+        const amount = ethers.parseEther("1");
+        const escrowABefore = await adapterA.availableLiquidity();
+        await send(adapterA, tokenA, user, EID_B, user.address, amount);
+        await expect(endpointB.deliverNext()).to.be.revertedWithCustomError(
+          adapterB,
+          "InsufficientLiquidity"
+        );
+
+        // Source-side tokens are locked and safe, not lost.
+        expect(await adapterA.availableLiquidity()).to.equal(escrowABefore + amount);
+
+        // Top up by a plain transfer — exactly how an operator rebalances.
+        await fund(tokenB, await adapterB.getAddress(), amount);
+
+        const before = await tokenB.balanceOf(user.address);
+        await endpointB.deliverNext(); // the SAME parked message, not a resend
+        expect((await tokenB.balanceOf(user.address)) - before).to.equal(amount);
+        expect(await adapterB.availableLiquidity()).to.equal(0n);
+      });
+    });
+
+    // ===============================================================
+    // INVARIANT SWEEP. Supply conservation is the property the whole design rests on, so
+    // assert it across an arbitrary operation sequence rather than only on the happy path.
+    // Deterministic pseudo-random ordering: a fixed seed keeps failures reproducible.
+    // ===============================================================
+    it("conserves BOTH total supply and total escrow across an arbitrary operation sequence", async () => {
+      await fund(tokenA, other.address, ethers.parseEther("5000"));
+      await fund(tokenB, user.address, ethers.parseEther("5000"));
+
+      const supply0 = (await tokenA.totalSupply()) + (await tokenB.totalSupply());
+      const escrow0 = (await adapterA.availableLiquidity()) + (await adapterB.availableLiquidity());
+
+      let seed = 987654321;
+      const rnd = (n: number) => {
+        // xorshift — deterministic, no external dependency.
+        seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+        return Math.abs(seed) % n;
+      };
+
+      for (let i = 0; i < 24; i++) {
+        const aToB = rnd(2) === 0;
+        const [srcAdapter, srcToken, dstEndpoint, dstEid] = aToB
+          ? [adapterA, tokenA, endpointB, EID_B]
+          : [adapterB, tokenB, endpointA, EID_A];
+        const sender = rnd(2) === 0 ? user : other;
+        const amount = ethers.parseEther(String(1 + rnd(50)));
+
+        const senderBal = await srcToken.balanceOf(sender.address);
+        if (senderBal < amount) continue;
+
+        try {
+          await send(srcAdapter, srcToken, sender, dstEid, sender.address, amount);
+        } catch {
+          continue; // rate limit or similar — a refusal must also conserve
+        }
+        // Deliver only sometimes, so some messages stay in flight across iterations.
+        if (rnd(3) !== 0) {
+          try {
+            await dstEndpoint.deliverNext();
+          } catch {
+            /* parked (e.g. liquidity) — still conserving */
+          }
+        }
+
+        const supplyNow = (await tokenA.totalSupply()) + (await tokenB.totalSupply());
+        expect(supplyNow, `supply changed at step ${i}`).to.equal(supply0);
+      }
+
+      // Escrow is conserved too: every transfer moves the same amount from one side's
+      // escrow to the other's. Messages still in flight are the only slack, and they are
+      // locked on the source, so the SUM can only be >= the start.
+      const escrowNow = (await adapterA.availableLiquidity()) + (await adapterB.availableLiquidity());
+      expect(escrowNow, "total escrow must never fall below the seeded amount").to.be.gte(escrow0);
+      expect((await tokenA.totalSupply()) + (await tokenB.totalSupply())).to.equal(supply0);
+    });
+
+    // ===============================================================
+    // THE INBOUND BOUND. This is the only check in the contract that does not assume the
+    // message is honest, so these tests carry the weight of the whole mitigation.
+    // ===============================================================
+    describe("inbound rate limit", () => {
+      it("is FAIL-CLOSED: an unconfigured source lane releases nothing", async () => {
+        await adapterB.connect(owner).setInboundRateLimits([{ dstEid: EID_A, limit: 0n, window: 86400 }]);
+        await send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("1"));
+        await expect(endpointB.deliverNext()).to.be.revertedWithCustomError(
+          adapterB,
+          "InboundRateLimitExceeded"
+        );
+      });
+
+      it("BOUNDS the drain: an over-limit release is refused, escrow untouched", async () => {
+        const cap = ethers.parseEther("100");
+        await adapterB.connect(owner).setInboundRateLimits([{ dstEid: EID_A, limit: cap, window: 86400 }]);
+        const escrowBefore = await adapterB.availableLiquidity();
+
+        await send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("150"));
+        await expect(endpointB.deliverNext()).to.be.revertedWithCustomError(
+          adapterB,
+          "InboundRateLimitExceeded"
+        );
+        expect(await adapterB.availableLiquidity(), "escrow must not move").to.equal(escrowBefore);
+      });
+
+      // Refusal must never destroy value: the payload hash survives a revert, so the same
+      // message delivers untouched once the bucket refills. Delay, not loss.
+      it("PARKS rather than loses: the same message delivers after the window refills", async () => {
+        const cap = ethers.parseEther("100");
+        await adapterB.connect(owner).setInboundRateLimits([{ dstEid: EID_A, limit: cap, window: 86400 }]);
+
+        await send(adapterA, tokenA, user, EID_B, user.address, cap);
+        await endpointB.deliverNext(); // consumes the whole bucket
+
+        await send(adapterA, tokenA, user, EID_B, user.address, cap);
+        await expect(endpointB.deliverNext()).to.be.revertedWithCustomError(
+          adapterB,
+          "InboundRateLimitExceeded"
+        );
+
+        await time.increase(86400);
+        const before = await tokenB.balanceOf(user.address);
+        await endpointB.deliverNext(); // the SAME message, now within budget
+        expect((await tokenB.balanceOf(user.address)) - before).to.equal(cap);
+      });
+
+      it("is a separate bucket from outbound — inbound use does not consume outbound allowance", async () => {
+        const [, outboundBefore] = await adapterB.getAmountCanBeSent(EID_A);
+        await send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("10"));
+        await endpointB.deliverNext();
+
+        const [, outboundAfter] = await adapterB.getAmountCanBeSent(EID_A);
+        const [, inboundAfter] = await adapterB.getAmountCanBeReceived(EID_A);
+        expect(outboundAfter, "inbound credit must not shrink outbound allowance").to.be.gte(outboundBefore);
+        expect(inboundAfter, "inbound allowance must shrink").to.equal(
+          INBOUND_LIMIT - ethers.parseEther("10")
+        );
+      });
+
+      it("MITIGATES E-01: a malicious peer rotation can now take only the cap, not everything", async () => {
+        const cap = ethers.parseEther("100");
+        await adapterB.connect(owner).setInboundRateLimits([{ dstEid: EID_A, limit: cap, window: 86400 }]);
+        const escrow = await adapterB.availableLiquidity();
+        expect(escrow).to.be.gt(cap * 2n); // the attack would otherwise take far more
+
+        await adapterB.connect(owner).setPeer(EID_A, ethers.zeroPadValue(other.address, 32));
+        const drain = async (amount: bigint) => {
+          const message = ethers.solidityPacked(
+            ["bytes32", "uint64"],
+            [ethers.zeroPadValue(other.address, 32), amount / 10n ** 12n]
+          );
+          await endpointA.connect(other).send(
+            {
+              dstEid: EID_B,
+              receiver: ethers.zeroPadValue(await adapterB.getAddress(), 32),
+              message,
+              options: "0x",
+              payInLzToken: false,
+            },
+            other.address,
+            { value: 0n }
+          );
+          return endpointB.deliverNext();
+        };
+
+        await drain(cap); // first tranche succeeds — the cap IS the instant loss
+        await expect(drain(cap)).to.be.revertedWithCustomError(adapterB, "InboundRateLimitExceeded");
+        expect(await adapterB.availableLiquidity()).to.equal(escrow - cap);
+      });
+    });
+
+    // Every privileged entry point, swept in one place. An access-control regression on any of
+    // these is a direct path to the escrow — `setPeer` most obviously, but a stranger who could
+    // set the rate limits could also disable both bounds at once.
+    it("REJECTS every owner-only entry point when called by a stranger", async () => {
+      const stranger = user;
+      const cfg = [{ dstEid: EID_B, limit: ethers.parseEther("1"), window: 86400 }];
+
+      const calls: Array<[string, Promise<any>]> = [
+        ["setRateLimits", adapterA.connect(stranger).setRateLimits(cfg)],
+        ["setInboundRateLimits", adapterA.connect(stranger).setInboundRateLimits(cfg)],
+        ["resetRateLimits", adapterA.connect(stranger).resetRateLimits([EID_B])],
+        ["resetInboundRateLimits", adapterA.connect(stranger).resetInboundRateLimits([EID_B])],
+        ["setPeer", adapterA.connect(stranger).setPeer(EID_B, ethers.zeroPadValue(stranger.address, 32))],
+        ["lockPeers", adapterA.connect(stranger).lockPeers()],
+        ["transferOwnership", adapterA.connect(stranger).transferOwnership(stranger.address)],
+        ["renounceOwnership", adapterA.connect(stranger).renounceOwnership()],
+        ["setDelegate", adapterA.connect(stranger).setDelegate(stranger.address)],
+      ];
+
+      for (const [name, call] of calls) {
+        await expect(call, `${name} must reject a non-owner`).to.be.revertedWithCustomError(
+          adapterA,
+          "OwnableUnauthorizedAccount"
+        );
+      }
+
+      // And the owner is genuinely unchanged afterwards.
+      expect(await adapterA.owner()).to.equal(owner.address);
+      expect(await adapterA.peersLocked()).to.be.false;
+    });
+
+    describe("peer lock", () => {
+      it("lockPeers is owner-only and permanently blocks setPeer", async () => {
+        await expect(adapterB.connect(user).lockPeers()).to.be.revertedWithCustomError(
+          adapterB,
+          "OwnableUnauthorizedAccount"
+        );
+
+        await adapterB.connect(owner).lockPeers();
+        expect(await adapterB.peersLocked()).to.be.true;
+
+        await expect(
+          adapterB.connect(owner).setPeer(EID_A, ethers.zeroPadValue(other.address, 32))
+        ).to.be.revertedWithCustomError(adapterB, "PeersAreLocked");
+      });
+
+      // Closes the CHEAP E-01 path — not the whole trust model. A compromised owner is still
+      // the LayerZero delegate, so it can `setDelegate` to itself, repoint the receive library
+      // and DVN set, and have a malicious DVN attest to a forged packet whose sender matches
+      // the LOCKED peer. That passes the peer check and drains the escrow. Locking removes the
+      // one-transaction, no-collusion route; the inbound rate limit is what bounds the rest.
+      it("BLOCKS the cheap E-01 path: after locking, the lane cannot be redirected", async () => {
+        await adapterB.connect(owner).lockPeers();
+        const escrow = await adapterB.availableLiquidity();
+
+        await expect(
+          adapterB.connect(owner).setPeer(EID_A, ethers.zeroPadValue(other.address, 32))
+        ).to.be.revertedWithCustomError(adapterB, "PeersAreLocked");
+
+        // Legitimate traffic is unaffected.
+        await send(adapterA, tokenA, user, EID_B, user.address, ethers.parseEther("5"));
+        await endpointB.deliverNext();
+        expect(await adapterB.availableLiquidity()).to.equal(escrow - ethers.parseEther("5"));
+      });
+    });
+
+    // Naming the destination adapter as recipient would produce a message that reverts on
+    // EVERY retry (a self-transfer moves nothing, so the escrow delta is zero), leaving the
+    // sender's tokens locked on the source chain with no recovery path. `peers[dstEid]` is
+    // the destination adapter, so this is catchable before anything is locked.
+    it("REJECTS naming the destination adapter as the recipient", async () => {
+      const escrowBefore = await adapterA.availableLiquidity();
       await expect(
-        adapterA.connect(user).setRateLimits([{ dstEid: EID_B, limit: 1n, window: 1 }])
-      ).to.be.revertedWithCustomError(adapterA, "OwnableUnauthorizedAccount");
+        send(adapterA, tokenA, user, EID_B, await adapterB.getAddress(), ethers.parseEther("3"))
+      ).to.be.revertedWithCustomError(adapterA, "RecipientIsBridgeAdapter");
+      expect(await adapterA.availableLiquidity(), "nothing may be locked").to.equal(escrowBefore);
+    });
+
+    it("REJECTS a zero refund address, which would burn any excess fee", async () => {
+      const sendParam = {
+        dstEid: EID_B,
+        to: ethers.zeroPadValue(user.address, 32),
+        amountLD: ethers.parseEther("1"),
+        minAmountLD: 0n,
+        extraOptions: "0x",
+        composeMsg: "0x",
+        oftCmd: "0x",
+      };
+      await expect(
+        adapterA.connect(user).send(sendParam, { nativeFee: 0n, lzTokenFee: 0n }, ZeroAddress, { value: 0n })
+      ).to.be.revertedWithCustomError(adapterA, "ZeroRefundAddress");
+    });
+
+    it("ownership transfer is TWO-STEP and does not take effect until accepted", async () => {
+      await adapterA.connect(owner).transferOwnership(other.address);
+      expect(await adapterA.owner()).to.equal(owner.address);
+      expect(await adapterA.pendingOwner()).to.equal(other.address);
+
+      await expect(adapterA.connect(other).resetRateLimits([EID_B]))
+        .to.be.revertedWithCustomError(adapterA, "OwnableUnauthorizedAccount");
+
+      await adapterA.connect(other).acceptOwnership();
+      expect(await adapterA.owner()).to.equal(other.address);
+    });
+
+    // The LayerZero delegate is the single most dangerous role on this contract: it can
+    // `burn`/`nilify` in-flight messages, permanently stranding funds already locked on the
+    // source chain. `OAppCore.setDelegate` is a SEPARATE entry point that ownership transfer
+    // does not touch, so without an explicit sync a handover silently leaves that power with
+    // the OLD owner. These three tests pin the whole lifecycle.
+    it("the constructor seeds the delegate as the initial owner", async () => {
+      expect(await endpointA.delegates(await adapterA.getAddress())).to.equal(owner.address);
+    });
+
+    it("nominating a new owner does NOT move the delegate yet", async () => {
+      await adapterA.connect(owner).transferOwnership(other.address);
+      expect(await endpointA.delegates(await adapterA.getAddress())).to.equal(owner.address);
+    });
+
+    it("accepting ownership MOVES the LayerZero delegate to the new owner", async () => {
+      const adapterAddr = await adapterA.getAddress();
+      await adapterA.connect(owner).transferOwnership(other.address);
+      await adapterA.connect(other).acceptOwnership();
+
+      expect(await adapterA.owner()).to.equal(other.address);
+      expect(
+        await endpointA.delegates(adapterAddr),
+        "old owner must NOT retain delegate rights after a handover"
+      ).to.equal(other.address);
+    });
+
+    it("ownership can NEVER be renounced", async () => {
+      await expect(adapterA.connect(owner).renounceOwnership()).to.be.revertedWithCustomError(
+        adapterA,
+        "OwnershipCannotBeRenounced"
+      );
+      expect(await adapterA.owner()).to.equal(owner.address);
     });
 
     it("wires the adapter to the token correctly", async () => {
       expect(await adapterA.token()).to.equal(await tokenA.getAddress());
-      expect(await adapterA.minterBurner()).to.equal(await tokenA.getAddress());
       expect(await adapterA.owner()).to.equal(owner.address);
       expect(await adapterA.sharedDecimals()).to.equal(6);
       expect(await adapterA.decimalConversionRate()).to.equal(10n ** 12n);
-      expect(await adapterA.approvalRequired()).to.be.false;
+      expect(await adapterA.approvalRequired()).to.be.true;
     });
 
-    it("token() and minterBurner() are the SAME contract", async () => {
-      // Load-bearing deploy invariant. `_debit` measures `totalSupply()` on `token()` but burns
-      // through `minterBurner`. If a deployment ever passed two different addresses, the
-      // supply-conservation assertion would be measuring a contract that never changed — the
-      // guard would read as passing while proving nothing. Asserted separately from the wiring
-      // test above so the failure message names the actual invariant.
-      expect(await adapterA.token()).to.equal(await adapterA.minterBurner());
-      expect(await adapterB.token()).to.equal(await adapterB.minterBurner());
-    });
-
-    // ---------------------------------------------------------------
-    // R-01 (Critical in the risk register): a bridge minter can burn ANY holder's balance with
-    // no allowance. The design doc requires a test that no adapter path reaches `burn` with a
-    // `_from` other than `msg.sender`. `OFTCore._send` hardcodes `_debit(msg.sender, ...)`, so
-    // there is no calldata field that can name a victim — these tests pin that.
-    // ---------------------------------------------------------------
-    it("R-01: send burns ONLY the caller's balance, never a third party's", async () => {
-      await fund(tokenA, other.address, ethers.parseEther("500"));
-      const victimBefore = await tokenA.balanceOf(other.address);
-      const senderBefore = await tokenA.balanceOf(user.address);
-      const amount = ethers.parseEther("100");
-
-      // `other` is named as the cross-chain RECIPIENT — the only third-party address a caller
-      // controls in SendParam. It must not cause `other`'s source balance to be touched.
-      await send(adapterA, user, EID_B, other.address, amount);
-
-      expect(await tokenA.balanceOf(user.address)).to.equal(senderBefore - amount);
+    it("THE TOKEN GRANTS THE ADAPTER NO SPECIAL POWER AT ALL", async () => {
+      // The whole point of the escrow design: the adapter is an ordinary holder. It has no role,
+      // no minter entry, and no ability to touch anyone's balance beyond its ERC20 allowance.
+      const adapterAddr = await adapterA.getAddress();
+      expect(await tokenA.hasRole(ADMIN_ROLE, adapterAddr)).to.be.false;
       expect(
-        await tokenA.balanceOf(other.address),
-        "R-01 VIOLATED: a third party's balance was burned"
-      ).to.equal(victimBefore);
-
-      await endpointB.deliverNext();
-      expect(await tokenB.balanceOf(other.address)).to.equal(amount);
-    });
-
-    it("R-01: a caller with no balance cannot drain a funded holder", async () => {
-      // `other` holds nothing on chain A; `user` is flush. If `_from` were attacker-selectable
-      // this would succeed against user's balance instead of reverting.
-      const richBefore = await tokenA.balanceOf(user.address);
-      expect(richBefore).to.be.gt(ethers.parseEther("1"));
-      expect(await tokenA.balanceOf(other.address)).to.equal(0n);
-
-      await expect(
-        send(adapterA, other, EID_B, other.address, ethers.parseEther("1"))
-      ).to.be.revertedWithCustomError(tokenA, "ERC20InsufficientBalance");
-
-      expect(await tokenA.balanceOf(user.address)).to.equal(richBefore);
-    });
-
-    // ---------------------------------------------------------------
-    it("PINNED: the rate limit is NET, not gross — inbound refills outbound capacity", async () => {
-      // DELIBERATE BEHAVIOUR PIN, NOT AN ENDORSEMENT.
-      //
-      // `_debit` calls `_outflow(dstEid)` and `_credit` calls `_inflow(srcEid)`. For a single
-      // A<->B lane those are the SAME mapping key, so an inbound transfer subtracts from the very
-      // counter that outbound transfers add to. The limiter therefore bounds NET drain per
-      // window, not GROSS volume: capital that round-trips can move without limit.
-      //
-      // Consequences to be aware of when reading the rollout table's "rate limit / 24h" column:
-      //   - "10M/24h" bounds net export, not total burn volume.
-      //   - The `limit = 0` kill switch is UNAFFECTED: `amountCanBeSent` is 0 regardless of
-      //     inflow, which is why it remains the fastest kill switch.
-      //   - Inbound mint volume is not rate-limited at all; `bridgeMinters.cap` is its bound.
-      //
-      // The design doc specified only `_outflow`; `_inflow` was added during implementation.
-      // If a gross ceiling is what is wanted, delete `_inflow` from `_credit` — this test is
-      // what will fail, and it should be replaced by its inverse.
-      const limit = ethers.parseEther("100");
-      await adapterA.connect(owner).setRateLimits([{ dstEid: EID_B, limit, window: 3600 }]);
-
-      await send(adapterA, user, EID_B, user.address, limit); // exhaust A -> B
-      await endpointB.deliverNext();
-      await expect(
-        send(adapterA, user, EID_B, user.address, ethers.parseEther("50"))
-      ).to.be.revertedWithCustomError(adapterA, "RateLimitExceeded");
-
-      // Round-trip the same tokens back. Delivery on A calls `_inflow(EID_B, 100)`, zeroing A's
-      // outbound-to-B counter within the same window.
-      await send(adapterB, user, EID_A, user.address, limit);
-      await endpointA.deliverNext();
-      expect((await adapterA.rateLimits(EID_B)).amountInFlight).to.equal(0n);
-
-      // Outbound capacity is restored without any time passing.
-      await send(adapterA, user, EID_B, user.address, ethers.parseEther("50"));
-    });
-
-    it("redirects a zero-address recipient to 0xdead instead of reverting", async () => {
-      // `MintBurnOFTAdapter._credit` rewrites a zero recipient to 0xdead because `_mint` rejects
-      // address(0) — and StorageToken.mint independently reverts InvalidAddress on address(0).
-      // FulaOFTAdapter._credit mirrors that rewrite when choosing whose balance to measure for
-      // the supply-invariant check; if the mirror were wrong it would measure balanceOf(0) (always
-      // zero) and revert SupplyInvariantViolated on every such message. That branch had no
-      // coverage, so it was effectively untested code on the inbound path.
-      const DEAD = "0x000000000000000000000000000000000000dEaD";
-      const amount = ethers.parseEther("3");
-      const deadBefore = await tokenB.balanceOf(DEAD);
-
-      await send(adapterA, user, EID_B, ZeroAddress, amount);
-      await endpointB.deliverNext();
-
-      expect(await tokenB.balanceOf(DEAD)).to.equal(deadBefore + amount);
-    });
-
-    it("resetRateLimits clears accumulated usage and is owner-only", async () => {
-      const limit = ethers.parseEther("100");
-      await adapterA.connect(owner).setRateLimits([{ dstEid: EID_B, limit, window: 3600 }]);
-      await send(adapterA, user, EID_B, user.address, limit);
-      await expect(
-        send(adapterA, user, EID_B, user.address, ethers.parseEther("50"))
-      ).to.be.revertedWithCustomError(adapterA, "RateLimitExceeded");
-
-      await expect(
-        adapterA.connect(user).resetRateLimits([EID_B])
-      ).to.be.revertedWithCustomError(adapterA, "OwnableUnauthorizedAccount");
-
-      await adapterA.connect(owner).resetRateLimits([EID_B]);
-      expect((await adapterA.rateLimits(EID_B)).amountInFlight).to.equal(0n);
-      await send(adapterA, user, EID_B, user.address, ethers.parseEther("50"));
-    });
-
-    it("parks and retries an inbound transfer when the destination token is PAUSED", async () => {
-      // The other half of the kill-switch story: `emergencyAction(1)` on the destination must
-      // delay inbound transfers, never destroy them. Source supply stays reduced throughout.
-      const amount = ethers.parseEther("10");
-      const supplyABefore = await tokenA.totalSupply();
-      await send(adapterA, user, EID_B, user.address, amount);
-      expect(await tokenA.totalSupply()).to.equal(supplyABefore - amount);
-
-      await tokenB.connect(owner).emergencyAction(1); // pause
-      await expect(endpointB.deliverNext()).to.be.revertedWithCustomError(
-        tokenB,
-        "EnforcedPause"
-      );
-      expect(await tokenB.balanceOf(user.address)).to.equal(0n);
-
-      await time.increase(30 * 60 + 1); // ProposalTypes.EMERGENCY_COOLDOWN
-      await tokenB.connect(owner).emergencyAction(2); // unpause
-
-      await endpointB.deliverNext();
-      expect(await tokenB.balanceOf(user.address)).to.equal(amount);
+        await tokenA.hasRole(ethers.keccak256(ethers.toUtf8Bytes("BRIDGE_OPERATOR_ROLE")), adapterAddr)
+      ).to.be.false;
+      // And it cannot move `other`'s tokens without an allowance, exactly like any other address.
+      await fund(tokenA, other.address, ethers.parseEther("10"));
+      expect(await tokenA.allowance(other.address, adapterAddr)).to.equal(0n);
     });
   });
 
   // ===================================================================
-  // The adapter must refuse to under-burn or under-credit, so that a future
-  // regression in the token's _update becomes a revert rather than silent inflation.
+  // The escrow guard must fire if the token ever becomes lossy.
   // ===================================================================
-  describe("supply-invariant guard", () => {
-    let lossy: any, adapter: any, endpoint: any;
+  describe("escrow-invariant guard", () => {
+    let feeToken: any, adapter: any, endpoint: any, dst: any;
 
     beforeEach(async () => {
-      const Lossy = await ethers.getContractFactory("MockLossyMintBurnToken");
-      lossy = await Lossy.deploy(0);
-      await lossy.waitForDeployment();
+      const FeeToken = await ethers.getContractFactory("MockFeeOnTransferToken");
+      feeToken = await FeeToken.deploy(0);
+      await feeToken.waitForDeployment();
 
       const Endpoint = await ethers.getContractFactory("MockLZEndpointV2");
       endpoint = await Endpoint.deploy(EID_A);
       await endpoint.waitForDeployment();
+      dst = await Endpoint.deploy(EID_B);
+      await dst.waitForDeployment();
+      await endpoint.setDestLzEndpoint(EID_B, await dst.getAddress());
 
       const Adapter = await ethers.getContractFactory("FulaOFTAdapter");
-      adapter = await Adapter.deploy(
-        await lossy.getAddress(),
-        await lossy.getAddress(),
-        await endpoint.getAddress(),
-        owner.address
-      );
+      adapter = await Adapter.deploy(await feeToken.getAddress(), await endpoint.getAddress(), owner.address);
       await adapter.waitForDeployment();
       await adapter.connect(owner).setPeer(EID_B, ethers.zeroPadValue(await adapter.getAddress(), 32));
       await adapter
         .connect(owner)
         .setRateLimits([{ dstEid: EID_B, limit: ethers.parseEther("1000000"), window: 86400 }]);
 
-      await lossy.mintFree(user.address, ethers.parseEther("1000"));
+      await feeToken.mintFree(user.address, ethers.parseEther("1000"));
+      await feeToken.mintFree(await adapter.getAddress(), ethers.parseEther("1000"));
     });
 
     async function trySend(amount: bigint) {
+      await feeToken.connect(user).approve(await adapter.getAddress(), amount);
       const sendParam = {
         dstEid: EID_B,
         to: ethers.zeroPadValue(user.address, 32),
@@ -1089,75 +1126,60 @@ describe("FULA LayerZero OFT bridge", () => {
     }
 
     it("permits a transfer while the token is lossless", async () => {
-      const Endpoint = await ethers.getContractFactory("MockLZEndpointV2");
-      const dst = await Endpoint.deploy(EID_B);
-      await dst.waitForDeployment();
-      await endpoint.setDestLzEndpoint(EID_B, await dst.getAddress());
-      await trySend(ethers.parseEther("10")); // no revert
+      await trySend(ethers.parseEther("10"));
     });
 
-    it("reverts the outbound burn when the token destroys less than requested", async () => {
-      const Endpoint = await ethers.getContractFactory("MockLZEndpointV2");
-      const dst = await Endpoint.deploy(EID_B);
-      await dst.waitForDeployment();
-      await endpoint.setDestLzEndpoint(EID_B, await dst.getAddress());
-
-      await lossy.setLossBps(500); // 5% skim — the exact un-fixed _update failure mode
+    it("reverts the outbound lock when the token delivers less than requested", async () => {
+      // This is exactly what would happen if StorageToken's platformFeeBps were ever raised above
+      // zero: the escrow would receive less than the adapter reports as sent, and the destination
+      // would release the full amount — draining the escrow a little on every hop.
+      await feeToken.setFeeBps(500); // 5%
       await expect(trySend(ethers.parseEther("10")))
-        .to.be.revertedWithCustomError(adapter, "SupplyInvariantViolated");
+        .to.be.revertedWithCustomError(adapter, "EscrowInvariantViolated");
     });
 
-    it("reverts the INBOUND mint when the token credits less than promised", async () => {
-      // The mirror-image guard, previously untested. `MintBurnOFTAdapter._credit` returns
-      // `_amountLD` unconditionally without checking the recipient actually received it, so
-      // without this override a fee-on-mint regression would inflate global supply invisibly to
-      // LayerZero: the source burned the full amount, the destination credited less, and the
-      // OFTReceived event would still report the full amount.
-      //
-      // Self-loop wiring: this endpoint is its own destination, so a send comes straight back as
-      // an inbound message to the same adapter. Peers are set for both eids to the adapter.
-      await endpoint.setDestLzEndpoint(EID_B, await endpoint.getAddress());
+    // The mirror image, and the one that actually protects the escrow's solvency. On the way IN
+    // a fee means the recipient receives less than the message says was released, so the escrow
+    // pays out more than the recipient gets and the difference is lost to the treasury on every
+    // hop. This must fail closed — and it must PARK rather than destroy, so it self-heals if the
+    // fee is set back to zero.
+    it("reverts the inbound RELEASE when the token delivers less than requested", async () => {
       await adapter
         .connect(owner)
-        .setPeer(EID_A, ethers.zeroPadValue(await adapter.getAddress(), 32));
+        .setInboundRateLimits([{ dstEid: EID_A, limit: ethers.parseEther("1000000"), window: 86400 }]);
+      await adapter.connect(owner).setPeer(EID_A, ethers.zeroPadValue(other.address, 32));
+      // Loop this endpoint back to itself so a packet addressed to EID_A is queued here.
+      await endpoint.setDestLzEndpoint(EID_A, await endpoint.getAddress());
 
       const amount = ethers.parseEther("10");
-      const supplyBefore = await lossy.totalSupply();
+      const message = ethers.solidityPacked(
+        ["bytes32", "uint64"],
+        [ethers.zeroPadValue(user.address, 32), amount / 10n ** 12n]
+      );
+      await endpoint.connect(other).send(
+        {
+          dstEid: EID_A, // this endpoint's own eid, so the packet lands back here
+          receiver: ethers.zeroPadValue(await adapter.getAddress(), 32),
+          message,
+          options: "0x",
+          payInLzToken: false,
+        },
+        other.address,
+        { value: 0n }
+      );
 
-      // Send while the token is LOSSLESS so the outbound `_debit` check passes cleanly. This
-      // isolates `_credit` — a failure now can only come from the inbound side.
-      await trySend(amount);
-      expect(await lossy.totalSupply()).to.equal(supplyBefore - amount);
-
-      await lossy.setLossBps(500);
+      await feeToken.setFeeBps(500); // 5% — recipient would receive only 9.5
+      const escrowBefore = await adapter.availableLiquidity();
       await expect(endpoint.deliverNext()).to.be.revertedWithCustomError(
         adapter,
-        "SupplyInvariantViolated"
+        "EscrowInvariantViolated"
       );
-      // Nothing was credited, and the source-side burn stands.
-      expect(await lossy.totalSupply()).to.equal(supplyBefore - amount);
+      expect(await adapter.availableLiquidity(), "escrow must not leak").to.equal(escrowBefore);
 
-      // Reverting is non-destructive: clear the fault and the parked message delivers in full.
-      await lossy.setLossBps(0);
+      // Fail-closed, not fail-destructive: zero the fee and the same message delivers.
+      await feeToken.setFeeBps(0);
       await endpoint.deliverNext();
-      expect(await lossy.totalSupply()).to.equal(supplyBefore);
-      expect(await lossy.balanceOf(user.address)).to.equal(ethers.parseEther("1000"));
-    });
-
-    it("accepts an inbound mint that credits exactly the promised amount", async () => {
-      // Negative control for the test above: with a lossless token the same path must succeed,
-      // proving the revert is caused by the loss and not by the self-loop wiring.
-      await endpoint.setDestLzEndpoint(EID_B, await endpoint.getAddress());
-      await adapter
-        .connect(owner)
-        .setPeer(EID_A, ethers.zeroPadValue(await adapter.getAddress(), 32));
-
-      const supplyBefore = await lossy.totalSupply();
-      await trySend(ethers.parseEther("10"));
-      await endpoint.deliverNext();
-
-      expect(await lossy.totalSupply()).to.equal(supplyBefore);
-      expect(await lossy.balanceOf(user.address)).to.equal(ethers.parseEther("1000"));
+      expect(await adapter.availableLiquidity()).to.equal(escrowBefore - amount);
     });
   });
 });

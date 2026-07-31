@@ -2,7 +2,7 @@
 // DVN/executor security stack, enforced options and rate limits.
 //
 // Run ONCE PER CHAIN, after both adapters are deployed and both are authorized as
-// bridge minters. Until setPeer is called on BOTH sides no message can move.
+// escrow adapters. Until setPeer is called on BOTH sides no message can move.
 //
 // IMPORTANT: the send-side ULN config on chain A must describe the SAME DVN set and
 // threshold as the receive-side ULN config on chain B. A mismatch means messages are
@@ -12,7 +12,7 @@
 // the calldata for each transaction instead of sending it.
 //
 // USAGE:
-//   ADAPTER=0x.. REMOTE_ADAPTER=0x.. REMOTE=base RATE_LIMIT=1000000 \
+//   ADAPTER=0x.. REMOTE_ADAPTER=0x.. REMOTE=base RATE_LIMIT=200000000 INBOUND_RATE_LIMIT=20000000 \
 //     npx hardhat run scripts/bridge/wireOApp.ts --network ethereum
 import { ethers, network } from "hardhat";
 import { chainFor, requiredDvnAddresses } from "./addresses";
@@ -56,6 +56,20 @@ async function main() {
   }
   const rateLimit = ethers.parseEther(rateLimitRaw);
   const rateWindow = Number(process.env.RATE_WINDOW?.trim() || 86400);
+
+  // INBOUND limit — also fail-closed, and the one that actually bounds a theft. Outbound
+  // throttles how fast tokens leave; inbound bounds how much escrow ONE compromised or forged
+  // message can remove. Size it against the ESCROW BALANCE on this chain (aim for 10-25%), not
+  // against supply: the bucket starts full, so this number IS the instant first-tranche loss.
+  const inboundLimitRaw = process.env.INBOUND_RATE_LIMIT?.trim();
+  if (!inboundLimitRaw) {
+    throw new Error(
+      "INBOUND_RATE_LIMIT environment variable not set (in whole FULA). The inbound limiter is " +
+        "FAIL-CLOSED: without it every inbound transfer parks with InboundRateLimitExceeded."
+    );
+  }
+  const inboundLimit = ethers.parseEther(inboundLimitRaw);
+  const inboundWindow = Number(process.env.INBOUND_RATE_WINDOW?.trim() || 86400);
   const lzReceiveGas = Number(process.env.LZ_RECEIVE_GAS?.trim() || 250000);
   const confirmations = BigInt(process.env.CONFIRMATIONS?.trim() || 15);
   const dryRun = process.env.DRY_RUN === "1";
@@ -67,7 +81,8 @@ async function main() {
   console.log(`remote adapter: ${remoteAdapterAddr}`);
   console.log(`required DVNs:  ${requiredDvns.join(", ")}`);
   console.log(`confirmations:  ${confirmations}`);
-  console.log(`rate limit:     ${rateLimitRaw} FULA / ${rateWindow}s`);
+  console.log(`rate limit:     ${rateLimitRaw} FULA / ${rateWindow}s  (outbound, throttles flow)`);
+  console.log(`inbound limit:  ${inboundLimitRaw} FULA / ${inboundWindow}s  (bounds a single compromise)`);
   console.log(`lzReceive gas:  ${lzReceiveGas}`);
   if (dryRun) console.log(`\nDRY RUN — printing calldata only.\n`);
 
@@ -94,6 +109,7 @@ async function main() {
       "function setConfig(address _oapp, address _lib, (uint32 eid, uint32 configType, bytes config)[] _params) external",
       "function getConfig(address _oapp, address _lib, uint32 _eid, uint32 _configType) external view returns (bytes)",
       "function getSendLibrary(address _sender, uint32 _dstEid) external view returns (address)",
+      "function isDefaultSendLibrary(address _sender, uint32 _dstEid) external view returns (bool)",
       "function getReceiveLibrary(address _receiver, uint32 _srcEid) external view returns (address lib, bool isDefault)",
     ],
     local.endpoint
@@ -107,6 +123,12 @@ async function main() {
   // already done and is skipped rather than attempted.
   async function sendLibAlreadySet(): Promise<boolean> {
     try {
+      // `getSendLibrary` LAZILY FALLS BACK to LayerZero's default when the OApp has not set one
+      // (MessageLibManager.sol:83-89), so comparing it alone reports "already set" for a brand-new
+      // adapter that has actually pinned nothing. That would leave the OApp riding LayerZero's
+      // MUTABLE default — precisely what the design record says not to inherit. `isDefaultSendLibrary`
+      // is what distinguishes "explicitly pinned" from "merely defaulting".
+      if (await endpoint.isDefaultSendLibrary(adapterAddr, remote.eid)) return false;
       const cur = await endpoint.getSendLibrary(adapterAddr, remote.eid);
       return String(cur).toLowerCase() === local.sendUln302.toLowerCase();
     } catch {
@@ -145,9 +167,15 @@ async function main() {
     ]]) }],
     ["adapter.setEnforcedOptions", { to: adapterAddr, data: adapter.interface.encodeFunctionData("setEnforcedOptions", [enforced]) }],
     ["adapter.setRateLimits", { to: adapterAddr, data: adapter.interface.encodeFunctionData("setRateLimits", [[{ dstEid: remote.eid, limit: rateLimit, window: rateWindow }]]) }],
+    ["adapter.setInboundRateLimits", { to: adapterAddr, data: adapter.interface.encodeFunctionData("setInboundRateLimits", [[{ dstEid: remote.eid, limit: inboundLimit, window: inboundWindow }]]) }],
   ];
 
   const [signer] = await ethers.getSigners();
+  // Fetch the nonce ONCE and advance it ourselves. Public RPCs frequently serve a stale
+  // transaction count immediately after a send, which produced repeated "nonce too low" aborts
+  // mid-wiring when each transaction re-queried it.
+  let nonce = await ethers.provider.getTransactionCount(signer.address, "pending");
+
   for (const [name, tx, alreadyDone] of txs) {
     if (dryRun) {
       console.log(`\n${name}\n  to:   ${tx.to}\n  data: ${tx.data}`);
@@ -158,10 +186,8 @@ async function main() {
       continue;
     }
     console.log(`\n${name} ...`);
-    // Pin the nonce explicitly. Public RPCs occasionally serve a stale transaction count, which
-    // produced a "nonce too low" mid-run here on base-sepolia and aborted the wiring halfway.
-    const nonce = await ethers.provider.getTransactionCount(signer.address, "pending");
     const sent = await signer.sendTransaction({ ...tx, nonce });
+    nonce++;
     await sent.wait();
     console.log(`  ok (${sent.hash})`);
   }

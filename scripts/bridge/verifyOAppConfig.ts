@@ -71,10 +71,12 @@ async function main() {
     `token() is the expected FULA proxy`,
     token
   );
-  check((await adapter.minterBurner()).toLowerCase() === token.toLowerCase(), `minterBurner() == token()`);
   check(Number(await adapter.sharedDecimals()) === 6, `sharedDecimals == 6 (dust granularity 1e12)`);
   check((await adapter.decimalConversionRate()) === 10n ** 12n, `decimalConversionRate == 1e12`);
-  check((await adapter.approvalRequired()) === false, `approvalRequired() == false`);
+  // TRUE is correct here and is the signature of a lock/release escrow adapter: it pulls tokens
+  // with transferFrom, so holders must approve first. A mint/burn adapter would report false —
+  // seeing false would mean the wrong adapter type is deployed.
+  check((await adapter.approvalRequired()) === true, `approvalRequired() == true (escrow adapter)`);
 
   const owner = await adapter.owner();
   const ownerCode = await ethers.provider.getCode(owner);
@@ -263,25 +265,102 @@ async function main() {
   );
   check(window > 12n, `window exceeds block time`, `${window}s`);
 
-  // ---------------------------------------------------------------- token side
-  console.log(`\n-- token authorization --`);
+  // The INBOUND bucket is the one that bounds a theft. Outbound only throttles how fast tokens
+  // leave; inbound caps how much escrow a single forged or maliciously-authorised message can
+  // remove. It is separately fail-closed, so an unset value silently parks every arrival.
+  const irl = await adapter.inboundRateLimits(remote.eid);
+  const [inFlightIn, , inboundLimit, inboundWindow] = irl as unknown as [bigint, bigint, bigint, bigint];
+  console.log(`     INBOUND limit: ${ethers.formatEther(inboundLimit)} FULA per ${inboundWindow}s`);
+  console.log(`     in flight:     ${ethers.formatEther(inFlightIn)} FULA`);
+  check(
+    inboundLimit > 0n,
+    `inbound rate limit configured`,
+    inboundLimit === 0n ? "FAIL-CLOSED: every inbound transfer will park with InboundRateLimitExceeded" : ""
+  );
+
+  // Sizing. `_credit` checks liquidity BEFORE the inbound limit, so a limit at or above the
+  // escrow balance can NEVER fire: anything larger than escrow already reverted with
+  // InsufficientLiquidity, and anything small enough to pass is by definition under the limit.
+  // Such a limit is not merely weak — it is inert. That is a hard failure, not a note.
+  const escrowedNow = await adapter.availableLiquidity();
+  if (inboundLimit > 0n && escrowedNow > 0n) {
+    const pct = (inboundLimit * 100n) / escrowedNow;
+    console.log(
+      `     inbound limit is ${pct}% of current escrow (${ethers.formatEther(escrowedNow)} FULA)`
+    );
+    check(
+      inboundLimit < escrowedNow,
+      `inbound limit is BELOW escrow (so it can actually fire)`,
+      // Only explain on failure — `check` prints this line unconditionally.
+      inboundLimit < escrowedNow
+        ? ""
+        : `limit ${ethers.formatEther(inboundLimit)} >= escrow ${ethers.formatEther(escrowedNow)}: ` +
+          `InsufficientLiquidity always triggers first, so this limiter is INERT and bounds nothing`
+    );
+    if (inboundLimit < escrowedNow && pct > 25n) {
+      console.log(
+        `     NOTE: ${pct}% of escrow can be released in one window. The bucket starts full, so\n` +
+          `           that is the instant first-tranche loss if a message is ever forged.\n` +
+          `           Target 10-25%. Functional, but weaker than intended.`
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------- peer lock
+  console.log(`\n-- peer lock --`);
+  const locked = await adapter.peersLocked();
+  console.log(`     peersLocked: ${locked}`);
+  check(
+    locked,
+    `peer set is FROZEN (lockPeers called)`,
+    `while unlocked, the owner can repoint this lane at an address it controls and drain the ` +
+      `entire escrow — no DVN compromise needed. Call lockPeers() once both lanes are proven.`
+  );
+
+  // ---------------------------------------------------------------- escrow liquidity
+  //
+  // This is a LOCK/RELEASE adapter: it holds no special power over the token and therefore needs
+  // no governance authorization at all. What it does need is BALANCE — a chain can only release
+  // tokens it already custodies. Liquidity replaces "is the minter authorized?" as the thing that
+  // determines whether inbound transfers can succeed.
+  console.log(`\n-- escrow liquidity --`);
   try {
     const tokenC = await ethers.getContractAt("StorageToken", token);
-    const minter = await tokenC.bridgeMinters(adapterAddr);
-    console.log(`     enabled:   ${minter.enabled}`);
-    console.log(`     cap:       ${ethers.formatEther(minter.cap)} FULA`);
-    console.log(`     netMinted: ${ethers.formatEther(minter.netMinted)} FULA`);
-    check(minter.enabled, `adapter is an authorized bridge minter`);
-    check(minter.cap > 0n, `cap is non-zero`);
-    if (minter.cap > 0n) {
-      const used = (minter.netMinted * 100n) / minter.cap;
-      if (minter.netMinted > 0n && used >= 80n) {
-        console.log(`     WARNING: ${used}% of cap consumed — raising it takes a 24h governance cycle.`);
-      }
+    const escrow: bigint = await tokenC.balanceOf(adapterAddr);
+    const supply: bigint = await tokenC.totalSupply();
+    console.log(`     escrowed here:  ${ethers.formatEther(escrow)} FULA`);
+    console.log(`     local supply:   ${ethers.formatEther(supply)} FULA`);
+
+    check(
+      escrow > 0n,
+      `adapter holds escrow liquidity`,
+      escrow === 0n
+        ? "every INBOUND transfer to this chain will revert InsufficientLiquidity and park"
+        : ""
+    );
+
+    // A warning band rather than a hard threshold: what counts as "enough" is a function of
+    // expected inbound flow, which this script cannot know. Surface it and let the operator judge.
+    if (escrow > 0n) {
+      const pctOfSupply = (escrow * 10000n) / supply;
+      console.log(
+        `     that is ${Number(pctOfSupply) / 100}% of this chain's supply — size it against expected INBOUND flow.`
+      );
     }
+
+    // The adapter must hold NO privileged position. Under mint/burn it needed one; under escrow a
+    // privileged adapter would be a red flag, so assert the absence.
+    const adminRole = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
+    const bridgeOpRole = ethers.keccak256(ethers.toUtf8Bytes("BRIDGE_OPERATOR_ROLE"));
+    check(!(await tokenC.hasRole(adminRole, adapterAddr)), `adapter holds NO admin role`);
+    check(
+      !(await tokenC.hasRole(bridgeOpRole, adapterAddr)),
+      `adapter holds NO bridge-operator role`
+    );
+
     check(!(await tokenC.paused()), `token is not paused`);
   } catch (e: any) {
-    check(false, `token bridgeMinters readable`, e.shortMessage ?? e.message);
+    check(false, `token state readable`, e.shortMessage ?? e.message);
   }
 
   console.log(`\n${"=".repeat(72)}`);
