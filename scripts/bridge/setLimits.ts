@@ -48,12 +48,24 @@ async function main() {
   const [, inBefore] = await adapter.getAmountCanBeReceived(eid);
   console.log(`before -> outbound available ${ethers.formatEther(outBefore)}, inbound available ${ethers.formatEther(inBefore)}`);
 
+  // DRY_RUN prints calldata instead of sending. REQUIRED when the owner is a Safe/Timelock,
+  // because this script signs with a plain EOA and the call would revert
+  // OwnableUnauthorizedAccount. Paste `to` + `data` into the Safe transaction builder.
+  const dryRun = process.env.DRY_RUN === "1";
+  if (dryRun) console.log(`\nDRY RUN — printing calldata only, nothing will be sent.\n`);
+
   if (outbound !== undefined) {
     const limit = ethers.parseEther(outbound);
-    console.log(`\nsetRateLimits(outbound) = ${outbound} / ${window}s ...`);
-    const tx = await adapter.connect(signer).setRateLimits([{ dstEid: eid, limit, window }]);
-    await tx.wait();
-    console.log(`  ok (${tx.hash})${limit === 0n ? "   <-- OUTBOUND HALTED" : ""}`);
+    const data = adapter.interface.encodeFunctionData("setRateLimits", [[{ dstEid: eid, limit, window }]]);
+    if (dryRun) {
+      console.log(`\nsetRateLimits(outbound) = ${outbound} / ${window}s`);
+      console.log(`  to:   ${adapterAddr}\n  data: ${data}`);
+    } else {
+      console.log(`\nsetRateLimits(outbound) = ${outbound} / ${window}s ...`);
+      const tx = await adapter.connect(signer).setRateLimits([{ dstEid: eid, limit, window }]);
+      await tx.wait();
+      console.log(`  ok (${tx.hash})${limit === 0n ? "   <-- OUTBOUND HALTED" : ""}`);
+    }
   }
 
   if (inbound !== undefined) {
@@ -66,11 +78,19 @@ async function main() {
           `  limiter would be INERT and bound nothing. Lower it, or seed more liquidity.`
       );
     }
-    console.log(`\nsetInboundRateLimits = ${inbound} / ${window}s ...`);
-    const tx = await adapter.connect(signer).setInboundRateLimits([{ dstEid: eid, limit, window }]);
-    await tx.wait();
-    console.log(`  ok (${tx.hash})${limit === 0n ? "   <-- INBOUND RELEASES HALTED (messages park, nothing lost)" : ""}`);
+    const data = adapter.interface.encodeFunctionData("setInboundRateLimits", [[{ dstEid: eid, limit, window }]]);
+    if (dryRun) {
+      console.log(`\nsetInboundRateLimits = ${inbound} / ${window}s`);
+      console.log(`  to:   ${adapterAddr}\n  data: ${data}`);
+    } else {
+      console.log(`\nsetInboundRateLimits = ${inbound} / ${window}s ...`);
+      const tx = await adapter.connect(signer).setInboundRateLimits([{ dstEid: eid, limit, window }]);
+      await tx.wait();
+      console.log(`  ok (${tx.hash})${limit === 0n ? "   <-- INBOUND RELEASES HALTED (messages park, nothing lost)" : ""}`);
+    }
   }
+
+  if (dryRun) return;
 
   const [, outAfter] = await adapter.getAmountCanBeSent(eid);
   const [, inAfter] = await adapter.getAmountCanBeReceived(eid);

@@ -46,18 +46,6 @@ async function main() {
     throw new Error(`Adapter escrows a DIFFERENT token (${await adapter.token()}). Wrong adapter?`);
   }
 
-  const cfg = await token.timeConfigs(deployer.address);
-  const lock = Number(cfg.whitelistLockTime);
-  if (lock === 0) throw new Error(`${deployer.address} is NOT whitelisted — needs an AddWhitelist proposal.`);
-  if (lock > now) throw new Error(`Whitelist still locked for ${hms(lock - now)} (until ${new Date(lock * 1000).toISOString()}).`);
-
-  const adminLimit = (await token.roleConfigs(ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE")))).transactionLimit;
-  if (amount > adminLimit) {
-    throw new Error(
-      `AMOUNT exceeds ADMIN_ROLE transactionLimit (${ethers.formatEther(adminLimit)} FULA). Split into multiple runs.`
-    );
-  }
-
   // Only the SHORTFALL has to come out of the token contract. Checking the full amount here
   // made the script un-resumable: after hop 1 succeeded and hop 2 failed, a re-run aborted
   // because the contract no longer held the whole amount — even though the funder now did.
@@ -66,13 +54,43 @@ async function main() {
 
   const held = await token.balanceOf(deployer.address);
   const need = amount > held ? amount - held : 0n;
+  console.log(`funder holds:  ${ethers.formatEther(held)} FULA`);
+  console.log(`must withdraw from the token contract: ${ethers.formatEther(need)} FULA\n`);
 
-  const contractBal = await token.balanceOf(tokenAddr);
-  if (contractBal < need) {
-    throw new Error(
-      `Token contract holds ${ethers.formatEther(contractBal)} FULA but ${ethers.formatEther(need)} more ` +
-        `is needed (funder already has ${ethers.formatEther(held)}).`
-    );
+  // WHITELIST AND ADMIN LIMIT ONLY MATTER FOR THE TREASURY HOP. If the funder already holds
+  // enough FULA, this script does nothing but a plain ERC20 transfer — which needs no whitelist,
+  // no ADMIN_ROLE and no governance at all. An earlier version demanded a whitelist
+  // unconditionally, which made a perfectly valid "fund from a wallet I already own" run
+  // impossible and sent operators through a needless 48h governance cycle.
+  if (need > 0n) {
+    const cfg = await token.timeConfigs(deployer.address);
+    const lock = Number(cfg.whitelistLockTime);
+    if (lock === 0) {
+      throw new Error(
+        `${deployer.address} must pull ${ethers.formatEther(need)} FULA out of the token contract, ` +
+          `but is NOT whitelisted. Either run an AddWhitelist proposal for it (24h + 24h lock), or ` +
+          `fund this wallet with FULA from anywhere else first — then no whitelist is needed.`
+      );
+    }
+    if (lock > now) {
+      throw new Error(`Whitelist still locked for ${hms(lock - now)} (until ${new Date(lock * 1000).toISOString()}).`);
+    }
+
+    const adminLimit = (await token.roleConfigs(ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE")))).transactionLimit;
+    if (need > adminLimit) {
+      throw new Error(
+        `Withdrawal of ${ethers.formatEther(need)} exceeds the ADMIN_ROLE transactionLimit ` +
+          `(${ethers.formatEther(adminLimit)} FULA). Split into multiple runs, or raise the limit by governance.`
+      );
+    }
+
+    const contractBal = await token.balanceOf(tokenAddr);
+    if (contractBal < need) {
+      throw new Error(
+        `Token contract holds ${ethers.formatEther(contractBal)} FULA but ${ethers.formatEther(need)} more ` +
+          `is needed (funder already has ${ethers.formatEther(held)}).`
+      );
+    }
   }
 
   // --- hop 1: contract -> deployer --------------------------------------

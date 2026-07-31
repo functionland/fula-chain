@@ -58,11 +58,18 @@ async function main() {
     console.log(`  NOTE: escrow is empty. Locking is still safe, but confirm this adapter is the live one.`);
   }
 
+  // When the owner is a Safe/Timelock this script cannot send the transaction itself — it signs
+  // with a plain EOA and the call would revert OwnableUnauthorizedAccount. Print the calldata to
+  // paste into the Safe instead.
+  const data = adapter.interface.encodeFunctionData("lockPeers", []);
+  console.log(`\ncalldata for a Safe/Timelock owner:\n  to:   ${adapterAddr}\n  data: ${data}`);
+
   if (process.env.CONFIRM !== "LOCK") {
     console.log(
       `\nDRY RUN — nothing was changed.\n` +
         `This action is IRREVERSIBLE. Re-run with CONFIRM=LOCK once you are sure a real\n` +
-        `cross-chain transfer has completed on this lane in BOTH directions.`
+        `cross-chain transfer has completed on this lane in BOTH directions.\n` +
+        `If the owner is a Safe/Timelock, do NOT re-run — submit the calldata above instead.`
     );
     return;
   }
