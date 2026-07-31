@@ -64,7 +64,7 @@ async function main() {
   const data = adapter.interface.encodeFunctionData("lockPeers", []);
   console.log(`\ncalldata for a Safe/Timelock owner:\n  to:   ${adapterAddr}\n  data: ${data}`);
 
-  if (process.env.CONFIRM !== "LOCK") {
+  if (process.env.CONFIRM?.trim() !== "LOCK") {
     console.log(
       `\nDRY RUN — nothing was changed.\n` +
         `This action is IRREVERSIBLE. Re-run with CONFIRM=LOCK once you are sure a real\n` +

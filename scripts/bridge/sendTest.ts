@@ -35,8 +35,9 @@ async function main() {
   if (!amountRaw) throw new Error("AMOUNT not set (in whole FULA, e.g. AMOUNT=1.5)");
   const amountLD = ethers.parseEther(amountRaw);
 
-  const dryRun = process.env.DRY_RUN === "1";
-  const exact = process.env.EXACT === "1";
+  // Trimmed: `set DRY_RUN=1 && ...` on Windows yields "1 " and an untrimmed check fails OPEN.
+  const dryRun = process.env.DRY_RUN?.trim() === "1";
+  const exact = process.env.EXACT?.trim() === "1";
   const bufferBps = BigInt(process.env.FEE_BUFFER_BPS?.trim() || "500");
 
   const [signer] = await ethers.getSigners();

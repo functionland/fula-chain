@@ -42,22 +42,66 @@ async function main() {
   console.log(`endpoint: ${chain.endpoint}`);
   console.log(`owner:    ${owner}`);
 
+  // REFUSE, do not merely warn. Two distinct disasters hide behind an owner with no code:
+  //
+  //   1. It is a genuine EOA — then a single leaked key drains the whole escrow, because the
+  //      owner can `setPeer` a lane to an address it controls and release the balance.
+  //   2. IT IS A SAFE THAT EXISTS ON THE OTHER CHAIN BUT NOT THIS ONE. A Safe address is only
+  //      a contract where it has actually been deployed; the same address on a second chain is
+  //      frequently empty. Deploying here would hand ownership to an address that can never
+  //      act — and since `transferOwnership` is onlyOwner and `renounceOwnership` reverts,
+  //      the adapter could never be wired, funded, or recovered. Permanently bricked.
+  //
+  // This used to be a console warning, which is invisible in practice: hardhat prints a
+  // ~60-line contract-size table immediately beforehand.
   const code = await ethers.provider.getCode(owner);
   if (code === "0x") {
-    console.log(
-      `\n  WARNING: OWNER is an EOA, not a contract.\n` +
-        `  The owner can DRAIN THE ENTIRE ESCROW by calling setPeer to point a lane at an\n` +
-        `  attacker-controlled address, which then sends a message releasing the balance.\n` +
-        `  It is also the LayerZero delegate, so it can permanently DESTROY in-flight messages\n` +
-        `  via endpoint.burn/nilify — stranding funds already locked on the source chain.\n` +
-        `  Use a TimelockController or multisig for mainnet.\n`
-    );
+    const msg =
+      `OWNER ${owner} has NO CONTRACT CODE on ${network.name}.\n\n` +
+      `  If it is a multisig, IT IS NOT DEPLOYED ON THIS CHAIN. Deploying now would make the\n` +
+      `  adapter permanently unusable: ownership could never be exercised or transferred, so it\n` +
+      `  could never be wired, funded or recovered. Deploy the Safe on this chain first — a Safe\n` +
+      `  address is only a contract where it has actually been created.\n\n` +
+      `  If it really is an EOA, a single leaked key drains the entire escrow.\n\n` +
+      `  Verify with:  cast code ${owner} --rpc-url <this chain>\n` +
+      `  To proceed anyway (testnet only): set ALLOW_EOA_OWNER=1`;
+    if (process.env.ALLOW_EOA_OWNER?.trim() !== "1") throw new Error(`REFUSING TO DEPLOY: ${msg}`);
+    console.log(`\n  WARNING (ALLOW_EOA_OWNER=1 set): ${msg}\n`);
+  } else {
+    console.log(`owner has contract code on this chain (${(code.length - 2) / 2} bytes) — good`);
   }
 
   const Adapter = await ethers.getContractFactory("FulaOFTAdapter");
-  const adapter = await Adapter.deploy(token, chain.endpoint, owner);
-  await adapter.waitForDeployment();
-  const address = await adapter.getAddress();
+  const pending = await Adapter.deploy(token, chain.endpoint, owner);
+  const deployHash = pending.deploymentTransaction()?.hash;
+  console.log(`\ndeploy tx: ${deployHash}`);
+
+  // SURVIVE A HOSTILE RPC RESPONSE. Several public endpoints return `"to": ""` for a
+  // contract-creation transaction where ethers v6 requires `null`, and ethers then throws
+  // `invalid value for value.to` from inside waitForDeployment. The deployment itself is
+  // FINE — the transaction is mined and the contract exists — but the script would abort
+  // as though it had failed, inviting a pointless (and costly) redeploy.
+  //
+  // On that failure, fall back to the raw receipt, which bypasses the response formatter.
+  let address: string;
+  try {
+    await pending.waitForDeployment();
+    address = await pending.getAddress();
+  } catch (e: any) {
+    if (!deployHash) throw e;
+    console.log(`\n  waitForDeployment failed (${e.shortMessage ?? e.message}).`);
+    console.log(`  This is usually an RPC formatting quirk, not a failed deploy. Polling the receipt...`);
+    let receipt: any = null;
+    for (let i = 0; i < 60 && !receipt; i++) {
+      receipt = await ethers.provider.send("eth_getTransactionReceipt", [deployHash]);
+      if (!receipt) await new Promise((r) => setTimeout(r, 5000));
+    }
+    if (!receipt) throw new Error(`No receipt for ${deployHash} after 5 minutes. Check the explorer.`);
+    if (receipt.status !== "0x1") throw new Error(`Deploy transaction REVERTED (${deployHash}).`);
+    address = ethers.getAddress(receipt.contractAddress);
+    console.log(`  recovered — the deploy succeeded.`);
+  }
+  const adapter = await ethers.getContractAt("FulaOFTAdapter", address);
   console.log(`\nFulaOFTAdapter deployed: ${address}`);
 
   // Public RPCs routinely serve STALE state for a few seconds after a deployment — a contract that

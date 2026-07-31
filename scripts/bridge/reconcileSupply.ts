@@ -110,7 +110,7 @@ const MAINNET_CHAINS: ChainCfg[] = [
 ];
 
 /** TESTNET=1 reconciles the Stage-0 rehearsal instead of mainnet. */
-const IS_TESTNET = process.env.TESTNET === "1";
+const IS_TESTNET = process.env.TESTNET?.trim() === "1";
 const CHAINS: ChainCfg[] = IS_TESTNET ? TESTNET_CHAINS : MAINNET_CHAINS;
 /** The 2B cap is a property of the token, so it applies on the testnet mirror too. */
 
@@ -204,7 +204,7 @@ async function main() {
   const stateFile =
     process.env.STATE_FILE?.trim() ||
     path.join(".reconcile", IS_TESTNET ? "state-testnet.json" : "state.json");
-  const strict = process.env.STRICT === "1";
+  const strict = process.env.STRICT?.trim() === "1";
 
   console.log(`FULA cross-chain supply reconciliation${IS_TESTNET ? "  [TESTNET]" : ""}`);
   console.log(`run at: ${new Date().toISOString()}\n`);

@@ -107,7 +107,7 @@ async function main() {
 
   // ---------------------------------------------------------------- approve
   const targetId = process.env.PROPOSAL_ID?.trim();
-  const approveAll = process.env.APPROVE_ALL === "1";
+  const approveAll = process.env.APPROVE_ALL?.trim() === "1";
   if (!targetId && !approveAll) {
     console.log(`Set PROPOSAL_ID=0x.. to approve one, or APPROVE_ALL=1 for every READY proposal.`);
     return;

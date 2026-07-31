@@ -127,13 +127,25 @@ const config: HardhatUserConfig = {
       },
     },
   },
+  // DISABLED: Sourcify's API v1 is in a scheduled brownout until 2027-01-08 and returns 503 on
+  // every request, which made `hardhat verify` exit non-zero and print "found one or more errors
+  // during the verification process" even when Etherscan verification had SUCCEEDED. A step that
+  // always fails trains you to ignore verification output, which is exactly when a real failure
+  // slips through. Re-enable once hardhat-verify supports Sourcify API v2.
   sourcify: {
-    enabled: true,
+    enabled: false,
   },
   networks: {
     // Mainnets
     ethereum: {
-      url: `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_KEY || ""}`,
+      // ETHEREUM_RPC overrides everything. Without it this falls back to Alchemy, and if
+      // ALCHEMY_KEY is unset the URL degrades to ".../v2/" and every call fails with
+      // "Must be authenticated!" — which looks like a script bug but is purely RPC config.
+      // Note an Alchemy key also has to have ETH mainnet ENABLED for the app, or it 403s with
+      // "ETH_MAINNET is not enabled for this app" even when the key is correct.
+      url:
+        process.env.ETHEREUM_RPC?.trim() ||
+        `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_KEY || ""}`,
       accounts: (() => {
         const accounts = [];
         if (vars.has("PK")) accounts.push(vars.get("PK"));

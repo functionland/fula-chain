@@ -51,7 +51,9 @@ async function main() {
   // DRY_RUN prints calldata instead of sending. REQUIRED when the owner is a Safe/Timelock,
   // because this script signs with a plain EOA and the call would revert
   // OwnableUnauthorizedAccount. Paste `to` + `data` into the Safe transaction builder.
-  const dryRun = process.env.DRY_RUN === "1";
+  // Trimmed: `set DRY_RUN=1 && ...` on Windows yields "1 " and an untrimmed check fails OPEN,
+  // sending real transactions during what the operator believes is a dry run.
+  const dryRun = process.env.DRY_RUN?.trim() === "1";
   if (dryRun) console.log(`\nDRY RUN — printing calldata only, nothing will be sent.\n`);
 
   if (outbound !== undefined) {

@@ -72,7 +72,11 @@ async function main() {
   const inboundWindow = Number(process.env.INBOUND_RATE_WINDOW?.trim() || 86400);
   const lzReceiveGas = Number(process.env.LZ_RECEIVE_GAS?.trim() || 250000);
   const confirmations = BigInt(process.env.CONFIRMATIONS?.trim() || 15);
-  const dryRun = process.env.DRY_RUN === "1";
+  // TRIM. On Windows `set DRY_RUN=1 && npx hardhat ...` assigns "1 " WITH A TRAILING SPACE,
+  // because cmd takes everything after `=` literally. An untrimmed `=== "1"` is then false and
+  // this script sends REAL transactions while the operator believes it is dry-running. That is
+  // a fail-OPEN bug on the one flag whose entire purpose is to prevent sending.
+  const dryRun = process.env.DRY_RUN?.trim() === "1";
 
   const requiredDvns = requiredDvnAddresses(local.network);
   console.log(`local:          ${local.network} (eid ${local.eid})`);
