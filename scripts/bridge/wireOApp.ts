@@ -47,6 +47,19 @@ async function main() {
   if (!adapterAddr) throw new Error("ADAPTER environment variable not set");
   if (!remoteAdapterAddr) throw new Error("REMOTE_ADAPTER environment variable not set");
 
+  // REFUSE a self-peer. Wiring the second chain means SWAPPING ADAPTER and REMOTE_ADAPTER, and
+  // it is very easy to update one and forget the other — especially in a shell where both were
+  // exported for the first chain. The result passes every other check and produces a perfectly
+  // valid-looking batch that points the lane at THIS adapter, so no message from the real peer
+  // is ever accepted. Cheap to catch here, expensive to discover after a Safe execution.
+  if (adapterAddr.toLowerCase() === remoteAdapterAddr.toLowerCase()) {
+    throw new Error(
+      `ADAPTER and REMOTE_ADAPTER are the SAME address (${adapterAddr}).\n` +
+        `  The remote adapter must be the one on ${remoteName}, not this chain's.\n` +
+        `  Wiring the second chain requires SWAPPING both variables — did you update only ADAPTER?`
+    );
+  }
+
   const rateLimitRaw = process.env.RATE_LIMIT?.trim();
   if (!rateLimitRaw) {
     throw new Error(
