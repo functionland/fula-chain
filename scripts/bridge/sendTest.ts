@@ -3,10 +3,12 @@
 // This is the ONE script a token holder needs. It is also what Stage 0 Phase D uses to run the
 // first real cross-chain transfer and to measure `lzReceive` gas.
 //
-// WHAT A HOLDER DOES: one transaction, on the SOURCE chain only. No `approve` is needed — the
-// adapter burns the caller's balance directly (`approvalRequired()` is false). Destination gas is
-// paid by the LayerZero executor out of the native fee collected here, so you need no gas and no
-// transaction on the destination chain.
+// WHAT A HOLDER DOES: `approve` the adapter, then `send` — both on the SOURCE chain only.
+// `approvalRequired()` is TRUE for a lock/release escrow: the adapter pulls the caller's tokens
+// with `transferFrom` and holds them, so an allowance is required. (A mint/burn adapter would
+// report false and need no approval — this script previously claimed that, wrongly.)
+// Destination gas is paid by the LayerZero executor out of the native fee collected here, so you
+// need no gas and no transaction on the destination chain.
 //
 // USAGE:
 //   ADAPTER=0x.. REMOTE=base-sepolia AMOUNT=1.5 \
@@ -179,7 +181,8 @@ async function main() {
   console.log(`(use layerzeroscan.com for mainnet)`);
   console.log(
     `\nThe destination mint happens in a separate transaction executed by the LayerZero executor.\n` +
-      `If it reverts (recipient blacklisted, token paused, minter cap reached) the message PARKS and\n` +
+      `If it reverts (recipient blacklisted, token paused, escrow short of liquidity, or the inbound\n` +
+      `rate limit reached) the message PARKS and\n` +
       `stays retryable forever — the tokens are not lost. Clear the condition and re-execute.`
   );
 }

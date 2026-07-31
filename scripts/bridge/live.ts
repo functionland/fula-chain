@@ -12,7 +12,15 @@ export const BRIDGE_OPERATOR_ROLE = ethers.keccak256(
   ethers.toUtf8Bytes("BRIDGE_OPERATOR_ROLE")
 );
 
-/** Governance proposal types. 12/13 are contract-local to StorageToken. */
+/**
+ * Governance proposal types supported by the SHIPPED StorageToken.
+ *
+ * Types 12/13 (`SetBridgeMinter`/`RemoveBridgeMinter`) were listed here for the abandoned mint/burn
+ * upgrade and have been REMOVED: the escrow bridge needs no token change, so the shipped token has
+ * no such proposal types and creating one would revert `InvalidProposalType`. Legacy type-12
+ * proposals still exist on the testnet token (it predates the revert) and `approveProposal.ts`
+ * keeps a display label for them — but they must never be approved.
+ */
 export const PROPOSAL = {
   ADD_ROLE: 1,
   UPGRADE: 3,
@@ -20,8 +28,6 @@ export const PROPOSAL = {
   ADD_BLACKLIST: 9,
   REMOVE_BLACKLIST: 10,
   CHANGE_TREASURY_FEE: 11,
-  SET_BRIDGE_MINTER: 12,
-  REMOVE_BRIDGE_MINTER: 13,
 } as const;
 
 export const ROLE_CHANGE_DELAY = 24 * 60 * 60;
@@ -50,7 +56,7 @@ export const PROPOSAL_TIMEOUT = 48 * 60 * 60;
  *
  * NOTE: Ethereum's IMPLEMENTATION address equals the PROXY address on Base/SKALE/IoTeX.
  * That is a deployer-nonce coincidence (same deployer, same nonce, different chains) and is
- * NOT evidence the chains run different code. Use verifyStorageTokenImplParity.ts to compare
+ * NOT evidence the chains run different code. Strip the CBOR metadata trailer (see stripMetadata below) to compare
  * actual bytecode.
  */
 /**

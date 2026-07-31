@@ -12,7 +12,9 @@ Start here and read in this order.
 | **`bridging.md`** | For token holders. How to move FULA, what each error means, what to do when a transfer does not arrive. |
 | **`bridge-audit-escrow.md`** | The security audit of the escrow design. Findings by category and severity, what was fixed, and the two decisions taken. **Read before any mainnet deployment.** |
 | **`bridge-verification.md`** | What was actually tested and verified, live-chain readings, the operational bugs the testnet rehearsal caught, and how to reproduce every check. |
+| **`bridge-mainnet-readiness.md`** | **Read this before deploying.** Go/no-go: what is proven on a live network, what is structurally unprovable on a testnet, and the maximum loss each class of adversary can still cause. |
 | **`bridge-liquidity-runbook.md`** | How to seed and rebalance escrow liquidity, the three funding routes, and the burn-before-mint rule. |
+| **`../scripts/bridge/README.md`** | The mainnet deployment runbook — exact command sequence, staged rollout, and kill switches. |
 | **`../scripts/bridge/testnet-deployments.md`** | Current testnet addresses and configuration. The source of truth for what is deployed where. |
 
 ## Superseded — historical only

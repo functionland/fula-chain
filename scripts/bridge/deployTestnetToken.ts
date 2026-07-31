@@ -1,8 +1,9 @@
 // TESTNET ONLY — deploy a fresh StorageToken UUPS proxy for the LayerZero bridge rehearsal.
 //
-// This is NOT the mainnet path. Mainnet already has a live proxy and is upgraded via
-// deployStorageTokenImpl.ts + a governance Upgrade proposal. This script exists so the
-// Sepolia <-> Base Sepolia rehearsal runs against a real StorageToken with real governance.
+// This is NOT the mainnet path. Mainnet already has a live proxy and THE BRIDGE DOES NOT TOUCH
+// IT — the escrow adapter needs no token change, no upgrade and no governance action against the
+// token. This script exists only so the Sepolia <-> Base Sepolia rehearsal runs against a real
+// StorageToken with real governance.
 //
 // HARD SAFETY GUARD: refuses to run on any mainnet chain id. The production `PK` is a live
 // ADMIN_ROLE holder on mainnet FULA, so a mistyped --network must not be able to deploy.
@@ -40,8 +41,8 @@ async function main() {
   if (FORBIDDEN_MAINNETS[chainId]) {
     throw new Error(
       `REFUSING TO RUN: this is ${FORBIDDEN_MAINNETS[chainId]} (chainId ${chainId}).\n` +
-        `deployTestnetToken.ts is testnet-only. Mainnet uses deployStorageTokenImpl.ts plus a\n` +
-        `governance Upgrade proposal against the EXISTING proxy — never a fresh deployment.`
+        `deployTestnetToken.ts is testnet-only. Mainnet already has a live StorageToken proxy and\n` +
+        `the escrow bridge does not modify it — there is nothing to deploy or upgrade there.`
     );
   }
 

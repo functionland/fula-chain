@@ -1,168 +1,166 @@
-# FULA LayerZero OFT bridge — deployment runbook
+# FULA LayerZero OFT bridge — mainnet deployment runbook
 
-Two deployment paths, in order. **Do not skip the rehearsal.**
+**The bridge is a LOCK/RELEASE ESCROW. It does not modify the token.**
 
-| | Script | Touches the proxy? |
-|---|---|---|
-| 1. Rehearsal | `rehearseUpgradeOnFork.ts` | Yes, but only on a local fork |
-| 2. Mainnet | `deployStorageTokenImpl.ts` | **No** — deploys the implementation only |
+There is no implementation deploy, no governance upgrade, no minter authorization and no `cap`.
+`contracts/core/StorageToken.sol` is byte-identical to the live Etherscan-verified source on both
+chains and stays that way. The adapter is an ordinary token holder with no role and no privilege.
 
-The actual mainnet upgrade is executed by you, through the governance module. No script
-ever calls `upgradeToAndCall` against a live proxy.
+If you are reading an older revision of this file that tells you to run `deployStorageTokenImpl.ts`
+or to execute a token upgrade through governance — that describes the **abandoned mint/burn design**.
+Those scripts are deleted. Ignore it.
 
----
-
-## 1. Rehearsal — mainnet state, locally
-
-A real testnet cannot reproduce mainnet state (you cannot copy arbitrary holder balances into
-an already-deployed proxy). A **fork** can: it gives you the real proxy, the real
-implementation, real balances, the real admin set and real governance state at the latest
-block. That is what this script uses.
-
-```bash
-# Terminal 1 — a local node forking live Base (or Ethereum)
-FORK_RPC_URL=https://mainnet.base.org npx hardhat node
-
-# Terminal 2 — rehearse against it
-TARGET=base npx hardhat run scripts/bridge/rehearseUpgradeOnFork.ts --network localhost
-```
-
-Or in a single process:
-
-```bash
-FORK_RPC_URL=<rpc> TARGET=base npx hardhat run scripts/bridge/rehearseUpgradeOnFork.ts
-```
-
-What it does:
-
-1. Snapshots live state — supply, balances, governance config, raw storage slots
-2. Asserts the appended slots (16, 17) and the reserved gap (18–64) are **zero** on the live proxy
-3. Deploys the new implementation
-4. Runs the **real** governance flow: `createProposal(3)` → approve → +24h → `upgradeToAndCall`
-5. Re-snapshots and diffs — every pre-existing value must be byte-identical, or it aborts
-6. Deploys `FulaOFTAdapter` and authorizes it via proposal type 12
-7. Exercises mint, burn, supply conservation, cap enforcement, and the fee-on-mint regression
-
-If `ADMIN_ROLE` is not enumerable on the deployed implementation, pass a second admin:
-`ADMIN2=0x... TARGET=base ...`
-
-The same coverage runs as an automated test:
-
-```bash
-FORK_RPC_URL=<rpc> FORK_TARGET=base npx hardhat test test/fork/StorageTokenUpgrade.fork.test.ts
-```
-
-It skips automatically when `FORK_RPC_URL` is unset, so CI stays green without network access.
-
-### A note on real testnets
-
-If you also want something publicly pokeable, deploy a **fresh** StorageToken + adapter pair on
-Sepolia and Base Sepolia and run the full wiring. That exercises real DVNs, real Executors, real
-fee quoting and real `lzReceive` gas — which a fork cannot. It just won't have mainnet balances.
-Both are worth doing: the fork proves the upgrade is safe against real state, the testnet proves
-the LayerZero stack is configured correctly.
+Read `docs/bridge-audit-escrow.md` before deploying, and `docs/bridge-liquidity-runbook.md` before
+seeding.
 
 ---
 
-## 2. Mainnet — pre-flight and implementation deploy
+## 0. Pre-flight
+
+| Check | How |
+|---|---|
+| Tests green | `npx hardhat test test/governance/integration/FulaOFTBridge.test.ts` |
+| Owner is a contract | A TimelockController or multisig on **both** chains. Not an EOA. |
+| You control enough FULA on **Base** | See §3 — Base's token contract holds only ~4,239 FULA |
+| Deployer funded | ETH on both chains for ~8 transactions each |
+
+**The owner is the most consequential decision here.** It is simultaneously the OZ owner and the
+LayerZero delegate, and it can drain the escrow — directly by repointing a lane before `lockPeers`,
+and indirectly afterwards by reconfiguring the DVN set. `deployOFTAdapter.ts` only *warns* on an EOA;
+`verifyOAppConfig.ts` *fails*. Do not ignore either.
+
+---
+
+## 1. Deploy both adapters
 
 ```bash
-# Run every check, deploy nothing
-DRY_RUN=1 npx hardhat run scripts/bridge/deployStorageTokenImpl.ts --network base
-
-# Then, once green
-npx hardhat run scripts/bridge/deployStorageTokenImpl.ts --network base
+OWNER=<timelock or multisig> npx hardhat run scripts/bridge/deployOFTAdapter.ts --network ethereum
+OWNER=<timelock or multisig> npx hardhat run scripts/bridge/deployOFTAdapter.ts --network base
 ```
 
-Every check is a hard gate — nothing is deployed unless all pass:
+Deployed with a plain `ContractFactory`, never the upgrades plugin — this contract custodies user
+funds and must not sit behind a mutable implementation pointer.
 
-- **A** Network and proxy identity (chainId, code present, responds as FULA)
-- **B** Live implementation matches the recorded expectation (catches an out-of-band upgrade)
-- **C** Deployed layout holds what we believe: slots 0/7/13/14 decode as `adminCount`,
-  `proposalCount`, `treasury`, `platformFeeBps` — confirming the "Legacy" group, first child slot 11
-- **D** **The corruption gate**: appended slots 16, 17 and the reserved gap 18–64 are all zero.
-  If any is non-zero, the new state variables would silently inherit existing data
-- **E** OpenZeppelin standalone implementation validation
-- **F** OpenZeppelin storage-layout compatibility against the live deployment
-  (falls back to `forceImport` when no local manifest exists — `.openzeppelin/` is gitignored)
-- **G** Governance preconditions: unpaused, quorum ≥ 2, ≥ 2 admins — so the upgrade can actually execute
-- **H** Bytecode sanity: the new implementation genuinely differs from the live one, and is under EIP-170
-
-Then it deploys the implementation, verifies the on-chain bytecode matches the local artifact,
-and prints the exact governance sequence.
-
-### Executing the upgrade (you drive this)
-
-```
-1. admin1: createProposal(3, 0, <IMPL>, 0x0…0, 0, 0x0…0)
-2. admin2: approveProposal(<proposalId>)
-3. wait 24h from creation
-4. either admin: upgradeToAndCall(<IMPL>, "0x")
-```
-
-The execution window is `[created + 24h, created + 48h)`. Miss it and the proposal expires —
-you must deploy a **new** implementation address and start over, because `pendingProposals`
-keeps the old target blocked until expiry.
-
-Re-run the script afterwards: check **B** should now *fail*, because the live implementation
-changed. That is your confirmation the upgrade landed.
+**No governance step follows.** The token grants the adapter nothing.
 
 ---
 
-## 3. After the upgrade — the bridge itself
+## 2. Wire both chains
 
-```
-1. Deploy adapters on both chains:
-     OWNER=<timelock or multisig> npx hardhat run scripts/bridge/deployOFTAdapter.ts --network ethereum
-     OWNER=<timelock or multisig> npx hardhat run scripts/bridge/deployOFTAdapter.ts --network base
+```bash
+ADAPTER=<eth adapter> REMOTE_ADAPTER=<base adapter> REMOTE=base \
+  RATE_LIMIT=200000000 INBOUND_RATE_LIMIT=20000000 \
+  npx hardhat run scripts/bridge/wireOApp.ts --network ethereum
 
-2. Authorize each adapter on its own chain (governance):
-     createProposal(12, 0, <adapter>, 0x0…0, <cap>, 0x0…0) → approve → +24h
-
-3. Wire both chains:
-     ADAPTER=.. REMOTE_ADAPTER=.. REMOTE=base RATE_LIMIT=1000000 \
-       npx hardhat run scripts/bridge/wireOApp.ts --network ethereum
-     (then the mirror image on base)
-
-4. Verify on BOTH chains, and cross-check the ULN digests:
-     ADAPTER=.. REMOTE=base npx hardhat run scripts/bridge/verifyOAppConfig.ts --network ethereum
+# then the mirror image on base
+ADAPTER=<base adapter> REMOTE_ADAPTER=<eth adapter> REMOTE=ethereum \
+  RATE_LIMIT=200000000 INBOUND_RATE_LIMIT=20000000 \
+  npx hardhat run scripts/bridge/wireOApp.ts --network base
 ```
 
-Two things that will bite if skipped:
+Then verify on **both** chains and compare the digests:
 
-- **`setRateLimits` is mandatory.** The rate limiter is fail-closed: an adapter with no
-  configured limit rejects *every* transfer with `RateLimitExceeded`. `wireOApp.ts` refuses to
-  run without `RATE_LIMIT` for exactly this reason.
-- **The send-side ULN config on chain A must match the receive-side config on chain B.** If they
-  disagree, messages verify but never deliver — tokens are burned on the source and park until
-  the config is fixed. `verifyOAppConfig.ts` prints a digest on each side; they must match.
+```bash
+ADAPTER=<adapter> REMOTE=<peer network> npx hardhat run scripts/bridge/verifyOAppConfig.ts --network <chain>
+```
 
-Never ship a 1-of-1 DVN configuration. `addresses.ts` refuses to build one, and
-`verifyOAppConfig.ts` fails if fewer than two independent verifiers are required.
+### Four things that will bite if skipped
+
+1. **BOTH rate limiters are mandatory and fail-closed.** An unconfigured lane rejects *every*
+   transfer. `wireOApp.ts` refuses to run without `RATE_LIMIT` **and** `INBOUND_RATE_LIMIT`.
+2. **The send-side ULN config on chain A must match the receive-side config on chain B.** If they
+   disagree, messages verify but never deliver and tokens park until the config is fixed.
+   `verifyOAppConfig.ts` prints an operator-name-based cross-chain digest — compare *those*, never
+   the address-based one, since DVN operators have different addresses per chain.
+3. **Never ship a 1-of-1 DVN set.** `addresses.ts` refuses to build one on any non-testnet and
+   `verifyOAppConfig.ts` fails below two. This is the configuration behind the ~$292M Kelp loss.
+4. **The inbound limit must be strictly BELOW the escrow balance**, or it is inert rather than
+   merely weak: `_credit` checks liquidity first, so anything above escrow reverts
+   `InsufficientLiquidity` before the limiter is consulted. `verifyOAppConfig.ts` fails on this.
 
 ---
 
-## Staged rollout
+## 3. Seed escrow liquidity
 
-| Stage | `cap` | rate limit / 24h | Gate to advance |
+A chain can only release what it already holds. Full detail in `docs/bridge-liquidity-runbook.md`.
+
+```bash
+ADAPTER=<adapter> AMOUNT=200000000 REMOTE_EID=<peer eid> \
+  npx hardhat run scripts/bridge/seedLiquidity.ts --network <chain>
+```
+
+**Bridging A→B drains B's escrow**, so seed the side that will receive net flow.
+
+⚠️ **Base is the constraint.** Its token contract holds only ~4,239 FULA, so Base liquidity cannot
+come from the treasury. It must come from the ~386M circulating (a plain `transfer` needs no
+whitelist), or from a one-time `bridgeOp` burn-on-Ethereum / mint-on-Base — **burn first, then mint**,
+because the two halves have no on-chain link and mint-first risks unbacked supply.
+
+`escrow_eth + escrow_base` is conserved by ordinary bridging, so the seed is a one-time allocation
+sized to worst-case imbalance, not a recurring budget. **There is no withdraw function** — seeded
+liquidity leaves only by being bridged to the other chain.
+
+---
+
+## 4. Prove it, then lock
+
+```bash
+ADAPTER=<adapter> REMOTE=<peer> AMOUNT=100 npx hardhat run scripts/bridge/sendTest.ts --network <chain>
+```
+
+Send in **both** directions and confirm delivery before going further.
+
+```bash
+ADAPTER=<adapter> REMOTE_EID=<peer eid> EXPECTED_PEER=<peer adapter> \
+  npx hardhat run scripts/bridge/lockPeers.ts --network <chain>          # dry run
+# then re-run with CONFIRM=LOCK
+```
+
+⚠️ **`lockPeers()` is irreversible.** It closes the cheap owner-drain path: `setPeer` decides who is
+trusted and `EndpointV2.send` is permissionless, so before locking, an owner can repoint a lane at an
+address it controls and drain the escrow in one transaction, having locked nothing on the far side.
+
+It does **not** make a compromised owner harmless — the owner is still the delegate and can
+reconfigure the receive library and DVN set to forge a packet matching the frozen peer. **The inbound
+rate limit is what bounds that residual.** The two controls belong together.
+
+After locking, neither adapter can be replaced without redeploying both and migrating liquidity.
+
+---
+
+## 5. Staged rollout
+
+Under escrow there is no `cap`. The levers are **how much you seed** and **the inbound limit**, and
+the maximum loss in any single incident is bounded by the inbound limit, not by total supply.
+
+| Stage | Seed per chain | Inbound limit / 24h | Gate to advance |
 |---|---|---|---|
-| 0 | testnet | testnet | full runbook + a deliberate fail-then-retry drill + `lzReceive` gas measured |
-| 1 | 1M | 100k | 10 round trips, supply reconciled to the wei |
-| 2 | 25M | 1M | 7 days clean |
-| 3 | 250M | 10M | 30 days clean |
+| 0 | testnet | testnet | full runbook + fail/retry drill + `lzReceive` gas measured |
+| 1 | 10M | 1M | 10 round trips, supply and escrow reconciled exactly |
+| 2 | 50M | 5M | 7 days clean |
+| 3 | 200M | 20M | 30 days clean |
 
-Cap raises are governance proposals (24h delay built in). Rate-limit raises are owner
-transactions and take effect next block.
+Keep the inbound limit at **10–25% of the seeded escrow** at every stage — it is the instant
+first-tranche loss if a message is ever wrongly authorised, because the bucket starts full. Both
+limits are owner transactions and take effect the next block.
 
-Run a daily supply reconciliation during stages 1–3: sum `totalSupply()` across all live chains
-and alert on any change not explained by a matched `OFTSent`/`OFTReceived` pair. That sum is the
-canary for the entire constant-supply property.
+Run `reconcileSupply.ts` daily throughout. Under escrow the bridge cannot mint or burn, so **any**
+global supply change is by definition not the bridge — which makes it an unusually sharp alarm.
 
-## Kill switches, fastest first
+---
+
+## 6. Kill switches, fastest first
 
 | Latency | Action | Effect |
 |---|---|---|
-| ~1 block | `setRateLimits([{dstEid, limit: 0, window: 1}])` | Outbound halted |
-| ~1 block | `setPeer(eid, bytes32(0))` | Both directions halted; inbound parks retryably |
-| ~1 block | `emergencyAction(1)` on the token | Token paused; inbound parks retryably (30-min cooldown before unpause) |
-| 24h | `createProposal(13, …)` | Bridge minter permanently revoked |
+| ~1 block | `ADAPTER=.. EID=.. INBOUND=0 setLimits.ts` | **Releases halted.** In-flight messages park retryably. The brake for a suspected forged message. |
+| ~1 block | `ADAPTER=.. EID=.. OUTBOUND=0 setLimits.ts` | Departures halted. Fails source-side, nothing locked. |
+| ~1 block | `emergencyAction(1)` on the token | Token paused → releases park. **Does NOT stop outbound locking** — `transferFrom` is not pause-gated. Pair it with `OUTBOUND=0`. 30-min cooldown before unpause. |
+| ~1 block | `setPeer(eid, bytes32(0))` | Both directions halted — **unavailable once `lockPeers()` has been called.** |
+
+⚠️ **After `lockPeers()`, `setPeer` reverts, so the inbound limit is your fastest kill switch.**
+That is the main reason `setInboundRateLimits` exists as a separate owner lever, and why
+`resetInboundRateLimits` exists to recover afterwards without permanently weakening the bound.
+
+Nothing here destroys value: every one of these makes transfers *park*, and parked messages deliver
+unchanged once the condition clears.
