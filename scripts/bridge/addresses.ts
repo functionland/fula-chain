@@ -145,6 +145,28 @@ export const THRESHOLD_DVNS: Record<string, { operators: string[]; threshold: nu
 };
 
 /**
+ * WHY WE SHIP `requiredDVNs = [layerzero, nethermind]` AND NOT THE 2-of-4 THRESHOLD ABOVE.
+ *
+ * An earlier revision of this file claimed 2-of-4 had "the same security" as 2-of-2. That was
+ * WRONG, and the error matters:
+ *
+ *   - 2-of-2 REQUIRED: an attacker must compromise BOTH named operators.
+ *   - 2-of-4 THRESHOLD: an attacker compromises any 2 — i.e. the WEAKEST 2 of the 4. There are
+ *     six qualifying pairs, so the bound is set by the two least robust operators, not the two
+ *     we chose.
+ *
+ * Threshold buys LIVENESS (tolerates 2 operators going dark) at the cost of SECURITY. That trade
+ * is wrong here, because the two failures are not symmetric:
+ *
+ *   - A DVN outage PARKS messages. Nothing is lost; funds sit in escrow and deliver once the
+ *     config is fixed by a single owner transaction.
+ *   - A DVN compromise STEALS. It is the exact failure that cost KelpDAO ~$292M.
+ *
+ * So we take the stricter side: both named operators must attest. `THRESHOLD_DVNS` is retained
+ * only for a deliberate future decision, and is deliberately NOT used by the wiring scripts.
+ */
+
+/**
  * Networks where a SINGLE required DVN is tolerated.
  *
  * Testnets only, and only because LayerZero runs just one DVN there — a 1-of-1 set cannot be

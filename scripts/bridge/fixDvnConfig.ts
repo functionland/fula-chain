@@ -10,7 +10,7 @@
 // USAGE:
 //   ADAPTER=0x.. REMOTE=base npx hardhat run scripts/bridge/fixDvnConfig.ts --network ethereum
 import { ethers, network } from "hardhat";
-import { chainFor, requiredDvnAddresses, DVNS, THRESHOLD_DVNS } from "./addresses";
+import { chainFor, requiredDvnAddresses, DVNS } from "./addresses";
 
 const CONFIG_TYPE_ULN = 2;
 
@@ -31,18 +31,16 @@ async function main() {
 
   const confirmations = BigInt(process.env.CONFIRMATIONS?.trim() || 15);
 
-  // THRESHOLD config: any `threshold` of these operators verifies a message. See THRESHOLD_DVNS.
-  const policy = THRESHOLD_DVNS[local.network];
-  if (!policy) throw new Error(`No THRESHOLD_DVNS policy for "${local.network}"`);
-  const optional = requiredDvnAddresses(local.network, policy.operators);
-  const threshold = policy.threshold;
-  if (threshold < 2) throw new Error(`Threshold must be >= 2 (got ${threshold}) — 1-of-N is the Kelp configuration.`);
-  if (optional.length < threshold) throw new Error(`Only ${optional.length} DVNs for threshold ${threshold}.`);
+  // BOTH named operators must attest. See the note above THRESHOLD_DVNS in addresses.ts for why
+  // a 2-of-N threshold was rejected: it bounds security by the two WEAKEST operators, and a DVN
+  // outage only parks messages whereas a DVN compromise steals.
+  const required = requiredDvnAddresses(local.network);
+  if (required.length < 2) throw new Error(`Need >= 2 required DVNs, got ${required.length}.`);
 
   console.log(`local:   ${local.network} (eid ${local.eid})  ->  ${remote.network} (eid ${remote.eid})`);
   console.log(`adapter: ${adapterAddr}`);
-  console.log(`\npolicy:  ANY ${threshold} of ${optional.length} must attest (optional DVNs + threshold)`);
-  for (const d of optional) console.log(`  ${d}  (${nameOf(local.network, d)})`);
+  console.log(`\npolicy:  ALL ${required.length} of these must attest (requiredDVNs)`);
+  for (const d of required) console.log(`  ${d}  (${nameOf(local.network, d)})`);
 
   // Cross-check against the live default set on BOTH libraries before emitting anything.
   const ulnAbi = [
@@ -55,25 +53,31 @@ async function main() {
     console.log(`\n${label} library live DEFAULT required DVNs:`);
     for (const d of def.requiredDVNs) console.log(`  ${d}  (${nameOf(local.network, d)})`);
 
-    // ON-CHAIN PROVENANCE ONLY. A DVN must appear in this chain's own default config for the lane.
-    // Off-chain evidence (a metadata API, a single observed attestation) is NOT accepted: that is
-    // precisely the reasoning that put a non-serving DVN into the original mainnet config.
-    const unproven = optional.filter((d) => !set.has(d.toLowerCase()));
-    for (const d of optional) {
-      console.log(`  ${d} -> ${set.has(d.toLowerCase()) ? "in live default set" : "*** NO ON-CHAIN PROVENANCE ***"}`);
+    // THE ONLY ACCEPTABLE CREDENTIAL: membership of LayerZero's OWN on-chain default ULN config
+    // for this lane, which LayerZero sets in its own contract for all default traffic.
+    //
+    // A DVN having attested one of our packets is explicitly NOT accepted as evidence. A hostile
+    // operator would attest a small test correctly for exactly that reason, establishing a track
+    // record before falsely attesting a large transfer. Correct behaviour on one packet proves
+    // liveness, never honesty. Documentation and metadata APIs are likewise rejected: both are
+    // off-chain and mutable.
+    const unproven = required.filter((d) => !set.has(d.toLowerCase()));
+    for (const d of required) {
+      console.log(`  ${d} -> ${set.has(d.toLowerCase()) ? "in LayerZero's on-chain default set" : "*** NOT LAYERZERO-TRUSTED ***"}`);
     }
     if (unproven.length) {
-      console.log(`\n  REFUSING: ${unproven.join(", ")} does not appear in this chain's live default`);
-      console.log(`  ULN config for the lane. It may never attest, which hangs every message in`);
-      console.log(`  status BLOCKED. Do not justify a DVN from documentation or an API.`);
-      throw new Error("DVN without on-chain provenance — refusing to emit a config that may hang messages.");
+      console.log(`\n  REFUSING: ${unproven.join(", ")} is not in LayerZero's own on-chain default`);
+      console.log(`  ULN config for this lane. Do NOT justify a DVN from documentation, a metadata`);
+      console.log(`  API, or the fact that it attested a test packet — a malicious node attests`);
+      console.log(`  small transfers correctly precisely to earn trust before a large one.`);
+      throw new Error("DVN not in LayerZero's on-chain default set — refusing to emit this config.");
     }
   }
 
   const abi = ethers.AbiCoder.defaultAbiCoder();
   const ulnConfig = abi.encode(
     ["tuple(uint64,uint8,uint8,uint8,address[],address[])"],
-    [[confirmations, 0, optional.length, threshold, [], optional]]
+    [[confirmations, required.length, 0, 0, required, []]]
   );
 
   const endpoint = await ethers.getContractAt(
@@ -94,9 +98,13 @@ async function main() {
   }
 
   console.log(
-    `\nAfter BOTH chains are updated, a message already in flight becomes verifiable using the\n` +
-      `attestations the correct DVNs ALREADY stored — verification is evaluated against the\n` +
-      `CURRENT receive config, so no resend and no second fee is needed.`
+    `\nMESSAGES ALREADY IN FLIGHT verify only if the DVNs named above have ALREADY attested that\n` +
+      `packet. A packet sent under a broken config was attested by whichever DVNs the OLD send\n` +
+      `config named, so it will NOT necessarily verify under the corrected set. Check first with\n` +
+      `ReceiveUln302.verifiable(config, headerHash, payloadHash).\n\n` +
+      `NEVER weaken the DVN set to rescue a stuck packet. That is exactly how a hostile verifier\n` +
+      `gets adopted: it behaves correctly on a small transfer so that it looks like the only way\n` +
+      `to recover those funds, and is then trusted with a large one.`
   );
 }
 

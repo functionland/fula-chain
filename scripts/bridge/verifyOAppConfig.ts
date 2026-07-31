@@ -167,7 +167,9 @@ async function main() {
     // not automatically wrong — a deliberate non-default operator is legitimate — but it MUST be
     // confirmed to actually serve the lane, so this fails loudly rather than passing silently.
     try {
-      const defCfg = await uln.getUlnConfig(ethers.ZeroAddress, remote.eid);
+      // address(0) as the OApp returns the chain's DEFAULT config for this lane.
+      const defRaw = await endpoint.getConfig(ethers.ZeroAddress, lib, remote.eid, CONFIG_TYPE_ULN);
+      const [defCfg] = abi.decode([ULN_TUPLE], defRaw);
       const [, , , , defRequired, defOptional] = defCfg as [bigint, bigint, bigint, bigint, string[], string[]];
       const defaultSet = new Set([...defRequired, ...defOptional].map((d) => d.toLowerCase()));
       console.log(`     live DEFAULT required DVNs on this lane: ${defRequired.length}`);
