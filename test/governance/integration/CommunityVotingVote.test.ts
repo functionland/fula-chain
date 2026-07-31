@@ -22,7 +22,6 @@ const PT_SET_PARAM = 14;
 const P_STAKE_WEIGHT_BPS = 7;
 const P_MEMBER_MULTIPLIER_BPS = 6;
 const P_STAKER_MULTIPLIER_BPS = 13;
-const P_MIN_VOTE_BASIS = 3;
 
 /** Apply a bps multiplier the way the contract does: sqrt first, then scale. */
 function powerOf(basis: bigint, multiplierBps: bigint = 10000n): bigint {

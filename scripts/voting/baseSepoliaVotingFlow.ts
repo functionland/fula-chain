@@ -14,7 +14,6 @@
 //   close   - finalize, claim, settle (run once the subject's closeTime has passed)
 import hre, { ethers } from "hardhat";
 
-const ADMIN_ROLE = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
 const ZH = ethers.ZeroHash;
 const Z = ethers.ZeroAddress;
 const PT_SET_PARAM = 14;
