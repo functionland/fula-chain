@@ -149,43 +149,70 @@ async function findDestroyedNonces(
   receiver: string,
   srcEid: number,
   sender: string,
-  lookback: number
-): Promise<{ nonce: bigint; how: string }[]> {
+  lookback: number,
+  laneLabel: string
+): Promise<{ found: { nonce: bigint; how: string }[]; complete: boolean; scannedFrom: number }> {
   const latest = await callWithRetry("getBlockNumber", () => provider.getBlockNumber());
   const from = Math.max(0, latest - lookback);
-  const out: { nonce: bigint; how: string }[] = [];
+  const found: { nonce: bigint; how: string }[] = [];
+  // Public RPCs cap `eth_getLogs` at a few thousand blocks, so the window must be walked in chunks
+  // rather than requested whole — a single wide request just fails.
+  const chunk = Number(process.env.LOG_CHUNK?.trim() || "5000");
+  let complete = true;
+  let earliestScanned = from;
 
-  for (const name of ["InboundNonceSkipped", "PacketNilified", "PacketBurnt"]) {
-    try {
-      // Endpoint events are not indexed, so filter by signature and match the fields in JS.
-      const logs = await callWithRetry(`${name} logs`, () =>
-        provider.getLogs({
-          address: ep.target as string,
-          topics: [ep.interface.getEvent(name)!.topicHash],
-          fromBlock: from,
-          toBlock: latest,
-        })
-      );
-      for (const l of logs) {
-        const d = ep.interface.decodeEventLog(name, l.data, l.topics);
-        if (
-          Number(d.srcEid) === srcEid &&
-          String(d.receiver).toLowerCase() === receiver.toLowerCase() &&
-          String(d.sender).toLowerCase() === sender.toLowerCase()
-        ) {
-          out.push({ nonce: BigInt(d.nonce), how: name });
+  const names = ["InboundNonceSkipped", "PacketNilified", "PacketBurnt"];
+  const topics = names.map((n) => ep.interface.getEvent(n)!.topicHash);
+
+  // Different chains impose very different `eth_getLogs` window limits (Base tolerates thousands of
+  // blocks; several public Ethereum endpoints do not). Rather than hard-code one number per chain
+  // and silently lose coverage when a provider tightens it, halve the window on failure down to a
+  // floor and only give up — loudly — if even the floor fails.
+  const FLOOR = 200;
+  async function scanWindow(start: number, end: number, width: number): Promise<void> {
+    for (let s = start; s <= end; s += width) {
+      const e2 = Math.min(s + width - 1, end);
+      try {
+        // One request for all three signatures: topic0 accepts an OR-set.
+        const logs = await callWithRetry(`destroyed-nonce logs ${s}-${e2}`, () =>
+          provider.getLogs({ address: ep.target as string, topics: [topics], fromBlock: s, toBlock: e2 })
+        );
+        for (const l of logs) {
+          const idx = topics.indexOf(l.topics[0]);
+          if (idx < 0) continue;
+          const name = names[idx];
+          const d = ep.interface.decodeEventLog(name, l.data, l.topics);
+          if (
+            Number(d.srcEid) === srcEid &&
+            String(d.receiver).toLowerCase() === receiver.toLowerCase() &&
+            String(d.sender).toLowerCase() === sender.toLowerCase()
+          ) {
+            found.push({ nonce: BigInt(d.nonce), how: name });
+          }
+        }
+        await sleep(120);
+      } catch (err: any) {
+        if (width > FLOOR) {
+          await scanWindow(s, e2, Math.max(FLOOR, Math.floor(width / 5)));
+        } else {
+          // Never let this degrade into a silent "no skips found" — a false all-clear about an
+          // accounting hole is the exact outcome this function exists to prevent.
+          console.log(`    (blocks ${s}-${e2} unreadable even at ${width}-block granularity)`);
+          complete = false;
+          if (earliestScanned === from) earliestScanned = e2 + 1;
         }
       }
-    } catch (e: any) {
-      // Never let this degrade into a silent "no skips found" — that is the exact false all-clear
-      // this function exists to prevent.
-      console.log(`    (could not read ${name} events: ${e.message ?? e} — skip detection INCOMPLETE)`);
-      stranded.push(
-        `${name} event scan failed — destroyed nonces may exist but were NOT detected. Re-run with a working archive RPC.`
-      );
     }
   }
-  return out.sort((a, b) => (a.nonce > b.nonce ? 1 : -1));
+  await scanWindow(from, latest, chunk);
+
+  if (!complete) {
+    stranded.push(
+      `${laneLabel}: destroyed-nonce scan INCOMPLETE — some blocks were unreadable, so a skip may ` +
+        `exist that this run did not see. Re-run against an archive RPC before trusting the all-clear.`
+    );
+  }
+  return { found: found.sort((a, b) => (a.nonce > b.nonce ? 1 : -1)), complete, scannedFrom: earliestScanned };
 }
 
 /** Inspect the lane src -> dst: what src has sent, and what dst has verified and executed. */
@@ -266,7 +293,17 @@ async function inspectLane(src: End, dst: End, scan: number) {
   // Destroyed nonces must be resolved BEFORE classifying, because a skipped nonce leaves the
   // counters looking exactly like a delivered one.
   const lookback = Number(process.env.LOOKBACK_BLOCKS?.trim() || "300000");
-  const destroyed = await findDestroyedNonces(dstEp, dstProvider, dst.adapter, src.eid, dstPeer, lookback);
+  const laneLabel = `${src.name}->${dst.name}`;
+  const scanResult = await findDestroyedNonces(
+    dstEp,
+    dstProvider,
+    dst.adapter,
+    src.eid,
+    dstPeer,
+    lookback,
+    laneLabel
+  );
+  const destroyed = scanResult.found;
   const destroyedBy = new Map(destroyed.map((d) => [d.nonce, d.how]));
 
   let firstUnverified: bigint | null = null;
@@ -304,8 +341,13 @@ async function inspectLane(src: End, dst: End, scan: number) {
         .map((d) => d.nonce)
         .join(", ")}) — ${src.name} escrow permanently exceeds outstanding claims by their value.`
     );
-  } else {
+  } else if (scanResult.complete) {
     console.log(`\n  no nonces destroyed by skip/nilify/burn in the last ${lookback} blocks.`);
+  } else {
+    console.log(
+      `\n  *** destroyed-nonce scan INCOMPLETE — cannot confirm that no nonce was skipped. ***\n` +
+        `      Treat the verdict below as unproven until this is re-run against an archive RPC.`
+    );
   }
 
   if (parkedNonces.length) {
@@ -337,11 +379,13 @@ async function inspectLane(src: End, dst: End, scan: number) {
   }
 
   if (!parkedNonces.length && firstUnverified === null) {
-    console.log(
-      destroyed.length
-        ? `\n  FLOWING — nothing is blocked, but see the destroyed nonces above: this lane is NOT clean.`
-        : `\n  HEALTHY — every message sent on this lane has been verified and executed.`
-    );
+    if (destroyed.length) {
+      console.log(`\n  FLOWING — nothing is blocked, but see the destroyed nonces above: this lane is NOT clean.`);
+    } else if (!scanResult.complete) {
+      console.log(`\n  FLOWING — nothing is blocked. Whether any nonce was skipped is UNKNOWN (scan incomplete).`);
+    } else {
+      console.log(`\n  HEALTHY — every message sent on this lane has been verified and executed.`);
+    }
   }
 }
 
