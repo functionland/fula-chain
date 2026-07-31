@@ -1,5 +1,5 @@
 import { expect } from "chai";
-import { ethers, upgrades, network } from "hardhat";
+import { ethers, upgrades } from "hardhat";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 import { ZeroAddress, BytesLike } from "ethers";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
