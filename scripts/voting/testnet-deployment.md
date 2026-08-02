@@ -119,6 +119,51 @@ the receipts before asserting on it.
 Worth internalising: on this chain, *any* assertion made right after a transaction needs to poll,
 and a partial-staleness view is more misleading than a wholly stale one.
 
+## Round 3 — 2026-08-02: the proposal expired, which turned into a better test
+
+**The first parameter proposal was allowed to expire unexecuted.** Its window was
+`[2026-08-01 01:27:40, 2026-08-02 01:27:40)` and it was approached at 16:33 on 08-02, about 15
+hours late. `minDuration` was never changed.
+
+The cause was a reporting error, not a contract problem: the window was written down as
+"executable from 08-01 01:26" and treated as a deadline to beat. It is a **24-hour window**,
+`[created + 24h, created + 48h)`, and it closes. `MIN_PROPOSAL_EXECUTION_DELAY` is 24h and
+`PROPOSAL_TIMEOUT` is 48h, so **an approval is only valid during the second of those two days**.
+The `param` step now prints both bounds, labelled, so the closing time cannot be dropped again.
+
+Missing it did produce something worth having: a live end-to-end demonstration of **F-11**, the
+operational footgun this design records but had only ever exercised in a unit test.
+
+| Check | Result |
+|---|---|
+| An expired proposal cannot be approved | `ProposalErr` |
+| It **still blocks** all new parameter governance | `ExistingActiveProposal` |
+| `cleanupExpiredProposals` clears the pending slot | pending → `0` |
+| Parameter governance works again afterwards | valid proposal accepted |
+
+That is the whole failure-and-recovery cycle confirmed on-chain: because every parameter proposal
+targets `address(this)` and GovernanceModule's `pendingProposals` check does not test expiry, one
+abandoned proposal freezes parameter governance until someone runs cleanup. **If parameter
+proposals start reverting `ExistingActiveProposal`, run `cleanupExpiredProposals`.**
+
+A replacement proposal is staged:
+`0x5276169bf040218c5fc42a9dda07f89207649cc4141e5e18dde0f259ef3e0a61` — `minDuration` → 1 day,
+window **2026-08-03 16:36:54 → 2026-08-04 16:36:54 UTC**.
+
+Subject 1 was also re-verified after two days on-chain: **29 / 29**, with every stored value,
+tally, receipt and the conservation identity unchanged.
+
+Two script corrections from this round, both mine rather than the contract's:
+
+- The **stale read struck a third time**, now on reading a proposal immediately after creating it,
+  which printed the execution window as epoch zero. Three distinct places so far
+  (`setRoleQuorum`, subject aggregates, proposal fetch) — on this chain, treat *any* read that
+  follows a write in the same script as unreliable until polled.
+- The cooldown assertion was written for "immediately after creation" and became wrong once a day
+  had passed, reporting a failure where the contract was correct. It now checks
+  `lastCreateAt + createCooldown` and asserts whichever behaviour is correct at the time. A
+  time-dependent assertion has to compute what it expects, not assume when it runs.
+
 ## Still outstanding, and why
 
 Both are time gates, not defects.

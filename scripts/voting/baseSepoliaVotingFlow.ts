@@ -115,8 +115,14 @@ async function main() {
     const tx = await voting.connect(a1).createProposal(PT_SET_PARAM, P_MIN_DURATION, proxyAddress, ZH, BigInt(DAY), Z);
     const rc = await tx.wait();
     const id = rc!.logs[0].topics[1];
+    const pr = await voting.proposals(id);
     console.log(`  proposalId ${id}`);
-    console.log(`  approve with admin2 after the 24h execution delay (STEP=approve)`);
+    // Report BOTH bounds. This is a 24-hour WINDOW, not a deadline: executable from
+    // created+24h and dead at created+48h. Reporting only the opening time is how the
+    // first attempt at this proposal was allowed to expire unexecuted.
+    console.log(`  EXECUTION WINDOW (approve with admin2 inside this range, STEP=approve):`);
+    console.log(`    opens  ${new Date(Number(pr.config.executionTime) * 1000).toISOString()}`);
+    console.log(`    EXPIRES ${new Date(Number(pr.config.expiryTime) * 1000).toISOString()}`);
     ok("parameter proposal created");
   }
 
@@ -142,6 +148,49 @@ async function main() {
     }
     if (!found) console.log(`  nothing executable right now`);
     console.log(`  minDuration is now ${await voting.paramValue(P_MIN_DURATION)}`);
+  }
+
+  // ------------------------------------------------------------- cleanup
+  // Exercises the expiry + cleanup path documented as F-11: every parameter proposal targets
+  // `address(this)`, and GovernanceModule's pendingProposals check does NOT test for expiry, so
+  // one abandoned proposal freezes ALL parameter governance until cleanup is run.
+  if (step === "cleanup") {
+    const staleId = process.env.STALE_PROPOSAL?.trim();
+    if (staleId) {
+      const pr = await voting.proposals(staleId);
+      console.log(`stale proposal expired ${new Date(Number(pr.config.expiryTime) * 1000).toISOString()}`);
+      await expectRevert(
+        "an expired proposal cannot be approved",
+        () => voting.connect(a2).approveProposal.staticCall(staleId),
+        ""
+      );
+    }
+
+    const pendingBefore = await voting.pendingProposals(proxyAddress);
+    console.log(`pendingProposals[this] = ${pendingBefore}`);
+    if (pendingBefore !== 0n) {
+      await expectRevert(
+        "the expired proposal still blocks new parameter governance",
+        () => voting.connect(a1).createProposal.staticCall(PT_SET_PARAM, P_MIN_DURATION, proxyAddress, ZH, BigInt(DAY), Z),
+        "ExistingActiveProposal"
+      );
+
+      console.log(`Running cleanupExpiredProposals...`);
+      const tx = await voting.connect(a1).cleanupExpiredProposals(10);
+      await tx.wait();
+      for (let i = 0; i < 15; i++) {
+        if (await voting.pendingProposals(proxyAddress) === 0n) break;
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+      check("cleanup cleared the pending slot", await voting.pendingProposals(proxyAddress), 0);
+    }
+
+    try {
+      await voting.connect(a1).createProposal.staticCall(PT_SET_PARAM, P_MIN_DURATION, proxyAddress, ZH, BigInt(DAY), Z);
+      ok("parameter governance works again after cleanup");
+    } catch (e: any) {
+      bad("parameter governance works again after cleanup", revertName(e));
+    }
   }
 
   // -------------------------------------------------------------- create
@@ -237,12 +286,25 @@ async function main() {
     await expectRevert("finalize before close", () => voting.connect(a1).finalize.staticCall(id), "SubjectStillOpen");
     await expectRevert("settle before close", () => voting.connect(a1).settleDeposit.staticCall(id), "SubjectStillOpen");
     await expectRevert("stake indices with no engine", () => voting.connect(a1).vote.staticCall(id, 0, 0, [0], 0, ZH), "");
+    // The cooldown is time-dependent, so assert whichever behaviour is correct RIGHT NOW rather
+    // than assuming the run happens moments after creation.
     const minDurNow = Number(await voting.paramValue(P_MIN_DURATION));
-    await expectRevert(
-      "second subject blocked by cooldown",
-      () => voting.connect(a1).createSubject.staticCall("x", "y", ["a", "b"], minDurNow),
-      "CreateCooldownActive"
-    );
+    const cooldownEnds = Number(await voting.lastCreateAt(a1.address)) + Number(await voting.paramValue(11));
+    const attempt = () => voting.connect(a1).createSubject.staticCall("x", "y", ["a", "b"], minDurNow);
+    if (now < cooldownEnds) {
+      await expectRevert("second subject blocked while the cooldown is active", attempt, "CreateCooldownActive");
+    } else {
+      // Past the cooldown a second subject is legitimate; it should now fail only for funds,
+      // which is what proves the cooldown was the earlier blocker and nothing else.
+      try {
+        await attempt();
+        ok("cooldown expired, so a second subject is allowed");
+      } catch (e: any) {
+        const n = revertName(e);
+        if (n.includes("CreateCooldownActive")) bad("cooldown expired but still blocking", n);
+        else ok("cooldown expired; second subject blocked only by funds/approval", n);
+      }
+    }
   }
 
   // --------------------------------------------------------------- close
