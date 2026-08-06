@@ -164,6 +164,65 @@ Two script corrections from this round, both mine rather than the contract's:
   `lastCreateAt + createCooldown` and asserts whichever behaviour is correct at the time. A
   time-dependent assertion has to compute what it expects, not assume when it runs.
 
+## Round 4 — 2026-08-06: the full lifecycle closed out, 11 / 11
+
+Subject 1 reached its close time and the whole settlement sequence ran against the live chain:
+
+| Check | Result |
+|---|---|
+| `finalize` (permissionless) | winning option **0**, not tied |
+| Quorum missed (2 voters / 1.25M basis vs 15 / 5M) | deposit **not** refundable |
+| admin1 refund | exactly 1,000,000 FULA, to the wei |
+| admin2 refund | exactly 250,000 FULA, to the wei |
+| Creator attempts the deposit | refused, `QuorumNotMet` |
+| `settleDeposit` (permissionless) | 100,000 FULA **burned**, `totalSupply` fell by exactly that |
+| `totalLockedLiability` | 0 |
+| `totalDepositLiability` | 0 |
+| Contract FULA balance | **0** |
+
+That completes the design's core claim end-to-end on a real network: create → vote → close →
+finalize → claim → burn, ending with **nothing owed and nothing stranded**. The deposit-burn path
+is the one exercised here; the refund path is still only covered by unit tests, since it needs 15
+distinct voters or a governance change to `quorumVoters`.
+
+### The parameter proposal expired a second time — and the fix is structural, not "try harder"
+
+The replacement proposal also lapsed unexecuted (window `[2026-08-03 16:36, 2026-08-04 16:36)`).
+Two misses is a pattern, not bad luck: hitting a fixed 24-hour window requires someone to act
+inside it, and sessions do not reliably land there.
+
+The mitigation is to shrink what must happen inside the window. `approveProposal` does **not**
+need to land in it — GovernanceModule records the approval whenever it is called and auto-executes
+only if the delay has *also* elapsed. So the second approval can be given immediately at creation,
+leaving a single `executeProposal` call for the window instead of two coordinated actions.
+
+Currently staged that way:
+
+- Proposal `0xf483a761e52fc5b0d140baffea294c00b8434bdf114db045a4300658e300ac95` — `minDuration` → 1 day
+- **Already at 2 / 2 approvals**
+- Execute window: **2026-08-07 04:22:56 → 2026-08-08 04:22:56 UTC**
+
+Run inside that range:
+
+```
+VOTING_PROXY=0x52db4Ab6A6123BB6dE3EBB874f99A0E4B6526139 \
+BASE_SEPOLIA_RPC=https://base-sepolia-rpc.publicnode.com \
+STEP=approve npx hardhat run scripts/voting/baseSepoliaVotingFlow.ts --network base-sepolia
+```
+
+Cleanup was exercised a second time first, and passed 3 / 3 including the pending-slot assertion
+that an earlier script bug had obscured.
+
+### RPC notes, revised
+
+drpc began failing `eth_getTransactionCount` with `Temporary internal error` on every send, which
+blocks transactions while leaving reads fine. publicnode handled the whole settlement sequence.
+
+This also revises an earlier note: publicnode returned decodable custom errors here
+(`ExistingActiveProposal`, `QuorumNotMet`), so its revert-data stripping is **not** universal as
+first recorded — it varies by call shape or over time. Keep both endpoints to hand and switch on
+symptom: drpc when revert names are needed and sends are failing, publicnode when they are not.
+
 ## Still outstanding, and why
 
 Both are time gates, not defects.

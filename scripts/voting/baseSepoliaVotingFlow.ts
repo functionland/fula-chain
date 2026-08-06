@@ -136,15 +136,33 @@ async function main() {
       if (pid === ZH) continue;
       const p = await voting.proposals(pid);
       if (p.config.status !== 0n || p.target === Z) continue;
-      console.log(`  pending ${pid}  type ${p.proposalType}  executionTime ${p.config.executionTime}`);
-      if (BigInt(now) < p.config.executionTime) {
-        console.log(`  not yet executable (${Math.ceil((Number(p.config.executionTime) - now) / 3600)}h to go)`);
-        continue;
-      }
+      console.log(`  pending ${pid}  type ${p.proposalType}  approvals ${p.config.approvals}`);
       found = true;
-      const tx = await voting.connect(a2).approveProposal(pid);
-      await tx.wait();
-      ok("proposal approved by the second admin");
+
+      // Approve EARLY on purpose. The second approval only has to be recorded; it does not have
+      // to land inside the execution window. GovernanceModule auto-executes here only when the
+      // delay has also elapsed, so approving now leaves a single executeProposal call to make
+      // inside [executionTime, expiryTime) — which is far easier to hit than two calls.
+      if (!(await voting.hasProposalApproval(pid, a2.address))) {
+        const tx = await voting.connect(a2).approveProposal(pid);
+        await tx.wait();
+        ok("second approval recorded", BigInt(now) >= p.config.executionTime ? "and executed" : "execution still pending");
+      } else {
+        console.log(`  already approved by admin2`);
+      }
+
+      if (BigInt(now) >= p.config.executionTime) {
+        const after = await voting.proposals(pid);
+        if (after.config.status === 0n && after.target !== Z) {
+          const tx2 = await voting.connect(a1).executeProposal(pid);
+          await tx2.wait();
+          ok("proposal executed");
+        }
+      } else {
+        console.log(`  EXECUTE WINDOW: ${new Date(Number(p.config.executionTime) * 1000).toISOString()}`);
+        console.log(`              to: ${new Date(Number(p.config.expiryTime) * 1000).toISOString()}`);
+        console.log(`  run STEP=approve again inside that range to execute`);
+      }
     }
     if (!found) console.log(`  nothing executable right now`);
     console.log(`  minDuration is now ${await voting.paramValue(P_MIN_DURATION)}`);
