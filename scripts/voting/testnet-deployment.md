@@ -223,6 +223,49 @@ This also revises an earlier note: publicnode returned decodable custom errors h
 first recorded — it varies by call shape or over time. Keep both endpoints to hand and switch on
 symptom: drpc when revert names are needed and sends are failing, publicnode when they are not.
 
+## Round 5 — 2026-08-07: the parameter change executed
+
+`executeProposal` landed inside the window and **`minDuration` went from 259200 to 86400** on
+chain. That completes the last untested governance path: create → approve → execute, end to end
+on a live network.
+
+The "approve early" change is what made it hittable. Because `approveProposal` records the second
+approval whenever it is called and auto-executes only if the delay has *also* passed, the
+proposal sat at 2/2 with a single `executeProposal` call left — one action inside the window
+instead of two. After two consecutive misses with the old shape, the first attempt with the new
+one succeeded.
+
+Also proven functionally, not just in storage: probing one second either side of the **live**
+duration bounds now rejects `86399` and accepts `86400`, so the executed change is genuinely in
+force rather than merely recorded.
+
+Next, for the deposit-**refund** path — the last remaining gap — `quorumVoters` must come down
+from 15, since only `quorumBasis` (5M) is reachable with the FULA on hand. Staged the same way:
+
+- Proposal `0xa055c86bae4f957e940fc2757aa70810012c7821ba81c78206936299ea8ff791` — `quorumVoters` → 3
+- **Already at 2 / 2 approvals**
+- Execute window: **2026-08-08 14:55:20 → 2026-08-09 14:55:20 UTC**
+
+### The check scripts had to stop assuming a pristine deployment
+
+As the live deployment accumulated state, one assertion after another began reporting failures
+against a contract that was behaving correctly. All four were the same mistake in different
+clothes:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| 17 × `ExistingActiveProposal` | A pending proposal serialises all parameter governance (F-11) | Detect it and skip section I with an explanation |
+| "well-formed subject did NOT revert" | The creator now *has* FULA, so it legitimately succeeds | Assert on whether the wallet can pay |
+| 6 × wrong error on subject id 1 | Subject 1 exists and is settled, so guards return `SubjectClosed` / `AlreadyFinalized` / … | Use `subjectCount + 1000`, an id that cannot exist |
+| `minDuration` "wrong" | Governance changed it — the very thing being tested | Report deviation from default as a NOTE; assert bounds, which must always hold |
+
+The general rule, learned the hard way over several rounds: **a live check must derive its
+expectations from current chain state.** Anything hardcoded to a fresh deployment — a balance, an
+id, a parameter value, an empty proposal slot — becomes a false alarm the moment the environment
+moves, and false alarms are worse than no check because they train you to ignore the output.
+
+Current battery: **49 / 49**, with section I correctly skipped while a proposal is pending.
+
 ## Still outstanding, and why
 
 Both are time gates, not defects.

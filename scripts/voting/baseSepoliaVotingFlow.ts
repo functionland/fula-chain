@@ -109,10 +109,16 @@ async function main() {
 
   // --------------------------------------------------------------- param
   if (step === "param") {
-    // Proves the create -> approve -> execute path on-chain. Lowering minDuration to its 1-day
-    // floor also makes future rehearsal cycles three times faster.
-    console.log(`Staging: minDuration -> 1 day`);
-    const tx = await voting.connect(a1).createProposal(PT_SET_PARAM, P_MIN_DURATION, proxyAddress, ZH, BigInt(DAY), Z);
+    // Defaults to lowering minDuration to its 1-day floor, which makes rehearsal cycles three
+    // times faster; override with PARAM_ID / PARAM_VALUE for any other parameter.
+    const paramId = Number(process.env.PARAM_ID ?? P_MIN_DURATION);
+    const paramValue = BigInt(process.env.PARAM_VALUE ?? DAY);
+    const [lo, hi] = await voting.paramBounds(paramId);
+    if (paramValue < lo || paramValue > hi) {
+      throw new Error(`param ${paramId} value ${paramValue} outside bounds [${lo}, ${hi}]`);
+    }
+    console.log(`Staging: param ${paramId}  ${await voting.paramValue(paramId)} -> ${paramValue}`);
+    const tx = await voting.connect(a1).createProposal(PT_SET_PARAM, paramId, proxyAddress, ZH, paramValue, Z);
     const rc = await tx.wait();
     const id = rc!.logs[0].topics[1];
     const pr = await voting.proposals(id);
