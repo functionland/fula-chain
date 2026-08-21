@@ -58,6 +58,27 @@ async function expectRevert(l: string, fn: () => Promise<any>, expected?: string
   }
 }
 
+/**
+ * Send a transaction, retrying the transient RPC faults this chain produces in bulk runs.
+ * `nonce too low` happens because the node reports a stale transaction count between sends —
+ * the same staleness that affects reads, surfacing on the write path.
+ */
+async function sendWithRetry(label: string, fn: () => Promise<any>, tries = 6): Promise<void> {
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try {
+      const tx = await fn();
+      await tx.wait();
+      return;
+    } catch (e: any) {
+      const msg = String(e?.message ?? e);
+      const transient = /nonce too low|Temporary internal error|replacement transaction|already known|timeout|failed to fetch/i.test(msg);
+      if (!transient || attempt === tries - 1) throw e;
+      console.log(`    retry ${label}: ${msg.slice(0, 70)}`);
+      await new Promise((r) => setTimeout(r, 4000));
+    }
+  }
+}
+
 /** Base Sepolia RPCs serve stale state right after a tx is mined; poll until it catches up. */
 async function settle(label: string, read: () => Promise<bigint>, want: bigint) {
   for (let i = 0; i < 15; i++) {
@@ -329,6 +350,111 @@ async function main() {
         else ok("cooldown expired; second subject blocked only by funds/approval", n);
       }
     }
+  }
+
+  // -------------------------------------------------- refund path (setup)
+  // Exercises the deposit REFUND path, the one branch the burn run could not reach.
+  //
+  // Deliberately does NOT lower `quorumVoters` by governance. Three attempts to execute a
+  // parameter change inside its 24-hour window were missed, so this satisfies the DEFAULT quorum
+  // instead: 15 distinct voters and >= 5,000,000 FULA of basis. Nothing here has an expiry, so it
+  // cannot be invalidated by when the next session happens.
+  if (step === "refund-setup") {
+    const quorumVoters = Number(await voting.paramValue(9));
+    const quorumBasis = await voting.paramValue(8);
+    const perVoter = (quorumBasis / BigInt(quorumVoters)) + ethers.parseEther("10000"); // margin over the floor
+    const gasEach = ethers.parseEther("0.0002");
+    console.log(`Need ${quorumVoters} voters and ${ethers.formatEther(quorumBasis)} basis`);
+    console.log(`  -> ${ethers.formatEther(perVoter)} FULA each, ${ethers.formatEther(perVoter * BigInt(quorumVoters))} total\n`);
+
+    let id = await voting.subjectCount();
+    const existing = id > 0n ? await voting.getSubject(id) : null;
+    const needSubject = !existing || BigInt(now) >= existing.closeTime;
+    if (needSubject) {
+      const tx = await voting.connect(a1).createSubject(
+        "Refund-path rehearsal: ship which integration next?",
+        "QmRefundPathRehearsal",
+        ["LayerZero", "Filecoin", "Arweave"],
+        Number(await voting.paramValue(4))
+      );
+      await tx.wait();
+      await settle("subjectCount", async () => await voting.subjectCount(), id + 1n);
+      id = await voting.subjectCount();
+      ok("subject created for the refund run", `id ${id}`);
+    } else {
+      console.log(`  reusing open subject ${id}`);
+    }
+    const closeAt = (await voting.getSubject(id)).closeTime;
+
+    // Deterministic throwaway wallets so the same set is recoverable in a later session.
+    for (let i = 0; i < quorumVoters; i++) {
+      const w = new ethers.Wallet(ethers.id(`fula-voting-rehearsal-voter-${i}`), ethers.provider);
+      const r = await voting.getReceipt(id, w.address);
+      if (r.voted) { console.log(`  voter ${i} already voted`); continue; }
+
+      if ((await ethers.provider.getBalance(w.address)) < gasEach / 2n) {
+        await sendWithRetry(`gas->${i}`, () => a1.sendTransaction({ to: w.address, value: gasEach }));
+      }
+      if ((await token.balanceOf(w.address)) < perVoter) {
+        await sendWithRetry(`fula->${i}`, () => token.connect(a1).transfer(w.address, perVoter));
+      }
+      if ((await token.allowance(w.address, proxyAddress)) < perVoter) {
+        await sendWithRetry(`approve ${i}`, () => token.connect(w).approve(proxyAddress, ethers.MaxUint256));
+      }
+      await sendWithRetry(`vote ${i}`, () => voting.connect(w).vote(id, i % 3, perVoter, [], 0, ZH));
+      console.log(`  voter ${i} voted option ${i % 3} with ${ethers.formatEther(perVoter)} FULA`);
+    }
+
+    await settle("voterCount", async () => (await voting.getSubject(id)).voterCount, BigInt(quorumVoters));
+    const s2 = await voting.getSubject(id);
+    check("voterCount reaches the quorum", s2.voterCount, quorumVoters);
+    check("totalBasis clears the quorum", s2.totalBasis >= quorumBasis, true);
+    console.log(`\n  subject ${id} closes ${new Date(Number(closeAt) * 1000).toISOString()}`);
+    console.log(`  then run STEP=refund-close (no expiry — any time after that is fine)`);
+  }
+
+  // -------------------------------------------------- refund path (close)
+  if (step === "refund-close") {
+    const id = subjectCount;
+    const s = await voting.getSubject(id);
+    if (BigInt(now) < s.closeTime) {
+      console.log(`Subject ${id} closes ${new Date(Number(s.closeTime) * 1000).toISOString()} — not yet.`);
+      return;
+    }
+    if (s.status === 0n) {
+      await (await voting.connect(a1).finalize(id)).wait();
+      await settle("status", async () => (await voting.getSubject(id)).status, 1n);
+      ok("finalized");
+    }
+    const f = await voting.getSubject(id);
+    check("quorum MET => deposit refundable", f.depositRefundable, true);
+    check("voterCount", f.voterCount, Number(await voting.paramValue(9)));
+
+    if (!f.depositSettled) {
+      const before = await token.balanceOf(a1.address);
+      const supplyBefore = await token.totalSupply();
+      await (await voting.connect(a1).claimDeposit(id)).wait();
+      await settle("creator refund", async () => (await token.balanceOf(a1.address)) - before, f.deposit);
+      check("creator refunded the full deposit", (await token.balanceOf(a1.address)) - before, f.deposit);
+      check("nothing was burned on the refund path", await token.totalSupply(), supplyBefore);
+    }
+    await expectRevert(
+      "a refunded deposit cannot then be burned",
+      () => voting.connect(a2).settleDeposit.staticCall(id),
+      "DepositAlreadySettled"
+    );
+
+    // Return every voter's lock so the contract ends empty, as in the burn run.
+    const quorumVoters = Number(await voting.paramValue(9));
+    for (let i = 0; i < quorumVoters; i++) {
+      const w = new ethers.Wallet(ethers.id(`fula-voting-rehearsal-voter-${i}`), ethers.provider);
+      const r = await voting.getReceipt(id, w.address);
+      if (r.voted && !r.claimed) await (await voting.connect(w).claim(id)).wait();
+    }
+    await settle("locked liability", async () => 0n - (await voting.totalLockedLiability()), 0n);
+    check("locked liability cleared", await voting.totalLockedLiability(), 0);
+    check("deposit liability cleared", await voting.totalDepositLiability(), 0);
+    check("contract holds nothing", await token.balanceOf(proxyAddress), 0);
   }
 
   // --------------------------------------------------------------- close

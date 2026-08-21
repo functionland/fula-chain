@@ -266,6 +266,39 @@ moves, and false alarms are worse than no check because they train you to ignore
 
 Current battery: **49 / 49**, with section I correctly skipped while a proposal is pending.
 
+## Round 6 — 2026-08-21: the refund path, without waiting on a window
+
+The `quorumVoters` proposal expired too — the third parameter proposal to lapse unexecuted. Three
+misses is conclusive: **a fixed 24-hour execution window does not fit an irregular session
+cadence**, and re-staging a fourth time would just repeat it.
+
+The fix was to stop needing the governance change. `quorumVoters` is 15 and `quorumBasis` is
+5,000,000 FULA — both reachable directly, with 15 deterministically-derived throwaway wallets
+funded from admin1 (7.85M FULA, 0.0156 ETH available). Nothing in this path has an expiry, so it
+cannot be invalidated by when the next session happens.
+
+Set up and voted:
+
+- Subject **2**, 1-day duration (possible only because the earlier `minDuration` change executed)
+- 15 voters × 343,333.33 FULA = **5,150,000 basis**, clearing the 5,000,000 threshold
+- `voterCount` = 15, exactly the quorum
+- Votes spread across all three options
+- Closes **2026-08-22 22:56:14 UTC**; then `STEP=refund-close`, which has no deadline
+
+Voter wallets are derived deterministically as `keccak256("fula-voting-rehearsal-voter-<i>")` so
+the same set is recoverable in any later session to claim their locks.
+
+### A third face of the staleness problem: nonces
+
+Bulk sending surfaced `nonce too low: next nonce N, tx nonce N-1` repeatedly — the node reporting
+a stale transaction count between sends. It is the same staleness already seen on reads, now on
+the write path. Sends are wrapped in a retry that treats `nonce too low`, `Temporary internal
+error`, `replacement transaction` and `already known` as transient; four retries fired across ~60
+transactions and every one succeeded on the next attempt.
+
+Worth stating plainly for anyone scripting against this chain: **assume neither reads nor nonces
+are fresh immediately after a write.** Poll reads, retry sends.
+
 ## Still outstanding, and why
 
 Both are time gates, not defects.
