@@ -477,6 +477,32 @@ remains outstanding.
 
 ---
 
+## 5b. Live testnet rehearsal — complete
+
+A full rehearsal ran on Base Sepolia against the real testnet FULA token
+(`0x32d6929c9F552068D54481FeAe75674fD29F337e`), with the voting proxy at
+`0x52db4Ab6A6123BB6dE3EBB874f99A0E4B6526139`. The record, including every round and the
+operational findings, is `scripts/voting/testnet-deployment.md`.
+
+Proven on-chain rather than only in unit tests:
+
+- **F-1's fix.** The `Recovery` drain is blocked against the real FULA token — from either admin,
+  to any beneficiary, down to 1 wei, and while the contract held 1,000,000 FULA.
+- **F-11's behaviour and recovery.** An expired proposal cannot be approved, still blocks all
+  parameter governance, and `cleanupExpiredProposals` restores it. Confirmed three times.
+- **Parameter governance end to end**, including an executed change (`minDuration` 3d → 1d) that
+  was then shown to be functionally in force, not merely stored.
+- **The quadratic curve**: 1,000,000 FULA → power exactly 1e12; 250,000 → exactly 5e11.
+- **Both deposit branches.** Quorum missed → deposit burned, `totalSupply` fell by exactly the
+  deposit. Quorum met (15 voters, 5.15M basis) → creator refunded in full, `totalSupply`
+  unchanged. Each branch refuses the other's settlement.
+- **Conservation.** Both runs ended with zero liabilities and a zero contract balance.
+
+Not exercised live, and why: the staking and pool integrations (neither peer contract exists on
+Base Sepolia — `stakingEngine` and `storagePool` are zero there, which exercises graceful
+degradation instead), the tie/no-mandate outcome, pause behaviour and the UUPS upgrade. All are
+covered by the unit suite.
+
 ## 6. Deployment preconditions
 
 1. `setRoleQuorum(ADMIN_ROLE, 2)` — the contract is **inert** until this is set; quorum defaults to

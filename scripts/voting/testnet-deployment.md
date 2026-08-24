@@ -299,6 +299,51 @@ transactions and every one succeeded on the next attempt.
 Worth stating plainly for anyone scripting against this chain: **assume neither reads nor nonces
 are fresh immediately after a write.** Poll reads, retry sends.
 
+## Round 7 — 2026-08-24: the refund path closes the last branch
+
+Subject 2 settled with quorum met, and every assertion held:
+
+| Check | Result |
+|---|---|
+| `finalize` | done, 15 voters recorded |
+| Quorum **met** → deposit refundable | `true` |
+| Creator refund | **full 100,000 FULA**, to the wei |
+| `totalSupply` after refund | **unchanged** — nothing burned on this path |
+| Burning a refunded deposit | refused, `DepositAlreadySettled` |
+| All 15 voter locks claimed | liabilities → 0 |
+| Contract FULA balance | **0** |
+
+Both deposit branches are now demonstrated on a live network, and they are genuinely different
+code paths: the burn run destroyed the deposit and reduced `totalSupply`; the refund run returned
+it intact and left supply untouched. The mutual exclusion is enforced in both directions —
+`claimDeposit` refuses when quorum is missed (`QuorumNotMet`), `settleDeposit` refuses when it is
+met (`DepositIsRefundable`), and once either has run the other is refused (`DepositAlreadySettled`).
+
+## Live coverage: what is and is not proven on-chain
+
+Proven against the real deployment and the real FULA token:
+
+- The **Recovery drain guard** — from either admin, any beneficiary, any amount
+- Parameter governance end to end: create → approve → **execute**, plus every bound, the canonical
+  field rules, the `2**32+1` truncation guard, and expiry + `cleanupExpiredProposals` recovery
+- Every subject-creation bound, and a well-formed subject reaching the token
+- The **quadratic curve**: 4× capital → 2× power, exactly
+- Ballot commitment: stored hashes equal `keccak256` of the submitted labels
+- Both deposit paths, voter refunds to the wei, and **conservation** — the contract ends at zero
+  in both runs
+
+Still only unit-tested, with the reason:
+
+| Area | Why not live |
+|---|---|
+| Staked-balance voting power | `StakingEngineLinear` is not deployed on Base Sepolia; `stakingEngine` is intentionally zero here, which instead exercises the graceful-degradation path |
+| Membership multiplier | Same — no `StoragePool` on this chain |
+| Tie / no-mandate outcome | Would need a second subject engineered to tie; the deterministic-winner path is covered |
+| Pause behaviour, UUPS upgrade | Both mutate the shared rehearsal deployment; covered by unit tests including claims-while-paused |
+
+Wiring the two integrations is a `type 15` proposal each if a future testnet deployment of those
+contracts appears — no upgrade required.
+
 ## Still outstanding, and why
 
 Both are time gates, not defects.
