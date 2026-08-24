@@ -27,7 +27,15 @@ function optionalAddress(name: string): string {
 }
 
 async function main() {
-  const dryRun = process.env.DRY_RUN === "1";
+  // Trim and accept several spellings. On Windows cmd, `set DRY_RUN=1 && ...` stores "1 " WITH a
+  // trailing space, so a strict === "1" silently turns an intended dry run into a real mainnet
+  // deployment. Anything non-empty other than an explicit "0"/"false" is treated as a dry run:
+  // erring toward NOT deploying is the only safe direction for this flag.
+  const dryRaw = (process.env.DRY_RUN ?? "").trim().toLowerCase();
+  const dryRun = dryRaw !== "" && dryRaw !== "0" && dryRaw !== "false" && dryRaw !== "no";
+  if (dryRaw !== "" && !dryRun) {
+    console.log(`DRY_RUN=${JSON.stringify(dryRaw)} interpreted as OFF — this WILL deploy.`);
+  }
   const tokenAddress = required("TOKEN_ADDRESS");
   const stakingEngine = optionalAddress("STAKING_ENGINE");
   const storagePool = optionalAddress("STORAGE_POOL");
@@ -109,9 +117,25 @@ async function main() {
   await voting.waitForDeployment();
 
   const proxyAddress = await voting.getAddress();
-  const implAddress = await upgrades.erc1967.getImplementationAddress(proxyAddress);
   console.log(`\nCommunityVoting proxy         : ${proxyAddress}`);
-  console.log(`CommunityVoting implementation: ${implAddress}`);
+
+  // Read the implementation slot with retries. Base RPCs serve stale state for several seconds
+  // after a deployment, and this call then throws "doesn't look like an ERC 1967 proxy" for a
+  // proxy that is in fact already live — which reads as a failed deployment when it succeeded.
+  // The proxy address above is the authoritative output; never re-run a deploy on this error
+  // without first checking whether that address already has code.
+  let implAddress = "";
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      implAddress = await upgrades.erc1967.getImplementationAddress(proxyAddress);
+      break;
+    } catch {
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+  console.log(
+    `CommunityVoting implementation: ${implAddress || "(RPC still stale — read the ERC1967 slot later; the proxy IS deployed)"}`
+  );
 
   console.log(
     "\nREQUIRED NEXT STEP — the contract is inert until this is done:\n" +
