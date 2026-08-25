@@ -14,6 +14,28 @@ import hre, { ethers, upgrades } from "hardhat";
 /** StorageToken keeps `platformFeeBps` private, so it is read straight from its storage slot. */
 const STORAGE_TOKEN_FEE_SLOT = 14;
 
+/**
+ * Verified per-chain addresses, so a bare run cannot pick the wrong contract.
+ *
+ * This table exists because of a real incident: the first Base deployment wired
+ * `stakingEngine = 0x3EDD28f6...`, copied from `scripts/checkProxyStorage.ts`. That address is a
+ * live FULA staking contract, so every sanity check passed — but it holds ~999k staked while the
+ * one users actually stake in (`0xb2064743...`, the VIP staking page's contract) holds ~6.46M.
+ * About 87% of staked FULA would have been invisible to voting, silently.
+ *
+ * The lesson: "it is a plausible address of the right type" is not verification. Pin the value,
+ * and make disagreeing with it deliberate.
+ */
+const KNOWN_GOOD: Record<string, { token: string; stakingEngine: string; note: string }> = {
+  // Base mainnet
+  "8453": {
+    token: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
+    // StakingEngineLinear proxy, impl 0x912270870f... — the contract the VIP staking page uses.
+    stakingEngine: "0xb2064743e3da40bB4C18e80620A02a38e87fB145",
+    note: "Base mainnet",
+  },
+};
+
 function required(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`Missing required env var ${name}`);
@@ -26,6 +48,42 @@ function optionalAddress(name: string): string {
   return ethers.getAddress(value);
 }
 
+/**
+ * Resolve an address from env, falling back to the verified default for this chain.
+ * If env disagrees with the known-good value, refuse unless CONFIRM_OVERRIDE is set — overriding
+ * stays possible, doing it by accident does not.
+ */
+function resolveAddress(
+  envName: string,
+  knownGood: string | undefined,
+  confirmOverride: boolean
+): string {
+  const raw = process.env[envName]?.trim();
+  if (!raw) {
+    if (knownGood) {
+      console.log(`${envName}: using verified default ${knownGood}`);
+      return ethers.getAddress(knownGood);
+    }
+    return ethers.ZeroAddress;
+  }
+  const supplied = ethers.getAddress(raw);
+  if (knownGood && supplied !== ethers.getAddress(knownGood)) {
+    const message =
+      `\n${envName} OVERRIDE\n` +
+      `  supplied   : ${supplied}\n` +
+      `  known-good : ${ethers.getAddress(knownGood)}\n`;
+    if (!confirmOverride) {
+      throw new Error(
+        message +
+          `  Refusing to deploy. If the override is intended, set CONFIRM_OVERRIDE=1.\n` +
+          `  If it is not, unset ${envName} and the verified default will be used.`
+      );
+    }
+    console.warn(message + `  CONFIRM_OVERRIDE is set — proceeding with the supplied address.`);
+  }
+  return supplied;
+}
+
 async function main() {
   // Trim and accept several spellings. On Windows cmd, `set DRY_RUN=1 && ...` stores "1 " WITH a
   // trailing space, so a strict === "1" silently turns an intended dry run into a real mainnet
@@ -36,13 +94,25 @@ async function main() {
   if (dryRaw !== "" && !dryRun) {
     console.log(`DRY_RUN=${JSON.stringify(dryRaw)} interpreted as OFF — this WILL deploy.`);
   }
-  const tokenAddress = required("TOKEN_ADDRESS");
-  const stakingEngine = optionalAddress("STAKING_ENGINE");
+  const confirmOverride = (process.env.CONFIRM_OVERRIDE ?? "").trim() !== "";
+
+  const network = await ethers.provider.getNetwork();
+  const known = KNOWN_GOOD[network.chainId.toString()];
+  if (known) console.log(`Verified address table found for ${known.note}.\n`);
+
+  const tokenAddress = known
+    ? resolveAddress("TOKEN_ADDRESS", known.token, confirmOverride)
+    : required("TOKEN_ADDRESS");
+  const stakingEngine = known
+    ? resolveAddress("STAKING_ENGINE", known.stakingEngine, confirmOverride)
+    : optionalAddress("STAKING_ENGINE");
+  // No known-good default: storagePool is deliberately unset on Base, because
+  // StoragePool.createPoolLockAmount caps pool join stakes far below minPoolJoinStake's 1 FULA
+  // floor, which would make the membership multiplier unreachable for everyone.
   const storagePool = optionalAddress("STORAGE_POOL");
   const initialOwner = required("OWNER");
   const initialAdmin = required("ADMIN");
 
-  const network = await ethers.provider.getNetwork();
   const [deployer] = await ethers.getSigners();
   console.log(`network      : ${hre.network.name} (chainId ${network.chainId})`);
   console.log(`deployer     : ${deployer.address}`);
@@ -79,6 +149,35 @@ async function main() {
       `  WARNING: a non-zero platform fee means voters lose ${platformFeeBps} bps on the way in ` +
         `and again on the way out. Accounting stays correct, but say so in the UI.`
     );
+  }
+
+  // ---- Pre-flight B2: the staking engine is the RIGHT one ----
+  // `token()` matching only proves it is *a* FULA staking contract; several exist. `totalStaked`
+  // is the number that distinguishes them, and printing it is what turns "plausible address" into
+  // "the one people actually use". Read it out loud so a wrong choice is obvious before deploying.
+  if (stakingEngine !== ethers.ZeroAddress) {
+    const engine = await ethers.getContractAt("StakingEngineLinear", stakingEngine);
+    const engineToken = await engine.token();
+    console.log(`stake token  : ${engineToken}`);
+    if (engineToken.toLowerCase() !== tokenAddress.toLowerCase()) {
+      throw new Error(
+        `Staking engine ${stakingEngine} governs ${engineToken}, not the token being wired ` +
+          `(${tokenAddress}). Stake-derived voting power would read a different token entirely.`
+      );
+    }
+    try {
+      const totalStaked: bigint = await engine.totalStaked();
+      console.log(`totalStaked  : ${ethers.formatEther(totalStaked)} FULA`);
+      if (totalStaked === 0n) {
+        console.warn(
+          "  WARNING: this staking contract holds NOTHING. Several FULA staking contracts exist " +
+            "on Base; wiring an empty or superseded one gives every staker zero voting power " +
+            "with no error. Confirm this is the contract your stakers actually use."
+        );
+      }
+    } catch {
+      console.warn("  (totalStaked unavailable — confirm this is the intended staking contract)");
+    }
   }
 
   // ---- Pre-flight C: the sybil-cost assumption behind the membership multiplier ----
@@ -136,6 +235,12 @@ async function main() {
   console.log(
     `CommunityVoting implementation: ${implAddress || "(RPC still stale — read the ERC1967 slot later; the proxy IS deployed)"}`
   );
+
+  // The UI recovers ballot option labels from SubjectOptions event logs, and public RPCs reject
+  // wide eth_getLogs ranges. Record this so log queries can start here instead of block 0.
+  const deployBlock = voting.deploymentTransaction()?.blockNumber;
+  console.log(`Deployment block              : ${deployBlock ?? "(unknown — read it from the tx)"}`);
+  console.log(`Deployment tx                 : ${voting.deploymentTransaction()?.hash ?? "(unknown)"}`);
 
   console.log(
     "\nREQUIRED NEXT STEP — the contract is inert until this is done:\n" +
