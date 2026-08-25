@@ -114,9 +114,27 @@ async function main() {
 
   // -----------------------------------------------------------------------
   console.log(`\n=== A. Deployed state ===`);
-  await expectValue("token wired", tokenAddress, "0x32d6929c9F552068D54481FeAe75674fD29F337e");
-  await expectValue("stakingEngine unset", await voting.stakingEngine(), Z);
-  await expectValue("storagePool unset", await voting.storagePool(), Z);
+  // Chain-agnostic: assert the wired token really is FULA rather than pinning one address, so
+  // this battery is meaningful on mainnet and testnet alike.
+  const wired = await ethers.getContractAt("StorageToken", tokenAddress);
+  await expectValue("wired token is FULA", await wired.symbol(), "FULA");
+  await expectValue("wired token has 18 decimals", await wired.decimals(), 18);
+  console.log(`  token: ${tokenAddress}`);
+  // Integrations are deployment choices, not invariants — zero is a valid, supported
+  // configuration (graceful degradation) and so is a wired address. Report them, and verify a
+  // wired one actually points at the same token this contract governs, which IS an invariant.
+  const se = await voting.stakingEngine();
+  const sp = await voting.storagePool();
+  console.log(`  stakingEngine: ${se === Z ? "unset (stake-derived power disabled)" : se}`);
+  console.log(`  storagePool  : ${sp === Z ? "unset (membership multiplier disabled)" : sp}`);
+  if (se !== Z) {
+    const seToken = await (await ethers.getContractAt("StakingEngineLinear", se)).token();
+    await expectValue("staking engine governs the same token", seToken.toLowerCase(), tokenAddress.toLowerCase());
+  }
+  if (sp !== Z) {
+    const spToken = await (await ethers.getContractAt("StoragePool", sp)).storageToken();
+    await expectValue("storage pool governs the same token", spToken.toLowerCase(), tokenAddress.toLowerCase());
+  }
   console.log(`  subjectCount: ${await voting.subjectCount()} (informational — grows as the rehearsal runs)`);
   await expectValue("adminCount", await voting.adminCount(), 2);
   await expectValue("admin1 has ADMIN_ROLE", await voting.hasRole(ADMIN_ROLE, a1.address), true);

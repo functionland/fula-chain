@@ -1,12 +1,32 @@
 # CommunityVoting — Base mainnet deployment record
 
-## Deployed
+## CANONICAL DEPLOYMENT
+
+**Use `0x9aF96A75A80d00Ea94ceBbcdDa8E1d578df89686`.** This is the address to publish, index and
+build against.
 
 | | |
 |---|---|
 | Network | **Base mainnet**, chainId 8453 |
-| Proxy | `0xbA687E16dcAb5f4C7798C092d4cCC250AA5169BE` |
-| Implementation | `0xab96f27f666f29c5e6a274f9c610c069650a88c2` |
+| **Proxy** | **`0x9aF96A75A80d00Ea94ceBbcdDa8E1d578df89686`** |
+| Implementation | `0xAb96F27f666f29C5e6A274f9c610C069650A88c2` |
+| Quorum | **2** — set, contract is live (block 50413584) |
+
+### A second, ABANDONED proxy also exists
+
+`0xbA687E16dcAb5f4C7798C092d4cCC250AA5169BE` — deployed accidentally (see the DRY_RUN note below),
+byte-identical, same implementation, also quorum 2. **Do not use it.** It holds no FULA and has no
+subjects or proposals, but it is fully functional, so it can accept subjects and votes from anyone
+who finds it.
+
+Recommended: pause it with `emergencyAction(1)` — a single-admin call, no proposal required. That
+blocks `createSubject`, `vote` and `finalize` on it. Claims are deliberately never pausable, and it
+custodies nothing, so pausing harms no one and is reversible with `emergencyAction(2)`.
+
+### Shared configuration (both proxies)
+
+| | |
+|---|---|
 | FULA token | `0x9e12735d77c72c5C3670636D428f2F3815d8A4cB` |
 | stakingEngine | `0x3EDD28f66C14d113A955ABFeC9f3D061A795c727` (StakingEngineLinear) |
 | storagePool | `0x0` — membership multiplier deliberately disabled, see below |
