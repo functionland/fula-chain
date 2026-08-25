@@ -199,8 +199,8 @@ async function run(label, rpcs, address, deployBlock, expect) {
       "https://mainnet.base.org",
       "https://base.gateway.tenderly.co",
     ],
-    "0xD2ae210b415B6b7077DCEcCA680fFc3FE621542A",
-    50415014,
+    "0xB8FCDb09C3828a4f8F5A0AEb2D7353719CECB013",
+    50439299,
     {
       chainId: 8453,
       token: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",

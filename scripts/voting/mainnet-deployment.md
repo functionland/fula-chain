@@ -2,19 +2,20 @@
 
 ## CANONICAL DEPLOYMENT
 
-> **PENDING REDEPLOY (2026-08-25).** `0xD2ae210b…` is being replaced because its quorum was seeded
-> unreachably — see *Why the quorum was reseeded* below. Do not publish it. Fill this table in from
-> the deploy output, then update `js/governance.js` in the website repo.
+**Use `0xB8FCDb09C3828a4f8F5A0AEb2D7353719CECB013`.** This is the address to publish, index and
+build against. It replaces `0xD2ae210b…`, whose quorum was seeded unreachably — see *Why the quorum
+was reseeded* below.
 
 | | |
 |---|---|
 | Network | **Base mainnet**, chainId 8453 |
-| **Proxy** | `(pending)` |
-| Implementation | `(pending — must be NEW; the old 0xAb96F27f… carries the old seeds)` |
-| **Deployment block** | `(pending)` — the UI must start its `eth_getLogs` scan here |
-| Deployment tx | `(pending)` |
-| Quorum | `(pending)` — inert until `setRoleQuorum(ADMIN_ROLE, 2)` |
-| Deployed | `(pending)` |
+| **Proxy** | **`0xB8FCDb09C3828a4f8F5A0AEb2D7353719CECB013`** |
+| Implementation | [`0x2bdB7CC4f2750AB608f73FBF02F1C8D63facd72a`](https://basescan.org/address/0x2bdB7CC4f2750AB608f73FBF02F1C8D63facd72a#code) — verified, and a **new** implementation (the old `0xAb96F27f…` carries the old seeds) |
+| **Deployment block** | **50439299** — the UI must start its `eth_getLogs` scan here |
+| Deployment tx | `0x03401c0e32e5791a796abebf1f36a1c845bdf920b11e7eed6e88598fd955c2b8` |
+| Deployed | 2026-08-25 14:25:45 UTC |
+| Quorum | ⚠️ **not yet set** — inert until `setRoleQuorum(ADMIN_ROLE, 2)` |
+| Admin role timelock | elapses **2026-08-26 14:25:45 UTC** — proposals cannot be *created* before then |
 
 ### Configuration
 
@@ -28,20 +29,41 @@
 
 ### Seeded parameters
 
+All five read back off the deployed proxy at deploy time and matched.
+
 | Param | Value | Note |
 |---|---|---|
 | `burnFee` | **25,000 FULA** | burned unconditionally; the real anti-spam cost |
 | `deposit` | **50,000 FULA** | refunded only if quorum is met |
-| `minVoteBasis` | 10,000 FULA | per-voter floor |
-| `quorumVoters` | **8** | |
-| `quorumBasis` | **200,000 FULA** | 8 voters averaging 25,000 — 2.5x the minimum |
+| `minVoteBasis` | **10,000 FULA** | per-voter floor |
+| `quorumVoters` | **10** | |
+| `quorumBasis` | **100,000 FULA** | = 10 × 10,000, so the two halves coincide exactly |
 | everything else | unchanged | 3–30 day duration, 3 open per creator, 1 day cooldown, 1.5x staker, 2x member |
 
-The deploy script now reads these back off the deployed proxy and aborts if any disagrees, and
-separately rejects any pairing that demands more than 10x `minVoteBasis` per voter.
+**The quorum rule is therefore one sentence: ten people must vote.** Ten voters each committing the
+10,000 minimum produce exactly 100,000 of basis, clearing both halves at once — and money cannot be
+substituted for turnout, since eight voters holding 50,000 each reach 400,000 of basis and still
+fail on the count.
 
-Admin role timelock: 24h from deployment. `setRoleQuorum` works immediately; creating *proposals*
-waits out that delay.
+The deploy script reads all five values back off the deployed proxy and aborts on any mismatch —
+which also catches a proxy pointed at a stale implementation, since these constants live in
+`initialize` and an address-only check would pass while being wrong. It separately enforces
+`quorumBasis <= quorumVoters * minVoteBasis` and refuses the deployment otherwise. This run
+reported `10 voters x 10000.0 minimum = 100000.0 guaranteed, against a 100000.0 basis gate ->
+10 qualifying voters always clear quorum (exactly equal)`.
+
+## ⚠️ Required next step
+
+The contract is **inert** until an admin runs:
+
+```
+SEND=1 VOTING_PROXY=0xB8FCDb09C3828a4f8F5A0AEb2D7353719CECB013 \
+  npx hardhat run scripts/voting/votingGovernanceCheck.ts --network base
+```
+
+Quorum defaults to 0 and `GovernanceModule` rejects anything below 2, so no proposal can be created
+until this lands. `setRoleQuorum` itself carries no timelock. Creating *proposals* is what waits out
+the 24h `ROLE_CHANGE_DELAY`, which elapses **2026-08-26 14:25:45 UTC**.
 
 ## Why the quorum was reseeded
 
@@ -67,7 +89,7 @@ The fee and deposit were halved in the same pass, since a redeploy makes it free
 
 ## Public UI
 
-Live at **https://fulanetwork.github.io/proposals/** (source in the `fulanetwork.github.io`
+Live at **https://fulanetwork.github.io/proposals/**, wired to `0xB8FCDb09…` (source in the `fulanetwork.github.io`
 repo: `proposals/index.html`, `css/governance.css`, `js/governance.js`).
 
 Re-verify the read path it depends on at any time — read-only, no keys, no gas:
@@ -119,7 +141,7 @@ address can create subjects and lock real tokens in a contract nobody is watchin
 |---|---|---|
 | `0xbA687E16dcAb5f4C7798C092d4cCC250AA5169BE` | Deployed accidentally (see the DRY_RUN note) | **2026-08-25 23:52:23 UTC** |
 | `0x9aF96A75A80d00Ea94ceBbcdDa8E1d578df89686` | Wired to the wrong staking engine | **2026-08-26 00:02:55 UTC** |
-| `0xD2ae210b415B6b7077DCEcCA680fFc3FE621542A` | Quorum seeded unreachably (see above) | **2026-08-26 00:56:15 UTC** |
+| `0xD2ae210b415B6b7077DCEcCA680fFc3FE621542A` | Quorum seeded unreachably (see above); **was published on the live site** | **2026-08-26 00:56:15 UTC** |
 
 `0xD2ae210b…` matters most of the three: it was published on the live site, so it is the one a
 user might actually find. Pause it as soon as its timelock elapses.
