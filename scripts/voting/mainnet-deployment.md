@@ -32,6 +32,51 @@ subject-creation bound, and all lifecycle guards.
 
 Admin role timelock elapses **2026-08-26 00:56:15 UTC**; proposals cannot be *created* before then.
 
+## Public UI
+
+Live at **https://fulanetwork.github.io/proposals/** (source in the `fulanetwork.github.io`
+repo: `proposals/index.html`, `css/governance.css`, `js/governance.js`).
+
+Re-verify the read path it depends on at any time — read-only, no keys, no gas:
+
+```
+node scripts/voting/verifyUiReadPath.js
+```
+
+It checks this deployment's wiring and, against the Sepolia rehearsal, the ballot recovery,
+tally, quorum and voting-power maths. 23 assertions as of 2026-08-24.
+
+### RPC facts the UI had to be built around
+
+Measured, not assumed. Anyone building another client will hit these.
+
+| Endpoint (Base mainnet) | `eth_getLogs` |
+|---|---|
+| `base-rpc.publicnode.com` | **403 Forbidden** — refuses log queries outright |
+| `1rpc.io/base` | fails |
+| `base-mainnet.public.blastapi.io` | 400 |
+| `base.drpc.org` | works for sparse contracts; times out on busy ones |
+| `mainnet.base.org` | **works**, ~10k block ceiling |
+| `base.gateway.tenderly.co` | **works**, widest ranges accepted |
+
+Three consequences:
+
+1. **Log support is unrelated to general RPC quality.** publicnode is the fastest endpoint for
+   ordinary calls and useless for logs. A pool picked on latency alone cannot render a ballot.
+2. **An empty log result is "unknown", not "none".** On Sepolia, publicnode returns a
+   *successful empty array* for pruned ranges while drpc, base.org and tenderly all return the
+   very same log. Accepting the first empty answer silently drops a ballot's labels. Every
+   endpoint must agree before reporting nothing.
+3. **Never scan backwards from head.** Ranges above ~10k blocks are rejected, so a walk back to
+   the deployment block costs one request per 10k blocks — about 130 a month after deployment,
+   growing without bound. Base blocks are exactly 2s and `createdAt` is in the subject, so the
+   creating block is *predicted* from its timestamp: `head - (headTs - createdAt) / 2`.
+   Measured error was **0 blocks** on both rehearsal subjects.
+
+Also worth knowing for any web3.js client: every ABI input needs a `name`, or the encoder throws
+`Cannot read properties of undefined (reading 'replace')` on the first call. ethers does not care,
+so an ethers-based test will not catch it.
+
 ## Two superseded proxies — pause both once their timelocks elapse
 
 Neither holds FULA and neither has subjects, but both are **fully functional**: anyone who finds
