@@ -1,4 +1,4 @@
-﻿// CommunityVoting â€” core contract tests.
+// CommunityVoting â€” core contract tests.
 //
 // Step 1 of the implementation plan: initialization, parameter bounds, and the governance
 // overrides. The centrepiece is the `Recovery` guard: GovernanceModule ships a proposal type
@@ -99,15 +99,15 @@ describe("CommunityVoting â€” core", function () {
     });
 
     it("seeds the documented default parameters", async function () {
-      expect(await voting.paramValue(P.BURN_FEE)).to.equal(ethers.parseEther("50000"));
-      expect(await voting.paramValue(P.DEPOSIT)).to.equal(ethers.parseEther("100000"));
+      expect(await voting.paramValue(P.BURN_FEE)).to.equal(ethers.parseEther("25000"));
+      expect(await voting.paramValue(P.DEPOSIT)).to.equal(ethers.parseEther("50000"));
       expect(await voting.paramValue(P.MIN_VOTE_BASIS)).to.equal(ethers.parseEther("10000"));
       expect(await voting.paramValue(P.MIN_DURATION)).to.equal(3 * DAY);
       expect(await voting.paramValue(P.MAX_DURATION)).to.equal(30 * DAY);
       expect(await voting.paramValue(P.MEMBER_MULTIPLIER_BPS)).to.equal(20000);
       expect(await voting.paramValue(P.STAKE_WEIGHT_BPS)).to.equal(10000);
-      expect(await voting.paramValue(P.QUORUM_BASIS)).to.equal(ethers.parseEther("5000000"));
-      expect(await voting.paramValue(P.QUORUM_VOTERS)).to.equal(15);
+      expect(await voting.paramValue(P.QUORUM_BASIS)).to.equal(ethers.parseEther("200000"));
+      expect(await voting.paramValue(P.QUORUM_VOTERS)).to.equal(8);
       expect(await voting.paramValue(P.MAX_OPEN_PER_CREATOR)).to.equal(3);
       expect(await voting.paramValue(P.CREATE_COOLDOWN)).to.equal(DAY);
       expect(await voting.paramValue(P.MIN_POOL_JOIN_STAKE)).to.equal(ethers.parseEther("1"));
@@ -292,7 +292,7 @@ describe("CommunityVoting â€” core", function () {
       const newFee = ethers.parseEther("75000");
       await expect(runParamProposal(P.BURN_FEE, newFee))
         .to.emit(voting, "ParamUpdated")
-        .withArgs(P.BURN_FEE, ethers.parseEther("50000"), newFee);
+        .withArgs(P.BURN_FEE, ethers.parseEther("25000"), newFee);
       expect(await voting.paramValue(P.BURN_FEE)).to.equal(newFee);
     });
 
@@ -397,7 +397,7 @@ describe("CommunityVoting â€” core", function () {
       const proposalId = await createParamProposal(P.BURN_FEE, ethers.parseEther("60000"));
       await time.increase(3 * DAY); // past the 48h PROPOSAL_TIMEOUT
       await expect(voting.connect(admin).approveProposal(proposalId)).to.be.reverted;
-      expect(await voting.paramValue(P.BURN_FEE)).to.equal(ethers.parseEther("50000"));
+      expect(await voting.paramValue(P.BURN_FEE)).to.equal(ethers.parseEther("25000"));
     });
 
     it("serialises parameter proposals, and an expired one blocks until cleaned up", async function () {

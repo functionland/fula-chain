@@ -149,15 +149,15 @@ at creation, so options can never be restated after the fact.
 
 | Param | Default | Hard min | Hard max |
 |---|---|---|---|
-| `burnFee` | 50,000 FULA | 1,000 | 2,000,000 |
-| `deposit` | 100,000 FULA | 10,000 | 10,000,000 |
+| `burnFee` | 25,000 FULA | 1,000 | 2,000,000 |
+| `deposit` | 50,000 FULA | 10,000 | 10,000,000 |
 | `minVoteBasis` | 10,000 FULA | 100 | 1,000,000 |
 | `minDuration` / `maxDuration` | 3d / 30d | 1d | 90d (`min <= max`) |
 | `memberMultiplierBps` | 20,000 (2×) | 10,000 | 50,000 |
 | `stakerMultiplierBps` | 15,000 (1.5×) | 10,000 | 50,000 |
 | `stakeWeightBps` | 10,000 (100%) | 0 | 10,000 |
-| `quorumBasis` | 5,000,000 FULA | 100,000 | 100,000,000 |
-| `quorumVoters` | 15 | 3 | 1,000 |
+| `quorumBasis` | 200,000 FULA | 100,000 | 100,000,000 |
+| `quorumVoters` | 8 | 3 | 1,000 |
 | `maxOpenPerCreator` | 3 | 1 | 20 |
 | `createCooldown` | 1d | 0 | 7d |
 | `minPoolJoinStake` | 1 FULA | 1 FULA | 10,000,000 |
@@ -166,11 +166,15 @@ The floor on `minPoolJoinStake` is deliberately above zero: at zero the peer-sta
 no-op and any admin-seeded pool member would earn the multiplier for free. To neutralise the
 multiplier, set `memberMultiplierBps` to 10,000 (1×) — that is its intended off switch.
 
-At an assumed $1–5M market cap (FULA ≈ $0.0005–0.0025), creating a subject costs roughly $75–375, of which $25–125 is permanently burned. Reclaiming the deposit requires roughly $2.5–12.5k of committed basis — far more than the deposit is worth, so self-funding a refund is not economical.
+At an assumed $1–5M market cap (FULA ≈ $0.0005–0.0025), raising a subject costs roughly $37–188, of which $12–63 is permanently burned. Reaching the refund threshold takes 8 distinct voters and 200,000 FULA of committed basis — around $100–500, and *locked* rather than spent.
 
 Parameters are changed **only** through the existing 2-admin proposal flow (24h delay) via contract-local proposal type **14**, and every value is clamped to the compile-time bounds above at *both* proposal creation and execution — a proposal sits for 24–48 hours and the world can move in between.
 
-**Quorum caveat.** Quorum is `voterCount >= quorumVoters && totalBasis >= quorumBasis`. The **basis term is the load-bearing one**; a voter count is cheap to sybil at roughly $0.50 per wallet. Quorum therefore proves committed capital, not independent community participation. A creator can also legitimately participate in their own subject. The deposit is best understood as an anti-spam capital requirement, not a guarantee of organic turnout.
+**Quorum caveat.** Quorum is `voterCount >= quorumVoters && totalBasis >= quorumBasis`, and the two halves are ANDed, so **they must be reachable by the same turnout**. The first seeding of this contract paired 15 voters with 5,000,000 basis and did not check them against each other: 15 voters at the 10,000 minimum contribute 150,000, leaving the basis term 97% short. It demanded either 500 minimum-sized voters or 15 averaging 333,333 each — 77% of every FULA staked on Base — so in practice every proposal would have burned its deposit and nobody would have proposed twice. The pair is now sized together: 8 voters averaging 25,000 clears both at once.
+
+The **basis term remains the load-bearing half** (8 voters at the minimum give 80,000 against a 200,000 bar), but by 2.5× rather than 33×. A voter count is cheap to sybil at roughly $0.50 per wallet, so quorum proves committed capital more than independent participation, and a creator may legitimately vote on their own subject.
+
+Be clear-eyed about what this costs: locking is refundable, so a holder with ~200,000 FULA spread across 8 wallets can self-fund a refund for little more than gas. That was true before too, merely at an unreachable scale. **The unconditional burn fee, not the deposit, is therefore the real anti-spam cost.** The deposit deters carelessness and abandoned proposals; it does not stop a determined sybil, and it was never able to. Raising `quorumVoters` is the lever to pull as the community grows.
 
 ## 8. Trust model — what admins can and cannot do
 

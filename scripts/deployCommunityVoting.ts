@@ -236,6 +236,64 @@ async function main() {
     `CommunityVoting implementation: ${implAddress || "(RPC still stale — read the ERC1967 slot later; the proxy IS deployed)"}`
   );
 
+  // Read the seeded parameters back off the chain and refuse to proceed if any disagrees.
+  //
+  // The values live in `initialize`, so a proxy pointed at a STALE implementation is seeded
+  // with that implementation's constants while every address check still passes. The OZ plugin
+  // keys implementations by bytecode hash and so should deploy a fresh one whenever these
+  // change — but "should" is exactly what was assumed about the staking-engine address. Assert
+  // it instead. This also catches a stale artifact or an un-recompiled source tree.
+  const EXPECTED_PARAMS: Array<[number, string, bigint]> = [
+    [1, "burnFee", ethers.parseEther("25000")],
+    [2, "deposit", ethers.parseEther("50000")],
+    [3, "minVoteBasis", ethers.parseEther("10000")],
+    [8, "quorumBasis", ethers.parseEther("200000")],
+    [9, "quorumVoters", 8n],
+  ];
+  console.log("\nSeeded parameters (read back from the deployed proxy):");
+  const wrong: string[] = [];
+  for (const [id, name, expected] of EXPECTED_PARAMS) {
+    let actual: bigint | null = null;
+    for (let attempt = 0; attempt < 10 && actual === null; attempt++) {
+      try {
+        actual = await voting.paramValue(id);
+      } catch {
+        await new Promise((r) => setTimeout(r, 3000)); // stale RPC right after deployment
+      }
+    }
+    const shown = name.includes("Voters") ? String(actual) : `${ethers.formatEther(actual ?? 0n)} FULA`;
+    const good = actual === expected;
+    console.log(`  ${good ? "ok  " : "WRONG"} ${name.padEnd(14)} ${shown}`);
+    if (!good) wrong.push(`${name}: expected ${expected}, chain has ${actual}`);
+  }
+  if (wrong.length) {
+    throw new Error(
+      "Deployed proxy is seeded with unexpected parameters, which usually means it was pointed " +
+        "at a stale implementation:\n  " +
+        wrong.join("\n  ") +
+        `\nThe proxy at ${proxyAddress} IS deployed and must be retired rather than reused.`
+    );
+  }
+
+  // The quorum halves are ANDed, so a turnout that satisfies one must be able to satisfy the
+  // other. Guard the relationship, not just the values: an earlier seeding paired 15 voters
+  // with 5,000,000 basis, which no realistic turnout could reach, so every deposit would burn.
+  const qVoters = await voting.paramValue(9);
+  const qBasis = await voting.paramValue(8);
+  const minVote = await voting.paramValue(3);
+  const perVoter = qBasis / qVoters;
+  console.log(
+    `\nQuorum shape: ${qVoters} voters must average ${ethers.formatEther(perVoter)} FULA ` +
+      `(${(Number(perVoter) / Number(minVote)).toFixed(1)}x the ${ethers.formatEther(minVote)} minimum)`
+  );
+  if (perVoter > minVote * 10n) {
+    throw new Error(
+      `quorumBasis/quorumVoters demands ${ethers.formatEther(perVoter)} FULA per voter, over 10x ` +
+        `the ${ethers.formatEther(minVote)} minimum. That is almost certainly unreachable and every ` +
+        `proposal would burn its deposit. Re-check the seeds before using this deployment.`
+    );
+  }
+
   // The UI recovers ballot option labels from SubjectOptions event logs, and public RPCs reject
   // wide eth_getLogs ranges. Record this so log queries can start here instead of block 0.
   const deployBlock = voting.deploymentTransaction()?.blockNumber;

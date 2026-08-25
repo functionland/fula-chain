@@ -143,15 +143,15 @@ async function main() {
 
   console.log(`\n=== B. Parameter defaults and bounds ===`);
   const expectedDefaults: Array<[number, string, bigint]> = [
-    [1, "burnFee", ethers.parseEther("50000")],
-    [2, "deposit", ethers.parseEther("100000")],
+    [1, "burnFee", ethers.parseEther("25000")],
+    [2, "deposit", ethers.parseEther("50000")],
     [3, "minVoteBasis", ethers.parseEther("10000")],
     [4, "minDuration", BigInt(3 * DAY)],
     [5, "maxDuration", BigInt(30 * DAY)],
     [6, "memberMultiplierBps", 20000n],
     [7, "stakeWeightBps", 10000n],
-    [8, "quorumBasis", ethers.parseEther("5000000")],
-    [9, "quorumVoters", 15n],
+    [8, "quorumBasis", ethers.parseEther("200000")],
+    [9, "quorumVoters", 8n],
     [10, "maxOpenPerCreator", 3n],
     [11, "createCooldown", BigInt(DAY)],
     [12, "minPoolJoinStake", ethers.parseEther("1")],

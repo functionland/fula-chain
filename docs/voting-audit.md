@@ -433,6 +433,19 @@ load-bearing one**; distinct addresses cost roughly a cent to manufacture, so th
 weak secondary floor. A creator can legitimately vote on their own subject. The deposit is best
 understood as an anti-spam capital requirement, not a guarantee of organic turnout.
 
+**Because the two halves are ANDed, they must be reachable by the same turnout — and the first
+seeding of this contract was not.** It paired 15 voters with 5,000,000 basis, but 15 voters at the
+10,000 minimum contribute only 150,000, leaving the basis term 97% short. Satisfying it needed
+either 500 minimum-sized voters or 15 averaging 333,333 each — 77% of every FULA staked on Base.
+Every proposal would have burned its deposit, and proposing would have stopped after the first
+person tried it.
+
+Nothing in the code was wrong: each value sat inside its own `paramBounds`, every test passed, and
+the 50-assertion live check confirmed both. The defect was in the *relationship* between two
+independently valid numbers, which is exactly the class of thing per-value bounds cannot catch.
+`scripts/deployCommunityVoting.ts` now asserts the shape after deploying — it refuses any seeding
+that demands more than 10x `minVoteBasis` per voter, which the original pairing would have failed.
+
 ---
 
 ## 5. Test coverage

@@ -16,8 +16,8 @@ const TOTAL_SUPPLY = ethers.parseEther("1000000000");
 // StorageToken proposal types
 const PT_ADD_WHITELIST = 5;
 
-const BURN_FEE = ethers.parseEther("50000");
-const DEPOSIT = ethers.parseEther("100000");
+const BURN_FEE = ethers.parseEther("25000");
+const DEPOSIT = ethers.parseEther("50000");
 const CREATE_COST = BURN_FEE + DEPOSIT;
 
 describe("CommunityVoting — subject creation", function () {

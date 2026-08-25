@@ -19,7 +19,7 @@ const P_QUORUM_BASIS = 8;
 const P_QUORUM_VOTERS = 9;
 
 const OPTS = ["Yes", "No", "Abstain"];
-const DEPOSIT = ethers.parseEther("100000");
+const DEPOSIT = ethers.parseEther("50000");
 const NO_WINNER = 65535;
 
 describe("CommunityVoting — finalization and claims", function () {

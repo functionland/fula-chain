@@ -205,15 +205,22 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         stakingEngine = _stakingEngine;
         storagePool = _storagePool;
 
-        _params[P_BURN_FEE] = 50_000 * TOKEN_UNIT;
-        _params[P_DEPOSIT] = 100_000 * TOKEN_UNIT;
+        _params[P_BURN_FEE] = 25_000 * TOKEN_UNIT;
+        _params[P_DEPOSIT] = 50_000 * TOKEN_UNIT;
         _params[P_MIN_VOTE_BASIS] = 10_000 * TOKEN_UNIT;
         _params[P_MIN_DURATION] = 3 days;
         _params[P_MAX_DURATION] = 30 days;
         _params[P_MEMBER_MULTIPLIER_BPS] = 20_000; // 2x
         _params[P_STAKE_WEIGHT_BPS] = 10_000; // 100%
-        _params[P_QUORUM_BASIS] = 5_000_000 * TOKEN_UNIT;
-        _params[P_QUORUM_VOTERS] = 15;
+        // The two quorum halves are ANDed, so they must be reachable by the SAME turnout.
+        // An earlier seeding paired 15 voters with 5,000,000 basis: 15 voters at the
+        // minimum contribute 150,000, leaving it 97% short, so it demanded either 500
+        // minimum-sized voters or 15 averaging 333,333 each — 77% of every FULA staked on
+        // Base. Every proposal would have burned its deposit. Sized against each other
+        // now: 8 voters averaging 25,000 (2.5x the minimum) clears both at once, so the
+        // voter count screens for breadth and the basis screens out dust.
+        _params[P_QUORUM_BASIS] = 200_000 * TOKEN_UNIT;
+        _params[P_QUORUM_VOTERS] = 8;
         _params[P_MAX_OPEN_PER_CREATOR] = 3;
         _params[P_CREATE_COOLDOWN] = 1 days;
         _params[P_MIN_POOL_JOIN_STAKE] = TOKEN_UNIT;

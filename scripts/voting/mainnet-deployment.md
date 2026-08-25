@@ -2,18 +2,19 @@
 
 ## CANONICAL DEPLOYMENT
 
-**Use `0xD2ae210b415B6b7077DCEcCA680fFc3FE621542A`.** This is the address to publish, index and
-build against.
+> **PENDING REDEPLOY (2026-08-25).** `0xD2ae210b…` is being replaced because its quorum was seeded
+> unreachably — see *Why the quorum was reseeded* below. Do not publish it. Fill this table in from
+> the deploy output, then update `js/governance.js` in the website repo.
 
 | | |
 |---|---|
 | Network | **Base mainnet**, chainId 8453 |
-| **Proxy** | **`0xD2ae210b415B6b7077DCEcCA680fFc3FE621542A`** |
-| Implementation | `0xAb96F27f666f29C5e6A274f9c610C069650A88c2` |
-| **Deployment block** | **50415014** — the UI must start its `eth_getLogs` scan here |
-| Deployment tx | `0x59756986109e84ebb4bb5145dd8ab41740e3c0dd158c9be14a408170ff970a86` |
-| Quorum | **2**, set in block 50415165 |
-| Deployed | 2026-08-25 |
+| **Proxy** | `(pending)` |
+| Implementation | `(pending — must be NEW; the old 0xAb96F27f… carries the old seeds)` |
+| **Deployment block** | `(pending)` — the UI must start its `eth_getLogs` scan here |
+| Deployment tx | `(pending)` |
+| Quorum | `(pending)` — inert until `setRoleQuorum(ADMIN_ROLE, 2)` |
+| Deployed | `(pending)` |
 
 ### Configuration
 
@@ -24,13 +25,45 @@ build against.
 | storagePool | `0x0` — membership multiplier deliberately disabled, see below |
 | owner / admin1 | `0x383a6A34C623C02dcf9BB7069FAE4482967fb713` |
 | admin2 | `0xFa8b02596a84F3b81B4144eA2F30482f8C33D446` |
-| Parameters | all at deployment defaults |
 
-Verification: **50 passed, 0 failed** via `scripts/voting/votingGovernanceCheck.ts`, including the
-Recovery drain guard against the live FULA token, all 13 parameter defaults and bounds, every
-subject-creation bound, and all lifecycle guards.
+### Seeded parameters
 
-Admin role timelock elapses **2026-08-26 00:56:15 UTC**; proposals cannot be *created* before then.
+| Param | Value | Note |
+|---|---|---|
+| `burnFee` | **25,000 FULA** | burned unconditionally; the real anti-spam cost |
+| `deposit` | **50,000 FULA** | refunded only if quorum is met |
+| `minVoteBasis` | 10,000 FULA | per-voter floor |
+| `quorumVoters` | **8** | |
+| `quorumBasis` | **200,000 FULA** | 8 voters averaging 25,000 — 2.5x the minimum |
+| everything else | unchanged | 3–30 day duration, 3 open per creator, 1 day cooldown, 1.5x staker, 2x member |
+
+The deploy script now reads these back off the deployed proxy and aborts if any disagrees, and
+separately rejects any pairing that demands more than 10x `minVoteBasis` per voter.
+
+Admin role timelock: 24h from deployment. `setRoleQuorum` works immediately; creating *proposals*
+waits out that delay.
+
+## Why the quorum was reseeded
+
+The first deployment paired `quorumVoters = 15` with `quorumBasis = 5,000,000 FULA`. Both sat
+inside their own bounds, every test passed and the 50-assertion live check confirmed both — but
+they were never checked **against each other**, and the two are ANDed:
+
+| | |
+|---|---|
+| Basis 15 minimum-sized voters actually produce | 150,000 FULA |
+| Basis required | 5,000,000 FULA |
+| Shortfall | **97%** |
+| Voters needed at the 10,000 minimum | **500** |
+| Or, with 15 voters, each must average | **333,333 FULA** |
+| 5,000,000 as a share of the wired staking pool (6,464,023) | **77.3%** |
+
+So every proposal would have burned its 100,000 deposit, and proposing would have stopped after
+the first attempt. The values were also tuned against a 2B supply figure, but only **386M** FULA
+exists on Base (2B is the cap across all chains, and only Base-side FULA can be locked), making the
+basis threshold ~5x more aggressive again than intended.
+
+The fee and deposit were halved in the same pass, since a redeploy makes it free to change them.
 
 ## Public UI
 
@@ -77,15 +110,19 @@ Also worth knowing for any web3.js client: every ABI input needs a `name`, or th
 `Cannot read properties of undefined (reading 'replace')` on the first call. ethers does not care,
 so an ethers-based test will not catch it.
 
-## Two superseded proxies — pause both once their timelocks elapse
+## Three superseded proxies — pause all of them once their timelocks elapse
 
-Neither holds FULA and neither has subjects, but both are **fully functional**: anyone who finds
-the address can create subjects and lock real tokens in a contract nobody is watching.
+None holds FULA and none has subjects, but all are **fully functional**: anyone who finds the
+address can create subjects and lock real tokens in a contract nobody is watching.
 
 | Proxy | Why superseded | Pausable from |
 |---|---|---|
 | `0xbA687E16dcAb5f4C7798C092d4cCC250AA5169BE` | Deployed accidentally (see the DRY_RUN note) | **2026-08-25 23:52:23 UTC** |
 | `0x9aF96A75A80d00Ea94ceBbcdDa8E1d578df89686` | Wired to the wrong staking engine | **2026-08-26 00:02:55 UTC** |
+| `0xD2ae210b415B6b7077DCEcCA680fFc3FE621542A` | Quorum seeded unreachably (see above) | **2026-08-26 00:56:15 UTC** |
+
+`0xD2ae210b…` matters most of the three: it was published on the live site, so it is the one a
+user might actually find. Pause it as soon as its timelock elapses.
 
 ```
 PROXY=0x... npx hardhat run scripts/voting/retireVotingProxy.ts --network base

@@ -286,7 +286,10 @@ async function main() {
     check("title stored on-chain", s.title, "Live rehearsal: which roadmap item first?");
     check("CID stored on-chain", s.descriptionCID, "QmRehearsalCidPlaceholder");
     check("optionCount", s.optionCount, 3);
-    check("deposit held", s.deposit, ethers.parseEther("100000"));
+    // Read from chain rather than hardcoded: the deposit is a governable parameter and its
+    // seeded default has already changed once, which would silently fail this check on a
+    // deployment that is otherwise correct.
+    check("deposit held", s.deposit, await voting.paramValue(2));
     check("status open", s.status, 0);
 
     // The ballot commitment must match the labels that were submitted.
