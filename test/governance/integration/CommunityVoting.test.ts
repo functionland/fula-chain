@@ -106,8 +106,8 @@ describe("CommunityVoting â€” core", function () {
       expect(await voting.paramValue(P.MAX_DURATION)).to.equal(30 * DAY);
       expect(await voting.paramValue(P.MEMBER_MULTIPLIER_BPS)).to.equal(20000);
       expect(await voting.paramValue(P.STAKE_WEIGHT_BPS)).to.equal(10000);
-      expect(await voting.paramValue(P.QUORUM_BASIS)).to.equal(ethers.parseEther("200000"));
-      expect(await voting.paramValue(P.QUORUM_VOTERS)).to.equal(8);
+      expect(await voting.paramValue(P.QUORUM_BASIS)).to.equal(ethers.parseEther("100000"));
+      expect(await voting.paramValue(P.QUORUM_VOTERS)).to.equal(10);
       expect(await voting.paramValue(P.MAX_OPEN_PER_CREATOR)).to.equal(3);
       expect(await voting.paramValue(P.CREATE_COOLDOWN)).to.equal(DAY);
       expect(await voting.paramValue(P.MIN_POOL_JOIN_STAKE)).to.equal(ethers.parseEther("1"));
@@ -121,6 +121,25 @@ describe("CommunityVoting â€” core", function () {
         expect(value, `param ${id} default out of bounds`).to.be.gte(lo).and.to.be.lte(hi);
       }
     });
+
+    // Per-value bounds cannot catch this, and it has been seeded wrong twice: first 15 voters
+    // against 5,000,000 basis (which needed 500 minimum-sized voters), then 8 against 200,000
+    // (which needed 20). Both times every value was individually legal.
+    it("seeds a quorum that quorumVoters voters can actually reach", async function () {
+      const voters = await voting.paramValue(P.QUORUM_VOTERS);
+      const minBasis = await voting.paramValue(P.MIN_VOTE_BASIS);
+      const quorumBasis = await voting.paramValue(P.QUORUM_BASIS);
+
+      // vote() rejects any basis below minVoteBasis and totalBasis sums them, so
+      // totalBasis >= voterCount * minVoteBasis always holds. If quorumBasis exceeds that
+      // product, hitting the advertised voter count does NOT clear quorum.
+      expect(
+        quorumBasis,
+        `quorumBasis ${quorumBasis} exceeds what ${voters} voters at the ${minBasis} minimum ` +
+          `guarantee (${voters * minBasis}), so it would really need ${quorumBasis / minBasis} voters`
+      ).to.be.lte(voters * minBasis);
+    });
+
 
 
     it("rejects a zero token address", async function () {

@@ -247,8 +247,8 @@ async function main() {
     [1, "burnFee", ethers.parseEther("25000")],
     [2, "deposit", ethers.parseEther("50000")],
     [3, "minVoteBasis", ethers.parseEther("10000")],
-    [8, "quorumBasis", ethers.parseEther("200000")],
-    [9, "quorumVoters", 8n],
+    [8, "quorumBasis", ethers.parseEther("100000")],
+    [9, "quorumVoters", 10n],
   ];
   console.log("\nSeeded parameters (read back from the deployed proxy):");
   const wrong: string[] = [];
@@ -275,24 +275,34 @@ async function main() {
     );
   }
 
-  // The quorum halves are ANDed, so a turnout that satisfies one must be able to satisfy the
-  // other. Guard the relationship, not just the values: an earlier seeding paired 15 voters
-  // with 5,000,000 basis, which no realistic turnout could reach, so every deposit would burn.
+  // Enforce the quorum invariant, not just the individual values.
+  //
+  // `vote` rejects a basis below minVoteBasis and every vote adds to totalBasis, so
+  // `totalBasis >= voterCount * minVoteBasis` always holds. The two quorum halves are ANDed,
+  // which means quorumBasis above that product is a hidden second hurdle: reaching the
+  // advertised voter count no longer clears quorum, and the shortfall is invisible in any
+  // per-value bounds check. This deployment has been seeded wrong twice on exactly that
+  // point — first by 33x, then by 2.5x — so the relationship is asserted here.
   const qVoters = await voting.paramValue(9);
   const qBasis = await voting.paramValue(8);
   const minVote = await voting.paramValue(3);
-  const perVoter = qBasis / qVoters;
+  const guaranteed = qVoters * minVote;
   console.log(
-    `\nQuorum shape: ${qVoters} voters must average ${ethers.formatEther(perVoter)} FULA ` +
-      `(${(Number(perVoter) / Number(minVote)).toFixed(1)}x the ${ethers.formatEther(minVote)} minimum)`
+    `\nQuorum shape: ${qVoters} voters x ${ethers.formatEther(minVote)} minimum = ` +
+      `${ethers.formatEther(guaranteed)} guaranteed, against a ${ethers.formatEther(qBasis)} basis gate`
   );
-  if (perVoter > minVote * 10n) {
+  if (qBasis > guaranteed) {
     throw new Error(
-      `quorumBasis/quorumVoters demands ${ethers.formatEther(perVoter)} FULA per voter, over 10x ` +
-        `the ${ethers.formatEther(minVote)} minimum. That is almost certainly unreachable and every ` +
-        `proposal would burn its deposit. Re-check the seeds before using this deployment.`
+      `quorumBasis (${ethers.formatEther(qBasis)}) exceeds what ${qVoters} voters at the ` +
+        `${ethers.formatEther(minVote)} minimum guarantee (${ethers.formatEther(guaranteed)}). ` +
+        `Quorum would then need ${qBasis / minVote} minimum-sized voters, not ${qVoters}, and the ` +
+        `voter count would not describe the real bar. Set quorumBasis <= quorumVoters * minVoteBasis.`
     );
   }
+  console.log(
+    `  -> ${qVoters} qualifying voters always clear quorum` +
+      (qBasis < guaranteed ? `  (basis gate is slack by ${ethers.formatEther(guaranteed - qBasis)} FULA)` : `  (exactly equal)`)
+  );
 
   // The UI recovers ballot option labels from SubjectOptions event logs, and public RPCs reject
   // wide eth_getLogs ranges. Record this so log queries can start here instead of block 0.

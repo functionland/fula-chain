@@ -213,14 +213,23 @@ contract CommunityVoting is Initializable, GovernanceModule, ICommunityVoting {
         _params[P_MEMBER_MULTIPLIER_BPS] = 20_000; // 2x
         _params[P_STAKE_WEIGHT_BPS] = 10_000; // 100%
         // The two quorum halves are ANDed, so they must be reachable by the SAME turnout.
-        // An earlier seeding paired 15 voters with 5,000,000 basis: 15 voters at the
-        // minimum contribute 150,000, leaving it 97% short, so it demanded either 500
-        // minimum-sized voters or 15 averaging 333,333 each — 77% of every FULA staked on
-        // Base. Every proposal would have burned its deposit. Sized against each other
-        // now: 8 voters averaging 25,000 (2.5x the minimum) clears both at once, so the
-        // voter count screens for breadth and the basis screens out dust.
-        _params[P_QUORUM_BASIS] = 200_000 * TOKEN_UNIT;
-        _params[P_QUORUM_VOTERS] = 8;
+        //
+        // {vote} rejects any basis below P_MIN_VOTE_BASIS and every vote adds to totalBasis,
+        // so `totalBasis >= voterCount * minVoteBasis` holds by construction. That makes the
+        // basis gate redundant whenever quorumBasis <= quorumVoters * minVoteBasis, and a
+        // hidden SECOND hurdle whenever it exceeds it — one the advertised voter count does
+        // not describe. An earlier seeding exceeded it by 33x (15 voters against 5,000,000
+        // basis, which needed 500 minimum-sized voters, or 77% of every FULA staked on Base),
+        // so every proposal would have burned its deposit. These now coincide exactly:
+        //
+        //     10 voters x 10,000 minimum = 100,000 = quorumBasis
+        //
+        // so ten qualifying voters always clear quorum, and the rule is simply "ten people
+        // must vote". Money cannot be substituted for turnout: eight voters holding 50,000
+        // each reach 400,000 of basis and still fail, which is the anti-plutocracy property.
+        // Preserve this equality when tuning — deployCommunityVoting.ts enforces it.
+        _params[P_QUORUM_BASIS] = 100_000 * TOKEN_UNIT;
+        _params[P_QUORUM_VOTERS] = 10;
         _params[P_MAX_OPEN_PER_CREATOR] = 3;
         _params[P_CREATE_COOLDOWN] = 1 days;
         _params[P_MIN_POOL_JOIN_STAKE] = TOKEN_UNIT;

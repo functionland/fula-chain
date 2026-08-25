@@ -156,8 +156,8 @@ at creation, so options can never be restated after the fact.
 | `memberMultiplierBps` | 20,000 (2×) | 10,000 | 50,000 |
 | `stakerMultiplierBps` | 15,000 (1.5×) | 10,000 | 50,000 |
 | `stakeWeightBps` | 10,000 (100%) | 0 | 10,000 |
-| `quorumBasis` | 200,000 FULA | 100,000 | 100,000,000 |
-| `quorumVoters` | 8 | 3 | 1,000 |
+| `quorumBasis` | 100,000 FULA | 100,000 | 100,000,000 |
+| `quorumVoters` | 10 | 3 | 1,000 |
 | `maxOpenPerCreator` | 3 | 1 | 20 |
 | `createCooldown` | 1d | 0 | 7d |
 | `minPoolJoinStake` | 1 FULA | 1 FULA | 10,000,000 |
@@ -166,15 +166,31 @@ The floor on `minPoolJoinStake` is deliberately above zero: at zero the peer-sta
 no-op and any admin-seeded pool member would earn the multiplier for free. To neutralise the
 multiplier, set `memberMultiplierBps` to 10,000 (1×) — that is its intended off switch.
 
-At an assumed $1–5M market cap (FULA ≈ $0.0005–0.0025), raising a subject costs roughly $37–188, of which $12–63 is permanently burned. Reaching the refund threshold takes 8 distinct voters and 200,000 FULA of committed basis — around $100–500, and *locked* rather than spent.
+At an assumed $1–5M market cap (FULA ≈ $0.0005–0.0025), raising a subject costs roughly $37–188, of which $12–63 is permanently burned. Reaching the refund threshold takes 10 distinct voters, each locking at least the 10,000 minimum — around $50–250 of *locked*, not spent, capital in total.
 
 Parameters are changed **only** through the existing 2-admin proposal flow (24h delay) via contract-local proposal type **14**, and every value is clamped to the compile-time bounds above at *both* proposal creation and execution — a proposal sits for 24–48 hours and the world can move in between.
 
-**Quorum caveat.** Quorum is `voterCount >= quorumVoters && totalBasis >= quorumBasis`, and the two halves are ANDed, so **they must be reachable by the same turnout**. The first seeding of this contract paired 15 voters with 5,000,000 basis and did not check them against each other: 15 voters at the 10,000 minimum contribute 150,000, leaving the basis term 97% short. It demanded either 500 minimum-sized voters or 15 averaging 333,333 each — 77% of every FULA staked on Base — so in practice every proposal would have burned its deposit and nobody would have proposed twice. The pair is now sized together: 8 voters averaging 25,000 clears both at once.
+### The quorum invariant
 
-The **basis term remains the load-bearing half** (8 voters at the minimum give 80,000 against a 200,000 bar), but by 2.5× rather than 33×. A voter count is cheap to sybil at roughly $0.50 per wallet, so quorum proves committed capital more than independent participation, and a creator may legitimately vote on their own subject.
+Quorum is `voterCount >= quorumVoters && totalBasis >= quorumBasis`. The halves are **ANDed**, and there is a hard relationship between them that is easy to miss:
 
-Be clear-eyed about what this costs: locking is refundable, so a holder with ~200,000 FULA spread across 8 wallets can self-fund a refund for little more than gas. That was true before too, merely at an unreachable scale. **The unconditional burn fee, not the deposit, is therefore the real anti-spam cost.** The deposit deters carelessness and abandoned proposals; it does not stop a determined sybil, and it was never able to. Raising `quorumVoters` is the lever to pull as the community grows.
+> `vote` rejects any basis below `minVoteBasis`, and every vote adds to `totalBasis`. Therefore
+> **`totalBasis >= voterCount × minVoteBasis` always holds.**
+
+So `quorumBasis` is *redundant* when it is at or below `quorumVoters × minVoteBasis`, and a **hidden second hurdle** the moment it exceeds it — one the advertised voter count does not describe. This contract was seeded wrong on exactly that point twice:
+
+| Seeding | voters | min | quorumBasis | guaranteed by headcount | min-sized voters actually needed |
+|---|---|---|---|---|---|
+| First | 15 | 10,000 | 5,000,000 | 150,000 | **500** |
+| Second | 8 | 10,000 | 200,000 | 80,000 | **20** |
+| **Now** | **10** | **10,000** | **100,000** | **100,000** | **10** ✓ |
+
+The first would have burned every deposit outright. The second was merely misleading — "8 voters" was never the bar. They now coincide exactly, so ten qualifying voters always clear quorum and the rule is one sentence: **ten people must vote.** `deployCommunityVoting.ts` asserts `quorumBasis <= quorumVoters * minVoteBasis` after deploying and refuses the deployment otherwise.
+
+Two properties worth stating plainly:
+
+- **Money cannot substitute for turnout.** Eight voters holding 50,000 each reach 400,000 of basis and still fail, because `voterCount` is 8. That is the anti-plutocracy half doing its job.
+- **Turnout can be manufactured.** Distinct addresses cost roughly a cent, and although each sybil wallet must independently lock `minVoteBasis`, locking is refundable — so a holder with ~100,000 FULA across ten wallets can self-fund a refund for little more than gas. **The unconditional burn fee, not the deposit, is therefore the real anti-spam cost.** The deposit deters carelessness and abandoned proposals; it does not stop a determined sybil and never could. `quorumVoters` is the lever to raise as the community grows — bearing in mind that `quorumBasis` must be raised with it to keep the equality.
 
 ## 8. Trust model — what admins can and cannot do
 
