@@ -19,3 +19,6 @@ node_modules
 /.openzeppelin
 /.openzeppelin
 /deployments
+
+# reconcileSupply.ts run-over-run state (machine-local; regenerated on each run)
+/.reconcile

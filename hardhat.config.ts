@@ -64,6 +64,25 @@ const config: HardhatUserConfig = {
           evmVersion: "shanghai",
         },
       },
+      // CommunityVoting inherits the full GovernanceModule multisig (~14 KiB before any of its
+      // own logic), so it needs the same size-over-speed trade the rewards contracts make.
+      // `outputSelection` must stay: CommunityVotingLayout.test.ts reads solc's storageLayout.
+      "contracts/core/CommunityVoting.sol": {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 1,
+          },
+          viaIR: true,
+          evmVersion: "shanghai",
+          outputSelection: {
+            "*": {
+              "*": ["storageLayout"],
+            },
+          },
+        },
+      },
       "contracts/core/FulaFileNFT.sol": {
         version: "0.8.24",
         settings: {
@@ -80,6 +99,12 @@ const config: HardhatUserConfig = {
           },
         },
       },
+      // NOTE: there is deliberately NO override for contracts/core/StorageToken.sol.
+      // One existed briefly (runs: 100) while the bridge was implemented as mint/burn INSIDE the
+      // token, which pushed it to ~23.95 KiB against the 24 KiB EIP-170 cap. The bridge is now a
+      // lock/release escrow adapter that requires no token change at all, so StorageToken is back
+      // to its deployed form (~22 KiB) and compiles at the default `runs: 200` like everything
+      // else. Do not re-add an override without a size measurement that justifies it.
       // RewardEngine: lower runs to keep deployed bytecode under the EIP-170
       // 24KB cap after wiring per-peer storage rewards + per-month cap. Reward-
       // claim path is user-triggered (not high-frequency), so the runtime-gas
@@ -102,13 +127,25 @@ const config: HardhatUserConfig = {
       },
     },
   },
+  // DISABLED: Sourcify's API v1 is in a scheduled brownout until 2027-01-08 and returns 503 on
+  // every request, which made `hardhat verify` exit non-zero and print "found one or more errors
+  // during the verification process" even when Etherscan verification had SUCCEEDED. A step that
+  // always fails trains you to ignore verification output, which is exactly when a real failure
+  // slips through. Re-enable once hardhat-verify supports Sourcify API v2.
   sourcify: {
-    enabled: true,
+    enabled: false,
   },
   networks: {
     // Mainnets
     ethereum: {
-      url: `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_KEY || ""}`,
+      // ETHEREUM_RPC overrides everything. Without it this falls back to Alchemy, and if
+      // ALCHEMY_KEY is unset the URL degrades to ".../v2/" and every call fails with
+      // "Must be authenticated!" — which looks like a script bug but is purely RPC config.
+      // Note an Alchemy key also has to have ETH mainnet ENABLED for the app, or it 403s with
+      // "ETH_MAINNET is not enabled for this app" even when the key is correct.
+      url:
+        process.env.ETHEREUM_RPC?.trim() ||
+        `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_KEY || ""}`,
       accounts: (() => {
         const accounts = [];
         if (vars.has("PK")) accounts.push(vars.get("PK"));
@@ -119,6 +156,20 @@ const config: HardhatUserConfig = {
       gasPrice: "auto",
       // Uncomment if you need higher gas limits (adjust as needed)
       // gas: 2100000,
+    },
+    // Keyless, READ-ONLY Ethereum mainnet endpoint. The `ethereum` entry above requires
+    // ALCHEMY_KEY; without it the URL is malformed and every call fails. This mirrors the
+    // existing `base-alt` / `base-alt2` pattern so read-only gates (Phase 0 bytecode parity,
+    // `checkProxyStorage.ts`, `verifyStorageTokenImplParity.ts`) can run with no secrets.
+    //
+    // `accounts` is DELIBERATELY EMPTY: this network cannot sign or send a transaction, so it
+    // is safe to point verification scripts at mainnet. Use `ethereum` for anything that writes.
+    "ethereum-alt": {
+      url: "https://ethereum-rpc.publicnode.com",
+      accounts: [],
+      chainId: 1,
+      gasPrice: "auto",
+      timeout: 60000,
     },
     base: {
       url: "https://mainnet.base.org",
@@ -166,14 +217,41 @@ const config: HardhatUserConfig = {
     },
 
     // Testnets
+    // TESTNETS USE DEDICATED THROWAWAY KEYS ONLY — never PK / ADMIN_PK.
+    //
+    // WHY: the production `PK` is `0x383a6A34...`, which is a LIVE ADMIN_ROLE HOLDER on the
+    // mainnet FULA token. Wiring it into testnet entries means one mistyped `--network` could
+    // sign a mainnet transaction with an admin key. `PK_TEST` / `ADMIN_PK_TEST` are freshly
+    // generated wallets with no authority anywhere.
+    //
+    // TWO signers are required, not one: StorageToken governance needs an ADMIN_ROLE quorum of 2,
+    // and `createProposal` auto-approves for its proposer, so a proposal can only reach quorum if
+    // a DIFFERENT admin calls `approveProposal`. With a single key, NO governance action can ever
+    // execute — including authorizing a bridge minter.
+    //
+    // Set them with:  npx hardhat vars set PK_TEST   /   npx hardhat vars set ADMIN_PK_TEST
     sepolia: {
       url: "https://ethereum-sepolia.publicnode.com",
-      accounts: vars.has("PK") ? [vars.get("PK")] : [],
+      accounts: (() => {
+        const accounts: string[] = [];
+        if (vars.has("PK_TEST")) accounts.push(vars.get("PK_TEST"));
+        if (vars.has("ADMIN_PK_TEST")) accounts.push(vars.get("ADMIN_PK_TEST"));
+        return accounts;
+      })(),
       chainId: 11155111,
     },
     "base-sepolia": {
-      url: "https://sepolia.base.org",
-      accounts: vars.has("PK") ? [vars.get("PK")] : [],
+      // `https://sepolia.base.org` serves STALE state immediately after a deployment: a contract
+      // that was just created reads back as `0x` for several seconds, which makes post-deploy
+      // verification spuriously fail (observed twice on 2026-07-26 — the deploys had in fact
+      // succeeded). publicnode is consistent; override with BASE_SEPOLIA_RPC if needed.
+      url: process.env.BASE_SEPOLIA_RPC || "https://base-sepolia-rpc.publicnode.com",
+      accounts: (() => {
+        const accounts: string[] = [];
+        if (vars.has("PK_TEST")) accounts.push(vars.get("PK_TEST"));
+        if (vars.has("ADMIN_PK_TEST")) accounts.push(vars.get("ADMIN_PK_TEST"));
+        return accounts;
+      })(),
       chainId: 84532,
     },
     amoy: {
@@ -198,6 +276,33 @@ const config: HardhatUserConfig = {
     },
     hardhat: {
       allowUnlimitedContractSize: true,
+      // Mainnet forking for upgrade rehearsals and fork tests.
+      // Enable by setting FORK_RPC_URL (and optionally FORK_BLOCK for a pinned, reproducible run):
+      //   FORK_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/$ALCHEMY_KEY npx hardhat test test/fork/...
+      // Leave unset for normal local runs.
+      ...(process.env.FORK_RPC_URL
+        ? {
+            forking: {
+              url: process.env.FORK_RPC_URL,
+              ...(process.env.FORK_BLOCK
+                ? { blockNumber: Number(process.env.FORK_BLOCK) }
+                : {}),
+            },
+            // Hardhat ships a hardfork-activation history only for chains it knows (mainnet,
+            // sepolia, ...). Forking any other chain fails in `before all` with:
+            //   "No known hardfork for execution on historical block N ... in chain with id X.
+            //    The node was not configured with a hardfork activation history."
+            // Declaring the history here is what makes `FORK_TARGET=base` actually runnable.
+            // All of these chains are past Cancun, so activating it at genesis is correct for
+            // any block we would realistically fork.
+            chains: {
+              8453: { hardforkHistory: { cancun: 0 } }, // Base
+              2046399126: { hardforkHistory: { cancun: 0 } }, // SKALE Europa
+              4689: { hardforkHistory: { cancun: 0 } }, // IoTeX
+              84532: { hardforkHistory: { cancun: 0 } }, // Base Sepolia
+            },
+          }
+        : {}),
     },
     localhost: {
       url: "http://127.0.0.1:8545",

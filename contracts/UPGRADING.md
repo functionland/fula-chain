@@ -78,7 +78,7 @@ Update this table as you upgrade each contract. The status is determined empiric
 |---|---|---|---|---|
 | `RewardEngine` | `GovernanceModule` | Base, SKALE | **Legacy** | Verified 2026-05-12 (slot 11 layout in SKALE manifest). Upgraded with storage-rewards feature. |
 | `StoragePool` | `GovernanceModule` | Base, SKALE | TODO | Classify before next upgrade. |
-| `StorageToken` | `GovernanceModule` | Base, SKALE | TODO | Classify before next upgrade. |
+| `StorageToken` | `GovernanceModule` | **Ethereum**, Base, SKALE, IoTeX | TODO | Classify before next upgrade — **per network**. Expect Legacy (slot 11). Note this contract is ALSO live on Ethereum (`0x92217cCaEDBdbc54C76c15feA18823db1558fDc9`) and IoTeX, which earlier revisions of this table omitted. Validate with `scripts/validateStorageTokenUpgrade.ts`. |
 | `StakingPool` | `GovernanceModule` | Base, SKALE | TODO | Classify before next upgrade. |
 | `TokenBridge` | `GovernanceModule` | Base, SKALE | TODO | Classify before next upgrade. |
 | `TokenDistributionEngine` | `ERC20Upgradeable, GovernanceModule` | Base, SKALE | TODO | Has extra base class — verify storage layout carefully. |
@@ -97,6 +97,92 @@ Update this table as you upgrade each contract. The status is determined empiric
 - **Check storage compatibility on EVERY target network separately.** A contract can be Legacy on one chain and Modern on another if it was deployed at different times.
 - **Never assume two children of `GovernanceModule` are in the same group.** Each was deployed independently; check each one.
 - **Don't add new state to `GovernanceModule` without a coordinated upgrade plan.** Any new parent-level state would shift every child's layout. Use child-level state instead, or add only behind a child-side absorber.
+
+## The FULA bridge requires NO change to StorageToken
+
+The Ethereum ↔ Base bridge is a **lock/release escrow** adapter
+(`contracts/bridge/FulaOFTAdapter.sol`), not a mint/burn one. It locks tokens on the source chain
+and releases pre-funded tokens on the destination. Nothing is minted or burned.
+
+**Therefore this document has nothing to say about it.** There is no token upgrade, no new state,
+no new proposal type, no mint authority, and no storage-layout consideration. The adapter is an
+ordinary token holder with no role and no privileges — `scripts/bridge/verifyOAppConfig.ts` asserts
+exactly that, failing if the adapter ever holds `ADMIN_ROLE` or `BRIDGE_OPERATOR_ROLE`.
+
+`contracts/core/StorageToken.sol` is byte-for-byte identical to the source verified on Etherscan for
+the live Ethereum and Base deployments.
+
+**The one constraint to preserve** if the token is ever upgraded for unrelated reasons: the escrow
+guards in the adapter read `balanceOf` before and after an external call, which is sound only
+because StorageToken makes no external calls during a transfer (no ERC-777-style hooks) and is
+`nonReentrant`. The adapter is IMMUTABLE and cannot be patched, so a future token upgrade
+introducing a transfer hook would silently weaken it. Treat "no transfer hooks" as standing.
+
+> ### ⚠️ The section below is OBSOLETE — kept only as decision history
+>
+> An earlier design implemented the bridge as **mint/burn inside the token**, adding
+> `mint`/`burn(address,uint256)`, `bridgeMinters`, `voluntarilyBurned` and proposal types 12/13.
+> **That design was abandoned on 2026-07-28 and none of that code exists.** It required upgrading a
+> live ~1.47B-token proxy and introducing a burn-any-holder primitive. See the header of
+> `docs/bridge-design.md`. Nothing in the seven invariants below applies to the current codebase.
+
+### (obsolete) StorageToken bridge invariants — mint/burn design
+
+`StorageToken` exposes `mint(address,uint256)` / `burn(address,uint256)` for the LayerZero OFT
+adapter. These carry invariants that MUST survive every future upgrade:
+
+1. **A bridge minter can burn ANY holder's balance with no allowance.** This is required by
+   `MintBurnOFTAdapter._debit`, which passes the message sender as `_from`. Therefore
+   `bridgeMinters` may only ever contain **immutable, non-upgradeable, source-verified**
+   contracts. `_createCustomProposal` enforces `target.code.length > 0` so an EOA can never be
+   authorized — do not weaken that check.
+2. **The platform fee must never apply to a mint or a burn.** `_update` bypasses the fee when
+   `from == address(0) || to == address(0)`. Removing that bypass silently breaks global supply
+   conservation: a burn would destroy less than requested while the destination chain credits the
+   full amount, inflating supply by up to `MAX_BPS` (5%) per hop. `FulaOFTAdapter` asserts the
+   exact supply delta and reverts (`SupplyInvariantViolated`) as a second line of defence, but the
+   token-side fix is the primary one. See the `_update` regression tests in
+   `test/governance/integration/FulaOFTBridge.test.ts`.
+3. **`voluntarilyBurned` must keep being incremented by `burn(uint256)` / `burnFrom`.** The supply
+   cap is computed as `totalSupply() + voluntarilyBurned`; without this, any holder could burn
+   tokens to manufacture fresh mint headroom for the bridge.
+   ✅ **This term is headroom-NEUTRAL, by construction.** A voluntary burn of `X` moves BOTH terms of
+   the gate in opposite directions by the same amount (`voluntarilyBurned += X`, `totalSupply -= X`),
+   so available headroom `TOTAL_SUPPLY − totalSupply() − voluntarilyBurned` is unchanged. That is
+   exactly the intent: burning must not *manufacture* mint capacity, and it does not *destroy* it
+   either. Only a **bridge** burn returns headroom — correctly, because those tokens are re-minted on
+   another chain. Both directions are pinned by
+   `"a voluntary burn is headroom-NEUTRAL: it neither creates nor destroys mint capacity"` and
+   `"a BRIDGE burn does restore headroom (the chain becomes a net exporter)"` in
+   `test/governance/integration/FulaOFTBridge.test.ts`.
+   (An earlier revision of this note claimed voluntary burns permanently consumed headroom. That was
+   wrong — see `docs/bridge-audit.md` F-1.)
+4. **Bridge minter proposal types 12 and 13 are contract-local** (defined in `StorageToken.sol`,
+   reserved by comment in `ProposalTypes.sol`). They are deliberately NOT in the
+   `ProposalTypes.ProposalType` enum so the shared library and `GovernanceModule` — inherited by
+   ~10 live contracts — do not have to change. Do not "tidy" them into the enum.
+5. **`FulaOFTAdapter` is not upgradeable and must stay that way.** Deploy with a plain
+   `ContractFactory`. Its owner is also the LayerZero delegate, which can permanently destroy
+   in-flight messages (`endpoint.burn`/`nilify`) — i.e. destroy user funds already burned on the
+   source chain. The owner MUST be a timelock or multisig, never an EOA.
+6. **The rate limiter is fail-closed.** An adapter with no configured `RateLimitConfig` reverts
+   every transfer with `RateLimitExceeded`. `setRateLimits` is a mandatory go-live step, not an
+   optimization.
+7. **The rate limit is NET, not gross.** `_debit` calls `_outflow(dstEid)` and `_credit` calls
+   `_inflow(srcEid)`; for a single lane these are the SAME mapping key, so inbound transfers
+   subtract from the counter outbound transfers add to. A configured "10M / 24h" therefore bounds
+   net export per window, **not** total volume — capital that round-trips can move without limit.
+   The `limit = 0` kill switch is unaffected (`amountCanBeSent` is 0 regardless of inflow), and
+   inbound volume is bounded by `bridgeMinters.cap` rather than by the limiter. Verified by
+   `"PINNED: the rate limit is NET, not gross"` in
+   `test/governance/integration/FulaOFTBridge.test.ts`.
+   **This is an accepted, deliberate choice (owner decision 2026-07-26), not an oversight.** Size
+   per-window limits as a net-drain budget. If a GROSS ceiling is ever wanted instead, remove the
+   `_inflow` call from `FulaOFTAdapter._credit` and invert that test.
+
+`StorageToken` sits close to the EIP-170 limit (23.9 KiB of 24.0). `hardhat.config.ts` pins it to
+`runs: 100`; the measured size at each optimizer setting is recorded there. Optimizer runs do not
+affect storage layout.
 
 ## Generalizing the validation script
 

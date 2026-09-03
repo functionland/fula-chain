@@ -1,0 +1,267 @@
+// Shared constants and helpers for working against the LIVE StorageToken deployments.
+// Used by the fork rehearsal, the fork tests, and the mainnet pre-deploy checks so all
+// three agree on addresses, slots and what "unchanged state" means.
+import { ethers } from "hardhat";
+
+/** ERC-1967 implementation slot. */
+export const IMPL_SLOT =
+  "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
+
+export const ADMIN_ROLE = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
+export const BRIDGE_OPERATOR_ROLE = ethers.keccak256(
+  ethers.toUtf8Bytes("BRIDGE_OPERATOR_ROLE")
+);
+
+/**
+ * Governance proposal types supported by the SHIPPED StorageToken.
+ *
+ * Types 12/13 (`SetBridgeMinter`/`RemoveBridgeMinter`) were listed here for the abandoned mint/burn
+ * upgrade and have been REMOVED: the escrow bridge needs no token change, so the shipped token has
+ * no such proposal types and creating one would revert `InvalidProposalType`. Legacy type-12
+ * proposals still exist on the testnet token (it predates the revert) and `approveProposal.ts`
+ * keeps a display label for them — but they must never be approved.
+ */
+export const PROPOSAL = {
+  ADD_ROLE: 1,
+  UPGRADE: 3,
+  ADD_WHITELIST: 5,
+  ADD_BLACKLIST: 9,
+  REMOVE_BLACKLIST: 10,
+  CHANGE_TREASURY_FEE: 11,
+} as const;
+
+export const ROLE_CHANGE_DELAY = 24 * 60 * 60;
+export const MIN_PROPOSAL_EXECUTION_DELAY = 24 * 60 * 60;
+/**
+ * Proposal expiry: **48 hours**.
+ *
+ * ⚠️ THERE ARE TWO CONSTANTS NAMED `PROPOSAL_TIMEOUT` WITH DIFFERENT VALUES. Use this one.
+ *   - `GovernanceModule.sol:78`  — `private constant PROPOSAL_TIMEOUT = 48 hours`  ← THE LIVE ONE
+ *   - `ProposalTypes.sol:33`     — `constant PROPOSAL_TIMEOUT = 3 days`            ← DEAD, unused
+ *
+ * `_initializeProposal` (GovernanceModule.sol:205) sets
+ * `expiryTime = block.timestamp + PROPOSAL_TIMEOUT`, and the unqualified name resolves to
+ * GovernanceModule's own private constant, so the effective expiry is 48h. The `ProposalTypes`
+ * one is referenced nowhere in the codebase (`rg 'ProposalTypes\.PROPOSAL_TIMEOUT'` → no matches).
+ *
+ * A previous edit "corrected" this to 3 days on the strength of the ProposalTypes value. That was
+ * a regression — it would have made scripts compute an execution deadline 24h too late, past the
+ * point where the proposal has already expired.
+ */
+export const PROPOSAL_TIMEOUT = 48 * 60 * 60;
+
+/**
+ * Live StorageToken proxies and the implementation each currently points at.
+ * Source: scripts/checkProxyStorage.ts.
+ *
+ * NOTE: Ethereum's IMPLEMENTATION address equals the PROXY address on Base/SKALE/IoTeX.
+ * That is a deployer-nonce coincidence (same deployer, same nonce, different chains) and is
+ * NOT evidence the chains run different code. Strip the CBOR metadata trailer (see stripMetadata below) to compare
+ * actual bytecode.
+ */
+/**
+ * ADMIN_ROLE holders, read from the `RoleGranted` logs emitted by `initialize` (verified
+ * 2026-07-26 on both chains — the SAME two addresses on Ethereum and Base).
+ *
+ * Recorded here because `StorageToken` does NOT inherit `AccessControlEnumerable`, so
+ * `getRoleMemberCount`/`getRoleMember` revert and admins cannot be discovered on-chain. Governance
+ * needs a quorum of 2, so any fork rehearsal must impersonate both. These are public on-chain
+ * addresses, not secrets.
+ *
+ * Ethereum grants: block 21969614. Base grants: block 27129443 (the deployment block).
+ */
+export const LIVE_ADMINS = [
+  "0x383a6a34c623c02dcf9bb7069fae4482967fb713",
+  "0xfa8b02596a84f3b81b4144ea2f30482f8c33d446",
+];
+
+export const LIVE: Record<
+  string,
+  { proxy: string; expectedImpl: string; chainId: number; admins: string[]; deployBlock?: number }
+> = {
+  ethereum: {
+    proxy: "0x92217cCaEDBdbc54C76c15feA18823db1558fDc9",
+    expectedImpl: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
+    chainId: 1,
+    admins: LIVE_ADMINS,
+    deployBlock: 21969614,
+  },
+  base: {
+    proxy: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
+    expectedImpl: "0x13Cd0bd6f577d937AD3268688D4907Afa4209DCb",
+    chainId: 8453,
+    admins: LIVE_ADMINS,
+    deployBlock: 27129443,
+  },
+  skale: {
+    proxy: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
+    expectedImpl: "0x13Cd0bd6f577d937AD3268688D4907Afa4209DCb",
+    chainId: 2046399126,
+    admins: LIVE_ADMINS,
+  },
+  "iotex-mainnet": {
+    proxy: "0x9e12735d77c72c5C3670636D428f2F3815d8A4cB",
+    expectedImpl: "0x13Cd0bd6f577d937AD3268688D4907Afa4209DCb",
+    chainId: 4689,
+    admins: LIVE_ADMINS,
+  },
+};
+
+/**
+ * Storage slots of the DEPLOYED StorageToken. GovernanceModule occupies 0..10 and the token's
+ * own variables start at 11.
+ *
+ * SCOPE OF THAT CLAIM: the layout was verified by reading live storage on **Ethereum and Base
+ * only**. SKALE and IoTeX host the same source but their layouts were never independently
+ * confirmed, so do not treat these indices as authoritative there without re-verifying.
+ *
+ * NOTE: the bridge does NOT upgrade the token — it is a lock/release escrow and
+ * `contracts/core/StorageToken.sol` is byte-identical to the live verified source. Earlier
+ * revisions of this file listed `bridgeMinters: 16` and `voluntarilyBurned: 17` as slots
+ * "appended by this upgrade"; **those slots do not exist**, that upgrade was abandoned, and the
+ * reserved gap begins at 16.
+ */
+export const SLOTS = {
+  adminCount: 0,
+  proposals: 1,
+  pendingProposals: 2,
+  timeConfigs: 3,
+  roleConfigs: 4,
+  upgradeProposals: 5,
+  proposalIndex: 6,
+  proposalCount: 7,
+  proposalRegistry: 8,
+  govPackedVars: 9,
+  pendingOwnerRequest: 10,
+  usedNonces: 11,
+  blacklisted: 12,
+  treasury: 13,
+  platformFeeBps: 14,
+  tokenPackedVars: 15,
+  gapStart: 16,
+  gapEnd: 64,
+} as const;
+
+/** A snapshot of everything that must be byte-identical across an upgrade. */
+export interface StateSnapshot {
+  name: string;
+  symbol: string;
+  decimals: bigint;
+  totalSupply: bigint;
+  maxSupply: bigint;
+  treasury: string;
+  adminCount: bigint;
+  proposalCount: bigint;
+  paused: boolean;
+  owner: string;
+  adminQuorum: bigint;
+  adminTxLimit: bigint;
+  contractBalance: bigint;
+  balances: Record<string, bigint>;
+  rawSlots: Record<number, string>;
+}
+
+export async function snapshotState(
+  proxy: string,
+  extraHolders: string[] = []
+): Promise<StateSnapshot> {
+  const token = await ethers.getContractAt("StorageToken", proxy);
+
+  const balances: Record<string, bigint> = {};
+  for (const h of extraHolders) {
+    balances[h.toLowerCase()] = await token.balanceOf(h);
+  }
+
+  const rawSlots: Record<number, string> = {};
+  for (const s of [
+    SLOTS.adminCount,
+    SLOTS.proposalCount,
+    SLOTS.treasury,
+    SLOTS.platformFeeBps,
+    SLOTS.tokenPackedVars,
+  ]) {
+    rawSlots[s] = await ethers.provider.getStorage(proxy, s);
+  }
+
+  const roleCfg = await token.roleConfigs(ADMIN_ROLE);
+
+  return {
+    name: await token.name(),
+    symbol: await token.symbol(),
+    decimals: BigInt(await token.decimals()),
+    totalSupply: await token.totalSupply(),
+    maxSupply: await token.maxSupply(),
+    treasury: await token.treasury(),
+    adminCount: await token.adminCount(),
+    proposalCount: await token.proposalCount(),
+    paused: await token.paused(),
+    owner: await token.owner(),
+    adminQuorum: BigInt(roleCfg[0]),
+    adminTxLimit: BigInt(roleCfg[1]),
+    contractBalance: await token.balanceOf(proxy),
+    balances,
+    rawSlots,
+  };
+}
+
+/** Compare two snapshots. Returns a list of human-readable differences (empty = identical). */
+export function diffSnapshots(before: StateSnapshot, after: StateSnapshot): string[] {
+  const diffs: string[] = [];
+  const scalarKeys: Array<keyof StateSnapshot> = [
+    "name",
+    "symbol",
+    "decimals",
+    "totalSupply",
+    "maxSupply",
+    "treasury",
+    "adminCount",
+    "proposalCount",
+    "paused",
+    "owner",
+    "adminQuorum",
+    "adminTxLimit",
+    "contractBalance",
+  ];
+  for (const k of scalarKeys) {
+    const a = before[k];
+    const b = after[k];
+    const an = typeof a === "string" ? a.toLowerCase() : a;
+    const bn = typeof b === "string" ? b.toLowerCase() : b;
+    if (an !== bn) diffs.push(`${String(k)}: ${a} -> ${b}`);
+  }
+  for (const [addr, bal] of Object.entries(before.balances)) {
+    if (after.balances[addr] !== bal) {
+      diffs.push(`balance[${addr}]: ${bal} -> ${after.balances[addr]}`);
+    }
+  }
+  // EVERY slot must be unchanged. There is no carve-out any more: the escrow bridge does not
+  // touch the token, so a raw-slot difference is unexplained by definition. Earlier revisions
+  // whitelisted slots 16/17 as "newly used by this upgrade" — that upgrade was abandoned, and
+  // leaving the exemption in place would have silently suppressed a real alarm.
+  for (const [slot, val] of Object.entries(before.rawSlots)) {
+    const n = Number(slot);
+    if (after.rawSlots[n] !== val) {
+      diffs.push(`slot ${n}: ${val} -> ${after.rawSlots[n]}`);
+    }
+  }
+  return diffs;
+}
+
+/** Strip solc's trailing CBOR metadata so two builds of the same logic compare equal. */
+export function stripMetadata(hex: string): string {
+  const body = hex.startsWith("0x") ? hex.slice(2) : hex;
+  if (body.length < 4) return body;
+  const len = parseInt(body.slice(-4), 16);
+  const trailer = (len + 2) * 2;
+  if (trailer >= body.length || Number.isNaN(len)) return body;
+  return body.slice(0, body.length - trailer);
+}
+
+export async function readImplementation(proxy: string): Promise<string> {
+  const raw = await ethers.provider.getStorage(proxy, IMPL_SLOT);
+  return ethers.getAddress("0x" + raw.slice(-40));
+}
+
+export function fmt(n: bigint): string {
+  return `${ethers.formatEther(n)} FULA`;
+}
